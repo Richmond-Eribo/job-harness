@@ -1,0 +1,45 @@
+{
+  // Agent Harness — v1 (Cloudflare FREE plan)
+  // ------------------------------------------
+  // Durable Objects (SQLite-backed) + cron only. NO containers, NO sandbox.
+  // Free-tier Workers plan supports DOs + the cron trigger watchdog.
+  // See docs for the v2 (paid plan) variant which adds a Sandbox container
+  // for code execution.
+  "name": "agent-harness",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Only MAX_STEPS is kept as a Worker var. Model identity (provider/model/url)
+  // and generation params live in src/llm-config.json — NOT here. The API key
+  // is a real secret set via `wrangler secret put LLM_API_KEY`.
+  "vars": {
+    "MAX_STEPS": "100",
+  },
+
+  // Static dashboard assets (CSS + client JS) served by the platform from ./public.
+  // Keeps HTML payload small and lets browsers cache the assets independently.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "HARNESS", "class_name": "Harness" },
+      { "name": "RESEARCH_AGENT", "class_name": "ResearchAgent" },
+      { "name": "JOB_AGENT", "class_name": "JobApplicationAgent" },
+    ],
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Harness", "ResearchAgent", "JobApplicationAgent"],
+    },
+  ],
+
+  "triggers": {
+    "crons": ["*/2 * * * *"],
+  },
+}
