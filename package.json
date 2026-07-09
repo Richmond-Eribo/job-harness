@@ -10,16 +10,19 @@
     "types": "wrangler types"
   },
   "dependencies": {
-    "agents": "^0.0.74",
-    "ai": "^4.3.0",
     "@ai-sdk/anthropic": "^1.2.0",
     "@ai-sdk/openai": "^1.3.0",
-    "@cloudflare/sandbox": "^0.8.9",
+    "agents": "^0.0.74",
+    "ai": "^4.3.0",
+    "cron-parser": "^5.6.1",
+    "hono": "^4.12.28",
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0",
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/workers-types": "^4.20250620.0",
     "typescript": "^5.7.0",
-    "@cloudflare/workers-types": "^4.20250620.0"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.0.0"
   }
 }
