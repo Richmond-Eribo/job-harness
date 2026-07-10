@@ -21,10 +21,7 @@ describe("Route structure", () => {
     // contains the expected route definitions
     const fs = require("fs")
     const path = require("path")
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "src", "index.ts"),
-      "utf-8",
-    )
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
     // Verify all expected routes exist
     const expectedRoutes = [
@@ -63,12 +60,13 @@ describe("Route structure", () => {
   it("has auth middleware on /api/* routes", () => {
     const fs = require("fs")
     const path = require("path")
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "src", "index.ts"),
-      "utf-8",
-    )
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
-    expect(src).toContain('app.use("/api/*"')
+    // The bearer-auth middleware is registered on the /api/* path. The literal
+    // may be split across lines in the source, so collapse whitespace before
+    // asserting rather than requiring a one-line pattern.
+    const collapsed = src.replace(/\s+/g, " ")
+    expect(collapsed).toContain('app.use( "/api/*", bearerAuth')
     expect(src).toContain("Authorization")
     expect(src).toContain("DASHBOARD_TOKEN")
   })
@@ -76,12 +74,9 @@ describe("Route structure", () => {
   it("has CORS middleware", () => {
     const fs = require("fs")
     const path = require("path")
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "src", "index.ts"),
-      "utf-8",
-    )
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
-    expect(src).toContain('app.use(')
+    expect(src).toContain("app.use(")
     expect(src).toContain("cors(")
   })
 })
@@ -90,7 +85,7 @@ describe("Auth middleware logic", () => {
   it("rejects requests without Bearer token", async () => {
     // Simulate the auth check logic
     const DASHBOARD_TOKEN = "test-token"
-    const authHeader = undefined
+    const authHeader: string | undefined = undefined
     const token = authHeader?.replace("Bearer ", "")
     const isUnauthorized = !token || token !== DASHBOARD_TOKEN
     expect(isUnauthorized).toBe(true)
@@ -117,10 +112,7 @@ describe("Dashboard route", () => {
   it("serves dashboard at root path", () => {
     const fs = require("fs")
     const path = require("path")
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "src", "index.ts"),
-      "utf-8",
-    )
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
     expect(src).toContain('app.get("/"')
     expect(src).toContain("renderDashboard")
@@ -128,16 +120,18 @@ describe("Dashboard route", () => {
 })
 
 describe("Cron scheduled handler", () => {
-  it("has scheduled handler for cron watchdog", () => {
+  it("has a scheduled handler that forwards to harness.wake()", () => {
     const fs = require("fs")
     const path = require("path")
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "src", "index.ts"),
-      "utf-8",
-    )
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
     expect(src).toContain("async scheduled(")
-    expect(src).toContain("checkSchedulesDue")
-    expect(src).toContain("harness.start()")
+    // The watchdog is now a thin forwarder. The decision logic (schedule check,
+    // start) lives INSIDE harness.wake() — not in the Worker — so we assert
+    // the new contract rather than the old three-RPC sequence.
+    expect(src).toContain("harness.wake()")
+    // The old chatty sequence must be gone from the Worker.
+    expect(src).not.toContain("harness.checkSchedulesDue()")
+    expect(src).not.toContain("harness.start()")
   })
 })
