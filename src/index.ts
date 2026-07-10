@@ -13,35 +13,25 @@
 
 import { Hono } from "hono"
 import { cors } from "hono/cors"
+import { bearerAuth } from "hono/bearer-auth"
+
 import { routeAgentRequest, getAgentByName } from "agents"
 import type { Env } from "./types"
-import { Harness } from "./harness"
-import { ResearchAgent } from "./research-agent"
-import { JobApplicationAgent } from "./job-agent"
-// Hono JSX rendering: the renderer (in Layout.tsx) wraps c.render(...) in
-// <Layout>, and renderDashboard (a .tsx helper) renders <Dashboard/>. index.ts
-// itself stays JSX-free since it's a .ts file.
+import { Harness } from "./agents"
+
 import { renderer } from "./views/Layout"
 import { renderDashboard } from "./views/renderDashboard"
+import { getAgents, HARNESS_ID } from "./utils/get-agents"
 
 // Re-export all Durable Object classes (required by Cloudflare)
-export { Harness } from "./harness"
-export { ResearchAgent } from "./research-agent"
-export { JobApplicationAgent } from "./job-agent"
-
+export { Harness, ResearchAgent, JobApplicationAgent } from "./agents"
 // =============================================================================
 // Hono app
 // =============================================================================
 
-const HARNESS_ID = "main" // single long-running harness instance
-
 const app = new Hono<{ Bindings: Env }>()
 
 // JSX renderer middleware: wraps c.render(...) calls in <Layout>.
-// NOTE: scoped to the dashboard route only. Mounting it on "*" previously
-// applied the renderer to /api/* JSON routes, which broke them with
-// "Cannot read properties of undefined (reading 'onError')" because the
-// renderer middleware assumes a render context that JSON handlers never set up.
 app.use("/", renderer)
 
 // CORS on every route (preflight handled automatically by the middleware).
@@ -56,31 +46,15 @@ app.use(
 
 // Bearer-token auth on everything under /api/*.
 // The dashboard HTML at "/" stays public (it prompts for the token client-side).
-app.use("/api/*", async (c, next) => {
-  const authHeader = c.req.header("Authorization")
-  const token = authHeader?.replace("Bearer ", "")
-  if (!token || token !== c.env.DASHBOARD_TOKEN) {
-    return c.json({ error: "Unauthorized" }, 401)
-  }
-  await next()
-})
-
-// -----------------------------------------------------------------------------
-// Helper: typed agent stubs for this request
-// -----------------------------------------------------------------------------
-
-async function getAgents(env: Env) {
-  const harness = await getAgentByName<Env, Harness>(env.HARNESS, HARNESS_ID)
-  const jobAgent = await getAgentByName<Env, JobApplicationAgent>(
-    env.JOB_AGENT,
-    HARNESS_ID,
-  )
-  const researchAgent = await getAgentByName<Env, ResearchAgent>(
-    env.RESEARCH_AGENT,
-    HARNESS_ID,
-  )
-  return { harness, jobAgent, researchAgent }
-}
+app.use(
+  "/api/*",
+  bearerAuth<{ Bindings: Env }>({
+    verifyToken: async (token, c) => {
+      const TOKEN = c.env?.DASHBOARD_TOKEN
+      return token === TOKEN
+    },
+  }),
+)
 
 // =============================================================================
 // Dashboard (public) — rendered through Hono's jsxRenderer → <Layout><Dashboard/></Layout>.
@@ -183,6 +157,34 @@ app.get("/api/summaries", async c => {
   const limit = Number(c.req.query("limit") ?? "10")
   const { harness } = await getAgents(c.env)
   return c.json(await harness.getDailySummaries(limit))
+})
+
+// =============================================================================
+// Memory — the harness's remembered facts (the `context` table)
+// =============================================================================
+// These rows back the Memory tab. The harness already has read/write via the
+// `remember` / `recall` tools the LLM calls; these routes expose the same
+// rows to the dashboard for human inspection and editing.
+// =============================================================================
+
+app.get("/api/memory", async c => {
+  const { harness } = await getAgents(c.env)
+  return c.json(await harness.getAllMemory())
+})
+
+app.put("/api/memory", async c => {
+  const body = await c.req.json()
+  if (!body?.key || typeof body.key !== "string") {
+    return c.json({ error: "key required" }, 400)
+  }
+  const { harness } = await getAgents(c.env)
+  return c.json({ message: await harness.setMemory(body.key, String(body.value ?? "")) })
+})
+
+app.delete("/api/memory/:key", async c => {
+  const key = decodeURIComponent(c.req.param("key"))
+  const { harness } = await getAgents(c.env)
+  return c.json({ message: await harness.forgetMemory(key) })
 })
 
 // =============================================================================
@@ -310,26 +312,26 @@ export default {
     return new Response("Not found", { status: 404 })
   },
 
-  // Cron watchdog — self-heals the Harness
+  // Cron watchdog — thin forwarder.
+  //
+  // Previously this was a 3-RPC decision sequence (getStatus →
+  // checkSchedulesDue → start) with the Worker acting as the brain. That made
+  // the harness reactive to Worker-side decisions and was racy. Now the Worker
+  // just forwards the wake signal; the harness inspects its own state and
+  // decides internally whether a run is due. This is the Managed Agents
+  // "wake(sessionId)" shape: events flow in, the brain takes over.
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     try {
       const harness = await getAgentByName<Env, Harness>(
         env.HARNESS,
         HARNESS_ID,
       )
-      const status = await harness.getStatus()
-
-      if (status === "idle" || status === "error") {
-        const isDue = await harness.checkSchedulesDue()
-        if (isDue) {
-          console.log(
-            `[watchdog] Starting harness run (previous status: ${status})`,
-          )
-          await harness.start()
-        }
+      const result = await harness.wake()
+      if (result.ran) {
+        console.log(`[watchdog] harness wake → ${result.reason}`)
       }
     } catch (error: any) {
-      console.error("[watchdog] Error:", error.message)
+      console.error("[watchdog] wake() error:", error.message)
     }
   },
 }
