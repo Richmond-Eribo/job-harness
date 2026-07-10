@@ -30,10 +30,16 @@ const Layout: FC<PropsWithChildren> = ({ children }) => {
         />
         {/* Static CSS served from the [assets] binding */}
         <link rel="stylesheet" href="/css/dashboard.css" />
+        {/* v2 additions: markdown + JSON + chips + memory + log detail styling */}
+        <link rel="stylesheet" href="/css/dashboard-v2.css" />
       </head>
       <body>
         {children}
-        {/* Static client JS served from the [assets] binding, deferred */}
+        {/* Static client JS served from the [assets] binding, deferred.
+            Order matters: markdown.js + json.js must load before dashboard.js
+            so md.* and renderJson() are defined when dashboard.js runs. */}
+        <script src="/js/markdown.js" defer></script>
+        <script src="/js/json.js" defer></script>
         <script src="/js/dashboard.js" defer></script>
       </body>
     </html>

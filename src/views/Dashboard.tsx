@@ -80,6 +80,12 @@ const Dashboard: FC = () => {
                 </div>
                 <div class="stat-label">Jobs Tracked</div>
               </div>
+              <div class="stat-item">
+                <div class="stat-value" id="stat-tokens">
+                  0
+                </div>
+                <div class="stat-label">Tokens Used</div>
+              </div>
             </div>
             <div style="margin-top: 12px;">
               <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted);">
@@ -125,6 +131,9 @@ const Dashboard: FC = () => {
             </button>
             <button class="tab" data-num="04" onclick="switchTab('log')">
               Activity Log
+            </button>
+            <button class="tab" data-num="05" onclick="switchTab('memory')">
+              Memory
             </button>
           </div>
 
@@ -192,9 +201,12 @@ const Dashboard: FC = () => {
             <div class="card">
               <div class="card-header">
                 <span class="card-title">Step Log</span>
-                <button class="small secondary" onclick="loadLog()">
-                  Refresh
-                </button>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <span style="font-size:11px; color:var(--muted-2);">click a row for input/output</span>
+                  <button class="small secondary" onclick="loadLog()">
+                    Refresh
+                  </button>
+                </div>
               </div>
               <div style="overflow-x: auto;">
                 <table class="log-table">
@@ -203,9 +215,9 @@ const Dashboard: FC = () => {
                       <th>Time</th>
                       <th>Run</th>
                       <th>Step</th>
-                      <th>Agent</th>
                       <th>Action</th>
-                      <th>Input</th>
+                      <th>Agent</th>
+                      <th>Tokens</th>
                     </tr>
                   </thead>
                   <tbody id="log-body">
@@ -216,6 +228,41 @@ const Dashboard: FC = () => {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          {/* Tab: Memory — the harness's remembered facts (the `context` table) */}
+          <div id="tab-memory" style="display: none;">
+            <div class="card">
+              <div class="card-header">
+                <span class="card-title">Memory</span>
+                <span style="font-size:11px; color:var(--muted-2);">facts persisted via the `remember` tool</span>
+              </div>
+
+              {/* Add-fact form */}
+              <div class="memory-form">
+                <div>
+                  <label class="form-label">Key</label>
+                  <input
+                    type="text"
+                    id="memory-key-input"
+                    placeholder="focus_topic"
+                  />
+                </div>
+                <div>
+                  <label class="form-label">Value</label>
+                  <input
+                    type="text"
+                    id="memory-value-input"
+                    placeholder="What to remember"
+                  />
+                </div>
+                <button onclick="rememberFact()">Remember</button>
+              </div>
+
+              <div id="memory-list">
+                <div class="empty">Loading memory...</div>
               </div>
             </div>
           </div>
@@ -248,6 +295,22 @@ const Dashboard: FC = () => {
               min="1"
               max="500"
             />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Token Budget (0 = unlimited)</label>
+            <input
+              type="number"
+              id="budget-input"
+              value="0"
+              min="0"
+              step="10000"
+              placeholder="e.g. 200000"
+            />
+            <div style="font-size: 11px; color: var(--muted-2); margin-top: 4px;">
+              Soft ceiling on cumulative tokens spent per run. 0 disables the
+              cap. With <code>reasoningEffort: xhigh</code>, set a real cap
+              before billing.
+            </div>
           </div>
           <div class="form-row">
             <button onclick="saveGoal()">Save</button>
