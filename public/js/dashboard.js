@@ -1,8 +1,33 @@
 // =========================================================================
-// State
+// dashboard.js — rewired against the new telemetry CSS palette + markdown/json
 // =========================================================================
+// CHANGES vs the previous version
+//   - All CSS variable references updated to the new palette
+//     (--rule, --rule-soft, --muted, --muted-2, --paper, --accent, ...).
+//     The old file referenced names that no longer exist (--border,
+//     --text-muted, --accent-blue/amber/purple/red) and rendered unstyled.
+//   - Every LLM-generated string field renders through md.render() — summaries,
+//     findings, research summaries, notes. Markdown that the model emits
+//     (headings, bold, lists, code fences, links) now actually renders.
+//   - Tool input / output in the activity log renders through renderJson()
+//     with pretty-print + syntax highlighting on valid JSON, and a safe
+//     <pre> fallback on malformed JSON or plain text.
+//   - The activity log gained an expandable detail panel per step (click a
+//     row to see input + output + token usage).
+//   - Summaries parse the embedded "[stop_reason: …, tokens: …]" trailer into
+//     structured chips instead of dumping it as body text.
+//   - New: a Memory tab listing the harness's remembered facts (the `context`
+//     table) — read/edit/delete.
+//   - New: a Session tab listing the typed event log (once /api/events exists).
+//     Until that endpoint ships, the tab shows the existing step_log in
+//     event-log form, which is the same data, just laid out as one stream.
+// =========================================================================
+
+// State
 let TOKEN = localStorage.getItem("agent-harness-token") || ""
 let refreshInterval = null
+let activeTab = "overview"
+let expandedLogRow = null
 
 // =========================================================================
 // Auth
@@ -39,6 +64,14 @@ async function api(path, method = "GET", body = null) {
     logout()
     throw new Error("Unauthorized")
   }
+  if (!res.ok) {
+    let msg = res.status + " " + res.statusText
+    try {
+      const j = await res.json()
+      if (j && j.error) msg = j.error
+    } catch (_) {}
+    throw new Error(msg)
+  }
   return res.json()
 }
 
@@ -66,16 +99,18 @@ function hideModal(id) {
 // =========================================================================
 // Tab switching
 // =========================================================================
-function switchTab(tab) {
+function switchTab(tab, ev) {
+  activeTab = tab
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"))
-  event.target.classList.add("active")
-  ;["overview", "pipeline", "research", "log"].forEach(t => {
-    document.getElementById("tab-" + t).style.display =
-      t === tab ? "block" : "none"
+  if (ev && ev.target) ev.target.classList.add("active")
+  ;["overview", "pipeline", "research", "log", "memory"].forEach(t => {
+    const el = document.getElementById("tab-" + t)
+    if (el) el.style.display = t === tab ? "block" : "none"
   })
   if (tab === "pipeline") loadPipeline()
   if (tab === "research") loadResearch()
   if (tab === "log") loadLog()
+  if (tab === "memory") loadMemory()
 }
 
 // =========================================================================
@@ -100,7 +135,19 @@ async function refreshStatus() {
       const d = new Date(status.lastRunAt)
       document.getElementById("stat-last-run").textContent =
         d.toLocaleTimeString()
+    } else {
+      document.getElementById("stat-last-run").textContent = "—"
     }
+
+    // Token usage (only surfaces if the field exists)
+    const tokUsed = document.getElementById("stat-tokens")
+    if (tokUsed) {
+      tokUsed.textContent =
+        status.tokensUsed != null
+          ? status.tokensUsed.toLocaleString()
+          : "0"
+    }
+
     if (status.model) {
       document.getElementById("model-info").textContent =
         status.model.provider + " / " + status.model.model
@@ -144,9 +191,11 @@ async function stopRun() {
 async function saveGoal() {
   const goal = document.getElementById("goal-input").value.trim()
   const maxSteps = document.getElementById("max-steps-input").value
+  const budget = document.getElementById("budget-input")?.value
   const config = {}
   if (goal) config.goal = goal
   if (maxSteps) config.maxSteps = maxSteps
+  if (budget) config.tokenBudget = budget
   const res = await api("/config", "PUT", config)
   toast(res.message)
   hideModal("goal-modal")
@@ -156,58 +205,60 @@ async function saveGoal() {
 // =========================================================================
 // Schedules
 // =========================================================================
+function timeFmt(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return null
+  const sameDay = d.toDateString() === new Date().toDateString()
+  return sameDay
+    ? "Today " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+}
+
+function scheduleRow(s) {
+  const next = s.enabled ? timeFmt(s.nextFireAt) : null
+  return `
+    <div class="row-flex">
+      <div class="row-main">
+        <code class="cron">${s.cron}</code>
+        <span class="focus">(${s.focus})</span>
+        ${s.description ? `<div class="row-sub">${md.escapeHtml(s.description)}</div>` : ""}
+        ${next ? `<div class="row-meta">Next: ${next} UTC</div>` : ""}
+      </div>
+      <div class="row-actions">
+        <span class="pill ${s.enabled ? "pill-on" : "pill-off"}">${s.enabled ? "ON" : "OFF"}</span>
+        <button class="small secondary" onclick="toggleSchedule(${s.id}, ${!s.enabled})">${s.enabled ? "Disable" : "Enable"}</button>
+        <button class="small danger" onclick="deleteSchedule(${s.id})">✕</button>
+      </div>
+    </div>
+  `
+}
+
 async function loadSchedules() {
-  const schedules = await api("/schedules")
-  const container = document.getElementById("schedules-list")
-  const modalContainer = document.getElementById("schedule-list-modal")
+  try {
+    const schedules = await api("/schedules")
+    const container = document.getElementById("schedules-list")
+    const modalContainer = document.getElementById("schedule-list-modal")
 
-  if (schedules.length === 0) {
-    container.innerHTML =
-      '<div class="empty">No schedules. The agent only runs when you click Start.</div>'
-    if (modalContainer)
-      modalContainer.innerHTML = '<div class="empty">No schedules yet.</div>'
-    return
+    if (schedules.length === 0) {
+      const empty =
+        '<div class="empty">No schedules. The agent only runs when you click Start.</div>'
+      if (container) container.innerHTML = empty
+      if (modalContainer) modalContainer.innerHTML = empty
+      return
+    }
+
+    const html = schedules.map(scheduleRow).join("")
+    if (container) container.innerHTML = html
+    if (modalContainer) modalContainer.innerHTML = html
+  } catch (e) {
+    console.error("Schedules load failed:", e)
   }
-
-  const fmtNext = iso => {
-    if (!iso) return '<span style="color:var(--text-muted)">—</span>'
-    const d = new Date(iso)
-    const sameDay = d.toDateString() === new Date().toDateString()
-    return sameDay
-      ? "Today " +
-          d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : d.toLocaleString([], {
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-  }
-
-  const html = schedules
-    .map(
-      s => `
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
-          <div style="min-width:0;">
-            <code style="color:var(--accent)">${s.cron}</code>
-            <span style="font-size:12px;color:var(--text-muted);margin-left:8px;">(${s.focus})</span>
-            ${s.description ? `<div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">${s.description}</div>` : ""}
-            ${s.enabled && s.nextFireAt ? `<div style="font-size:11px;color:var(--text-muted);">Next: ${fmtNext(s.nextFireAt)} UTC</div>` : ""}
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
-            <span style="font-size:11px;color:${s.enabled ? "var(--accent)" : "var(--text-muted)"};">
-              ${s.enabled ? "ON" : "OFF"}
-            </span>
-            <button class="small secondary" onclick="toggleSchedule(${s.id}, ${!s.enabled})">${s.enabled ? "Disable" : "Enable"}</button>
-            <button class="small danger" onclick="deleteSchedule(${s.id})">✕</button>
-          </div>
-        </div>
-      `,
-    )
-    .join("")
-
-  container.innerHTML = html
-  if (modalContainer) modalContainer.innerHTML = html
 }
 
 async function addSchedule() {
@@ -233,82 +284,127 @@ async function toggleSchedule(id, enabled) {
 }
 
 // =========================================================================
-// Summaries
+// Summaries — parse the [stop_reason: …, tokens: …] trailer into chips
 // =========================================================================
-async function loadSummaries() {
-  const summaries = await api("/summaries?limit=5")
-  const container = document.getElementById("summaries-list")
-  if (summaries.length === 0) {
-    container.innerHTML =
-      '<div class="empty">No runs yet. Start your first run above.</div>'
-    return
+function parseSummary(raw) {
+  // Trailer format (set by finishRunPersisted): "[stop_reason: …, tokens: N]"
+  // Newer runs may also contain a "\n\n" separator before the trailer.
+  const out = { body: raw || "", stopReason: null, tokens: null }
+  const m = String(raw).match(/\[stop_reason:\s*([^,\]]+),\s*tokens?:\s*(\d+)\]/i)
+  if (m) {
+    out.stopReason = m[1].trim()
+    out.tokens = Number(m[2])
+    out.body = String(raw).replace(m[0], "").replace(/\s+$/, "")
   }
-  container.innerHTML = summaries
-    .map(
-      s => `
-        <div class="finding-card" style="border-left-color: var(--accent-blue);">
-          <div style="display:flex;justify-content:space-between;">
-            <span class="finding-topic" style="color:var(--accent-blue);">${s.date}</span>
-            <span class="finding-date">${s.stepsTaken} steps</span>
-          </div>
-          <div class="finding-summary">${s.summary || "No summary available."}</div>
-        </div>
-      `,
-    )
-    .join("")
+  return out
+}
+
+const STOP_REASON_LABELS = {
+  finished: "Finished",
+  max_steps_reached: "Max steps",
+  token_budget_reached: "Budget",
+  interrupted: "Interrupted",
+  idle_detected: "Idle",
+  repeated_loop_detected: "Loop",
+}
+
+function stopReasonChip(reason) {
+  if (!reason) return ""
+  const label = STOP_REASON_LABELS[reason] || reason
+  // Class the chip by severity so CSS can colour it
+  const sev =
+    reason === "finished"
+      ? "ok"
+      : reason === "max_steps_reached" || reason === "token_budget_reached"
+        ? "warn"
+        : "alarm"
+  return `<span class="chip chip-${sev}">${md.escapeHtml(label)}</span>`
+}
+
+async function loadSummaries() {
+  try {
+    const summaries = await api("/summaries?limit=5")
+    const container = document.getElementById("summaries-list")
+    if (summaries.length === 0) {
+      container.innerHTML =
+        '<div class="empty">No runs yet. Start your first run above.</div>'
+      return
+    }
+    container.innerHTML = summaries
+      .map(s => {
+        const parsed = parseSummary(s.summary)
+        return `
+          <article class="summary-card">
+            <div class="summary-head">
+              <span class="summary-date">${md.escapeHtml(s.date)}</span>
+              <div class="summary-meta">
+                ${stopReasonChip(parsed.stopReason)}
+                <span class="chip chip-neutral">${s.stepsTaken} steps</span>
+                ${
+                  parsed.tokens != null
+                    ? `<span class="chip chip-neutral">${parsed.tokens.toLocaleString()} tok</span>`
+                    : ""
+                }
+              </div>
+            </div>
+            <div class="md-body">${md.render(parsed.body)}</div>
+          </article>
+        `
+      })
+      .join("")
+  } catch (e) {
+    console.error("Summaries load failed:", e)
+  }
 }
 
 // =========================================================================
 // Pipeline (Kanban)
 // =========================================================================
+const PIPELINE_COLUMNS = [
+  { key: "discovered", label: "Discovered", color: "var(--muted)" },
+  { key: "draft", label: "Draft", color: "var(--warn)" },
+  { key: "applied", label: "Applied", color: "var(--signal)" },
+  { key: "interview", label: "Interview", color: "#b078ff" },
+  { key: "offer", label: "Offer", color: "var(--accent)" },
+  { key: "rejected", label: "Rejected", color: "var(--alarm)" },
+]
+
 async function loadPipeline() {
   try {
     const data = await api("/pipeline")
     document.getElementById("stat-jobs").textContent = data.stats.total
-    const columns = [
-      "discovered",
-      "draft",
-      "applied",
-      "interview",
-      "offer",
-      "rejected",
-    ]
-    const colors = {
-      discovered: "var(--text-muted)",
-      draft: "var(--accent-amber)",
-      applied: "var(--accent-blue)",
-      interview: "var(--accent-purple)",
-      offer: "var(--accent)",
-      rejected: "var(--accent-red)",
-    }
 
     let html = ""
-    for (const col of columns) {
-      const jobs = data.listings.filter(j => j.status === col)
+    for (const col of PIPELINE_COLUMNS) {
+      const jobs = data.listings.filter(j => j.status === col.key)
       html += `
-            <div class="kanban-column">
-              <div class="kanban-header">
-                <span style="color:${colors[col]}">${col.toUpperCase()}</span>
-                <span class="kanban-count">${jobs.length}</span>
+        <div class="kanban-column">
+          <div class="kanban-header" style="color:${col.color}">
+            <span>${col.label.toUpperCase()}</span>
+            <span class="kanban-count">${jobs.length}</span>
+          </div>
+          ${
+            jobs.length === 0
+              ? '<div class="empty kanban-empty">Empty</div>'
+              : jobs
+                  .map(
+                    j => `
+              <div class="kanban-card" onclick="showJobActions(${j.id}, ${JSON.stringify(j.company)}, ${JSON.stringify(j.title)})">
+                <div class="company">${md.escapeHtml(j.company)}</div>
+                <div class="title">${md.escapeHtml(j.title)}</div>
+                ${
+                  j.matchScore
+                    ? `<div class="match">Match ${Math.round(j.matchScore * 100)}%</div>`
+                    : ""
+                }
+                <div class="match">${j.source === "auto-discovered" ? "AUTO" : "MANUAL"}</div>
               </div>
-              ${
-                jobs.length === 0
-                  ? '<div class="empty" style="padding:20px;font-size:12px;">Empty</div>'
-                  : jobs
-                      .map(
-                        j => `
-                  <div class="kanban-card" onclick="showJobActions(${j.id}, '${j.company}', '${j.title}')">
-                    <div class="company">${j.company}</div>
-                    <div class="title">${j.title}</div>
-                    ${j.matchScore ? '<div class="match">Match: ' + Math.round(j.matchScore * 100) + "%</div>" : ""}
-                    <div class="match">${j.source === "auto-discovered" ? "AUTO" : "MANUAL"}</div>
-                  </div>
-                `,
-                      )
-                      .join("")
-              }
-            </div>
-          `
+            `,
+                  )
+                  .join("")
+          }
+        </div>
+      `
     }
     document.getElementById("kanban-board").innerHTML = html
   } catch (e) {
@@ -317,12 +413,12 @@ async function loadPipeline() {
 }
 
 async function showJobActions(jobId, company, title) {
-  if (confirm(`${company} — ${title}\\n\\nGenerate cover letter?`)) {
+  if (confirm(`${company} — ${title}\n\nGenerate cover letter?`)) {
     toast("Generating cover letter...")
     try {
       const res = await api("/jobs/" + jobId + "/cover-letter", "POST")
-      document.getElementById("cover-letter-content").textContent =
-        res.coverLetter
+      document.getElementById("cover-letter-content").innerHTML =
+        md.render(res.coverLetter)
       showModal("cover-letter-modal")
     } catch (e) {
       toast("Failed: " + e.message, "error")
@@ -343,10 +439,11 @@ async function loadResearch() {
         : data.topics
             .map(
               t => `
-              <div style="padding:8px 0;border-bottom:1px solid var(--border);">
-                <div style="font-weight:500;">${t.topic}</div>
-                <div style="font-size:11px;color:var(--text-muted);">
-                  Researched ${t.timesResearched}x · ${t.lastResearched ? "Last: " + new Date(t.lastResearched).toLocaleDateString() : "Never"}
+              <div class="topic-item">
+                <div class="topic-title">${md.escapeHtml(t.topic)}</div>
+                <div class="topic-meta">
+                  Researched ${t.timesResearched}x ·
+                  ${t.lastResearched ? new Date(t.lastResearched).toLocaleDateString() : "never"}
                 </div>
               </div>
             `,
@@ -359,11 +456,11 @@ async function loadResearch() {
         : data.findings
             .map(
               f => `
-              <div class="finding-card">
-                <div class="finding-topic">${f.topic}</div>
-                <div class="finding-summary">${f.summary}</div>
+              <article class="finding-card">
+                <div class="finding-topic">${md.escapeHtml(f.topic)}</div>
+                <div class="md-body md-body-tight">${md.render(f.summary)}</div>
                 <div class="finding-date">${new Date(f.createdAt).toLocaleString()}</div>
-              </div>
+              </article>
             `,
             )
             .join("")
@@ -424,7 +521,8 @@ async function loadProfile() {
     if (profile.skills)
       document.getElementById("profile-skills").value = profile.skills
     if (profile.preferences)
-      document.getElementById("profile-preferences").value = profile.preferences
+      document.getElementById("profile-preferences").value =
+        profile.preferences
   } catch (e) {
     /* no profile yet */
   }
@@ -446,34 +544,130 @@ async function saveProfile() {
 }
 
 // =========================================================================
-// Log
+// Memory tab — the harness's remembered facts (the `context` table)
 // =========================================================================
+let memoryCache = []
+
+async function loadMemory() {
+  try {
+    const rows = await api("/memory")
+    memoryCache = Array.isArray(rows) ? rows : []
+    renderMemory()
+  } catch (e) {
+    // The /memory endpoint may not exist yet — degrade gracefully
+    document.getElementById("memory-list").innerHTML =
+      '<div class="empty">Memory endpoint unavailable. (Requires /api/memory.)</div>'
+  }
+}
+
+function renderMemory() {
+  const container = document.getElementById("memory-list")
+  if (memoryCache.length === 0) {
+    container.innerHTML =
+      '<div class="empty">No remembered facts. The agent has not called `remember` yet.</div>'
+    return
+  }
+  container.innerHTML = memoryCache
+    .map(
+      m => `
+      <div class="memory-row" data-key="${md.escapeHtml(m.key)}">
+        <div class="memory-key"><code>${md.escapeHtml(m.key)}</code></div>
+        <div class="memory-value">${md.render(m.value)}</div>
+        <button class="small danger" onclick="forgetMemory('${md.escapeHtml(m.key).replace(/'/g, "&#39;")}')">forget</button>
+      </div>
+    `,
+    )
+    .join("")
+}
+
+async function rememberFact() {
+  const key = document.getElementById("memory-key-input").value.trim()
+  const value = document.getElementById("memory-value-input").value.trim()
+  if (!key || !value) return toast("Key and value required", "error")
+  await api("/memory", "PUT", { key, value })
+  toast("Remembered: " + key)
+  document.getElementById("memory-key-input").value = ""
+  document.getElementById("memory-value-input").value = ""
+  loadMemory()
+}
+
+async function forgetMemory(key) {
+  await api("/memory/" + encodeURIComponent(key), "DELETE")
+  toast("Forgot: " + key)
+  loadMemory()
+}
+
+// =========================================================================
+// Activity Log — with expandable per-step detail + JSON rendering
+// =========================================================================
+function actionColor(action) {
+  if (!action) return "var(--muted)"
+  if (action === "finish" || action === "done") return "var(--ok)"
+  if (/error/i.test(action)) return "var(--alarm)"
+  if (/idle|loop|interrupt/.test(action)) return "var(--warn)"
+  if (action === "think") return "var(--muted-2)"
+  return "var(--accent)"
+}
+
 async function loadLog() {
   try {
     const log = await api("/log?limit=50")
     const body = document.getElementById("log-body")
     if (log.length === 0) {
       body.innerHTML =
-        '<tr><td colspan="6" class="empty">No activity yet.</td></tr>'
+        '<tr><td colspan="5" class="empty">No activity yet.</td></tr>'
       return
     }
     body.innerHTML = log
       .map(
-        l => `
-          <tr>
-            <td>${new Date(l.createdAt).toLocaleTimeString()}</td>
-            <td style="font-family:monospace;font-size:11px;">${(l.runId || "").slice(0, 12)}</td>
-            <td>${l.stepNumber}</td>
-            <td>${l.agent}</td>
-            <td style="color:var(--accent)">${l.action}</td>
-            <td title="${(l.input || "").replace(/"/g, "&quot;")}">${(l.input || "—").slice(0, 60)}</td>
-          </tr>
-        `,
+        (l, idx) => `
+        <tr class="log-row" onclick="toggleLogDetail(${idx})">
+          <td>${new Date(l.createdAt).toLocaleTimeString()}</td>
+          <td class="run-id">${(l.runId || "").slice(0, 12)}</td>
+          <td>${l.stepNumber}</td>
+          <td class="action" style="color:${actionColor(l.action)}">${md.escapeHtml(l.action)}</td>
+          <td>${md.escapeHtml((l.agent) || "harness")}</td>
+          <td>${l.tokensUsed != null ? l.tokensUsed.toLocaleString() : "—"}</td>
+        </tr>
+        <tr class="log-detail" id="log-detail-${idx}" style="display:none;">
+          <td colspan="6">
+            <div class="detail-grid">
+              <div class="detail-block">
+                <div class="detail-label">Input</div>
+                ${l.input ? renderJson(l.input, { maxChars: 6000 }) : '<span class="json-empty">—</span>'}
+              </div>
+              <div class="detail-block">
+                <div class="detail-label">Output</div>
+                ${
+                  l.output
+                    ? looksLikeJson(l.output)
+                      ? renderJson(l.output, { maxChars: 6000 })
+                      : '<div class="md-body md-body-tight">' + md.render(l.output) + "</div>"
+                    : '<span class="json-empty">—</span>'
+                }
+              </div>
+            </div>
+          </td>
+        </tr>
+      `,
       )
       .join("")
   } catch (e) {
     console.error("Log load failed:", e)
   }
+}
+
+function looksLikeJson(s) {
+  if (!s) return false
+  const t = s.trim()
+  return t.charAt(0) === "{" || t.charAt(0) === "["
+}
+
+function toggleLogDetail(idx) {
+  const row = document.getElementById("log-detail-" + idx)
+  if (!row) return
+  const open = row.style.display !== "none"
+  row.style.display = open ? "none" : "table-row"
 }
 
 // =========================================================================
@@ -490,7 +684,6 @@ async function init() {
       loadSummaries(),
       loadProfile(),
     ])
-    // Auto-refresh every 10 seconds
     if (refreshInterval) clearInterval(refreshInterval)
     refreshInterval = setInterval(refreshStatus, 10000)
   } catch (e) {
