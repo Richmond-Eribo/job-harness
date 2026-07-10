@@ -1,59 +1,27 @@
-// =============================================================================
-// ResearchAgent — Sub-agent for multi-topic research
-// =============================================================================
-// Spawned by the Harness via Durable Object RPC. Uses Cloudflare AI Search
-// and arXiv API to find, analyze, and summarize information across topics.
-// Persists all findings in its own SQLite for cross-run memory.
-// =============================================================================
-
 import { Agent, unstable_callable } from "agents"
 import { generateText, tool } from "ai"
 import { z } from "zod"
-import { getModel, getParams } from "./llm"
+import { getModel, getParams } from "../llm"
 import type {
   Env,
   ResearchRequest,
   ResearchResponse,
   ResearchResult,
   ResearchTopic,
-} from "./types"
+} from "../types"
 
 // =============================================================================
 // Database initialization
 // =============================================================================
 
-// NOTE: The Cloudflare `Agent` SDK exposes `sql` as a *tagged template* function
-// (this.sql`SELECT ...`), NOT as `this.sql.exec(sql, ...args).toArray()`.
-// This helper adapts the (query, params) call style used throughout this code
-// to that real API and returns rows directly as plain objects.
-type SqlValue = string | number | boolean | null
-type SqlRow = Record<string, SqlValue>
+import { execSql } from "../db/db"
+import type { SqlAgent } from "../db/db"
 
-function execSql(
-  sql: (strings: TemplateStringsArray, ...values: SqlValue[]) => SqlRow[],
-  query: string,
-  params: SqlValue[] = [],
-): SqlRow[] {
-  // Split the literal on `?` so each placeholder maps to a captured value.
-  const segments = query.split("?")
-  const parts: string[] = []
-  for (let i = 0; i < segments.length; i++) {
-    parts.push(segments[i])
-    if (i < segments.length - 1 && i < params.length) {
-      parts.push(String(params[i] ?? null))
-    }
-  }
-  // Rejoin into a single template with no interpolation — values are already
-  // safely substituted as positional string literals. (Inputs come from our own
-  // agent logic; SQLite additionally type-coerces here.)
-  return sql`${parts.join("")}`
-}
-
-function initDb(sql: any) {
+function initDb(agent: SqlAgent) {
   // NOTE: The Agent SDK's sql tagged template executes ONE statement per call.
   // Multi-statement strings are not supported, so each CREATE TABLE is separate.
   execSql(
-    sql,
+    agent,
     `CREATE TABLE IF NOT EXISTS research_results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       topic TEXT NOT NULL,
@@ -65,7 +33,7 @@ function initDb(sql: any) {
     )`,
   )
   execSql(
-    sql,
+    agent,
     `CREATE TABLE IF NOT EXISTS research_topics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       topic TEXT UNIQUE NOT NULL,
@@ -94,8 +62,6 @@ async function searchArxiv(
 
   const res = await fetch(url, { headers: { Accept: "application/atom+xml" } })
   if (!res.ok) {
-    // Fail soft: return nothing rather than crash the whole research run.
-    // The caller surfaces the empty result; the agent loop can react to it.
     return []
   }
   const xml = await res.text()
@@ -182,7 +148,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
 
   private ensureDb() {
     if (!this.state.initialized) {
-      initDb(this.sql)
+      initDb(this)
       this.setState({ ...this.state, initialized: true })
     }
   }
@@ -200,7 +166,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
 
     // Upsert topic tracker
     execSql(
-      this.sql,
+      this,
       `INSERT INTO research_topics (topic, status) VALUES (?, 'active')
        ON CONFLICT(topic) DO UPDATE SET
          times_researched = times_researched + 1,
@@ -249,7 +215,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
         }),
         execute: async ({ topic, query, summary, sources }) => {
           execSql(
-            this.sql,
+            this,
             `INSERT INTO research_results (topic, query, summary, sources, depth)
              VALUES (?, ?, ?, ?, ?)`,
             [topic, query, summary, JSON.stringify(sources), depth],
@@ -286,7 +252,7 @@ Find recent developments, key papers, and practical insights. Save your findings
 
     // Parse saved findings from this run
     const recentFindings = execSql(
-      this.sql,
+      this,
       `SELECT topic, summary, sources FROM research_results
          WHERE topic = ? ORDER BY created_at DESC LIMIT 10`,
       [topic],
@@ -314,7 +280,7 @@ Find recent developments, key papers, and practical insights. Save your findings
     this.ensureDb()
 
     const rows = execSql(
-      this.sql,
+      this,
       `SELECT * FROM research_results WHERE topic = ?
          ORDER BY created_at DESC LIMIT ?`,
       [params.topic, params.limit ?? 10],
@@ -336,7 +302,7 @@ Find recent developments, key papers, and practical insights. Save your findings
     this.ensureDb()
 
     const rows = execSql(
-      this.sql,
+      this,
       `SELECT * FROM research_topics ORDER BY last_researched DESC`,
     )
 
@@ -355,7 +321,7 @@ Find recent developments, key papers, and practical insights. Save your findings
     this.ensureDb()
 
     const rows = execSql(
-      this.sql,
+      this,
       `SELECT * FROM research_results ORDER BY created_at DESC LIMIT ?`,
       [limit],
     )

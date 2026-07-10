@@ -1,14 +1,6 @@
-// =============================================================================
-// JobApplicationAgent — Sub-agent for job discovery, cover letters, and pipeline
-// =============================================================================
-// Spawned by the Harness via Durable Object RPC. Discovers job listings via
-// web search, generates tailored cover letters using the user's profile,
-// and tracks applications through the pipeline.
-// =============================================================================
-
 import { Agent, unstable_callable } from "agents"
 import { generateText } from "ai"
-import { getModel, getParams } from "./llm"
+import { getModel, getParams } from "../llm"
 import type {
   Env,
   JobListing,
@@ -20,44 +12,24 @@ import type {
   JobSearchResponse,
   CoverLetterRequest,
   CoverLetterResponse,
-} from "./types"
+} from "../types"
 
 // =============================================================================
 // Database initialization
 // =============================================================================
 
-// NOTE: The Cloudflare `Agent` SDK exposes `sql` as a *tagged template* function
-// (this.sql`SELECT ...`), NOT as `this.sql.exec(sql, ...args).toArray()`.
-// This helper adapts the (query, params) call style used throughout this code
-// to that real API and returns rows directly as plain objects.
-type SqlValue = string | number | boolean | null
-type SqlRow = Record<string, SqlValue>
+// Database access goes through the shared `execSql` helper in ./db.
+// It takes the AGENT instance (not a detached `this.sql`) so the SDK's `sql`
+// getter keeps its `this` binding, and converts each `?` into one real bound
+// parameter. See ./db.ts for the full rationale.
+import { execSql } from "../db/db"
+import type { SqlAgent } from "../db/db"
 
-function execSql(
-  sql: (strings: TemplateStringsArray, ...values: SqlValue[]) => SqlRow[],
-  query: string,
-  params: SqlValue[] = [],
-): SqlRow[] {
-  // Split the literal on `?` so each placeholder maps to a captured value.
-  const segments = query.split("?")
-  const parts: string[] = []
-  for (let i = 0; i < segments.length; i++) {
-    parts.push(segments[i])
-    if (i < segments.length - 1 && i < params.length) {
-      parts.push(String(params[i] ?? null))
-    }
-  }
-  // Rejoin into a single template with no interpolation — values are already
-  // safely substituted as positional string literals. (Inputs come from our own
-  // agent logic; SQLite additionally type-coerces here.)
-  return sql`${parts.join("")}`
-}
-
-function initDb(sql: any) {
+function initDb(agent: SqlAgent) {
   // NOTE: The Agent SDK's sql tagged template executes ONE statement per call.
   // Multi-statement strings are not supported, so each CREATE TABLE is separate.
   execSql(
-    sql,
+    agent,
     `CREATE TABLE IF NOT EXISTS user_profile (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -65,7 +37,7 @@ function initDb(sql: any) {
     )`,
   )
   execSql(
-    sql,
+    agent,
     `CREATE TABLE IF NOT EXISTS job_listings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       company TEXT NOT NULL,
@@ -82,7 +54,7 @@ function initDb(sql: any) {
     )`,
   )
   execSql(
-    sql,
+    agent,
     `CREATE TABLE IF NOT EXISTS cover_letters (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id INTEGER REFERENCES job_listings(id),
@@ -92,7 +64,7 @@ function initDb(sql: any) {
     )`,
   )
   execSql(
-    sql,
+    agent,
     `CREATE TABLE IF NOT EXISTS follow_ups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id INTEGER REFERENCES job_listings(id),
@@ -107,8 +79,8 @@ function initDb(sql: any) {
 // Helper: get user profile as a string
 // =============================================================================
 
-function getProfileString(sql: any): string {
-  const rows = execSql(sql, `SELECT key, value FROM user_profile`)
+function getProfileString(agent: SqlAgent): string {
+  const rows = execSql(agent, `SELECT key, value FROM user_profile`)
 
   if (rows.length === 0) return "No profile set yet."
 
@@ -213,7 +185,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
 
   private ensureDb() {
     if (!this.state.initialized) {
-      initDb(this.sql)
+      initDb(this)
       this.setState({ ...this.state, initialized: true })
     }
   }
@@ -232,7 +204,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
 
     for (const [key, value] of entries) {
       execSql(
-        this.sql,
+        this,
         `INSERT INTO user_profile (key, value, updated_at) VALUES (?, ?, datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')`,
         [key, value, value],
@@ -246,7 +218,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
   async getProfile(): Promise<UserProfile> {
     this.ensureDb()
 
-    const rows = execSql(this.sql, `SELECT key, value FROM user_profile`)
+    const rows = execSql(this, `SELECT key, value FROM user_profile`)
 
     const profile: Record<string, string | null> = {
       cv: null,
@@ -271,7 +243,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
   async searchJobs(request: JobSearchRequest): Promise<JobSearchResponse> {
     this.ensureDb()
 
-    const profileStr = getProfileString(this.sql)
+    const profileStr = getProfileString(this)
     const maxResults = request.maxResults ?? 5
     const criteria = request.criteria
 
@@ -358,7 +330,7 @@ ${raw
 
       // Dedupe by URL or company+title
       const existing = execSql(
-        this.sql,
+        this,
         `SELECT id FROM job_listings
            WHERE (url = ? AND url IS NOT NULL AND url <> '')
               OR (company = ? AND title = ?)
@@ -368,7 +340,7 @@ ${raw
       if (existing.length > 0) continue
 
       execSql(
-        this.sql,
+        this,
         `INSERT INTO job_listings (company, title, description, url, match_score, source, notes)
          VALUES (?, ?, ?, ?, ?, 'auto-discovered', ?)`,
         [
@@ -411,13 +383,13 @@ ${raw
     this.ensureDb()
 
     execSql(
-      this.sql,
+      this,
       `INSERT INTO job_listings (company, title, description, url, source)
        VALUES (?, ?, ?, ?, 'manual')`,
       [job.company, job.title, job.description ?? null, job.url ?? null],
     )
 
-    const row = execSql(this.sql, `SELECT last_insert_rowid() as id`)[0] as any
+    const row = execSql(this, `SELECT last_insert_rowid() as id`)[0] as any
 
     return { id: row.id, message: `Added: ${job.title} at ${job.company}` }
   }
@@ -433,10 +405,10 @@ ${raw
     this.ensureDb()
 
     const model = getModel(this.env)
-    const profileStr = getProfileString(this.sql)
+    const profileStr = getProfileString(this)
 
     // Get the job listing
-    const jobs = execSql(this.sql, `SELECT * FROM job_listings WHERE id = ?`, [
+    const jobs = execSql(this, `SELECT * FROM job_listings WHERE id = ?`, [
       request.jobId,
     ])
 
@@ -448,7 +420,7 @@ ${raw
 
     // Get existing cover letters for version tracking
     const existingLetters = execSql(
-      this.sql,
+      this,
       `SELECT MAX(version) as max_version FROM cover_letters WHERE job_id = ?`,
       [request.jobId],
     )
@@ -483,14 +455,14 @@ Generate a tailored, compelling cover letter.`,
 
     // Save cover letter
     execSql(
-      this.sql,
+      this,
       `INSERT INTO cover_letters (job_id, version, content) VALUES (?, ?, ?)`,
       [request.jobId, nextVersion, result.text],
     )
 
     // Update job status to 'draft' if it was 'discovered'
     execSql(
-      this.sql,
+      this,
       `UPDATE job_listings SET status = 'draft', updated_at = datetime('now')
        WHERE id = ? AND status = 'discovered'`,
       [request.jobId],
@@ -525,7 +497,7 @@ Generate a tailored, compelling cover letter.`,
       ? [params.status, params.notes, params.jobId]
       : [params.status, params.jobId]
 
-    execSql(this.sql, `UPDATE job_listings SET ${updates} WHERE id = ?`, args)
+    execSql(this, `UPDATE job_listings SET ${updates} WHERE id = ?`, args)
 
     return `Job ${params.jobId} updated to "${params.status}"`
   }
@@ -538,7 +510,7 @@ Generate a tailored, compelling cover letter.`,
     this.ensureDb()
 
     const rows = execSql(
-      this.sql,
+      this,
       `SELECT * FROM job_listings ORDER BY
          CASE status
            WHEN 'discovered' THEN 1
@@ -578,7 +550,7 @@ Generate a tailored, compelling cover letter.`,
     this.ensureDb()
 
     const rows = execSql(
-      this.sql,
+      this,
       `SELECT * FROM follow_ups
          WHERE completed = 0 AND due_date <= date('now')
          ORDER BY due_date ASC`,
@@ -602,7 +574,7 @@ Generate a tailored, compelling cover letter.`,
     this.ensureDb()
 
     execSql(
-      this.sql,
+      this,
       `INSERT INTO follow_ups (job_id, due_date, note) VALUES (?, ?, ?)`,
       [params.jobId, params.dueDate, params.note ?? null],
     )
@@ -625,7 +597,7 @@ Generate a tailored, compelling cover letter.`,
     this.ensureDb()
 
     const rows = execSql(
-      this.sql,
+      this,
       `SELECT * FROM cover_letters WHERE job_id = ? ORDER BY version DESC`,
       [jobId],
     )
@@ -645,7 +617,7 @@ Generate a tailored, compelling cover letter.`,
 
   private getPipelineStats(): JobSearchResponse["pipelineUpdate"] {
     const counts = execSql(
-      this.sql,
+      this,
       `SELECT status, COUNT(*) as count FROM job_listings GROUP BY status`,
     )
 
@@ -668,7 +640,7 @@ Generate a tailored, compelling cover letter.`,
     const dueFollowUps =
       Number(
         execSql(
-          this.sql,
+          this,
           `SELECT COUNT(*) as count FROM follow_ups
            WHERE completed = 0 AND due_date <= date('now')`,
         )[0]?.count,
