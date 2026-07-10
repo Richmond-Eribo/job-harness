@@ -1,0 +1,322 @@
+/* =========================================================================
+   dashboard-v2.css — additions for markdown + JSON + chips + memory + log detail
+   =========================================================================
+   Linked AFTER dashboard.css so it can override without touching the original.
+   Implements the visual tokens the rewritten dashboard.js emits:
+     .md-body            — rendered markdown container
+     .tok-*              — JSON syntax-highlight tokens
+     .summary-card       — daily summary article with parsed chips
+     .chip / .chip-*     — small status chips (stop reason, steps, tokens)
+     .memory-row         — key/value memory listing
+     .row-flex/.row-main — generic two-column row (schedules, etc.)
+     .detail-grid        — per-step expandable input/output in the log
+   ========================================================================= */
+
+/* ============================ MARKDOWN BODY =========================== */
+.md-body {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--paper);
+  word-break: break-word;
+}
+.md-body-tight { font-size: 12px; line-height: 1.55; }
+
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child  { margin-bottom: 0; }
+.md-body p        { margin: 8px 0; }
+.md-body .md-h    { font-weight: 500; letter-spacing: -0.01em; margin: 14px 0 6px; color: var(--paper); }
+.md-body .md-h1   { font-size: 18px; }
+.md-body .md-h2   { font-size: 15px; }
+.md-body .md-h3   { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.md-body .md-h4   { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.md-body strong   { color: var(--paper); font-weight: 600; }
+.md-body em       { color: var(--paper); font-style: italic; }
+.md-body a        { color: var(--signal); text-decoration: none; border-bottom: 1px dotted var(--rule); }
+.md-body a:hover  { border-bottom-style: solid; border-bottom-color: var(--signal); }
+.md-body .md-code {
+  font-family: var(--mono);
+  background: var(--panel-2);
+  border: 1px solid var(--rule-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 0.92em;
+  color: var(--accent);
+}
+.md-body .md-pre {
+  background: var(--ink);
+  border: 1px solid var(--rule);
+  padding: 12px 14px;
+  border-radius: 2px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 10px 0;
+  color: var(--paper);
+}
+.md-body .md-pre code { background: none; border: none; padding: 0; color: var(--paper); }
+.md-body .md-hr    { border: none; border-top: 1px solid var(--rule); margin: 16px 0; }
+.md-body .md-quote {
+  border-left: 2px solid var(--accent);
+  padding: 4px 0 4px 12px;
+  color: var(--muted);
+  font-style: italic;
+  margin: 8px 0;
+}
+.md-body .md-ul, .md-body .md-ol { margin: 8px 0; padding-left: 22px; }
+.md-body .md-ul li { list-style: square; margin: 2px 0; }
+.md-body .md-ol li { list-style: decimal; margin: 2px 0; }
+
+/* ============================ JSON ==================================== */
+.json-pre {
+  background: var(--ink);
+  border: 1px solid var(--rule);
+  padding: 12px 14px;
+  border-radius: 2px;
+  overflow-x: auto;
+  font-size: 11.5px;
+  line-height: 1.55;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.json-pre code { background: none; border: none; padding: 0; font-family: var(--mono); }
+.json-fallback { color: var(--muted); font-style: normal; }
+.json-empty { color: var(--muted-2); font-size: 11px; }
+.json-truncated {
+  font-size: 10px;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* JSON token colors — restrained, distinct only by hue */
+.tok-key  { color: var(--signal); }
+.tok-str  { color: var(--ok); }
+.tok-num  { color: var(--warn); }
+.tok-bool { color: var(--accent); }
+.tok-null { color: var(--muted); }
+
+/* ============================ CHIPS =================================== */
+.chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--muted);
+  background: transparent;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.chip-neutral { color: var(--muted); }
+.chip-ok      { color: var(--ok);    border-color: rgba(139, 232, 160, 0.4); }
+.chip-warn    { color: var(--warn);  border-color: rgba(255, 177, 58, 0.5); }
+.chip-alarm   { color: var(--alarm); border-color: var(--alarm); }
+
+/* ============================ SUMMARY CARDS =========================== */
+.summary-card {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.summary-card:last-child { border-bottom: none; }
+.summary-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.summary-date {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.summary-meta { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ============================ GENERIC ROW ============================ */
+.row-flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  gap: 12px;
+}
+.row-flex:last-child { border-bottom: none; }
+.row-main { min-width: 0; flex: 1 1 auto; }
+.row-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.row-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.row-meta { font-size: 11px; color: var(--muted-2); }
+
+.cron {
+  color: var(--accent);
+  font-family: var(--mono);
+  background: var(--panel-2);
+  padding: 2px 6px;
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  font-size: 12px;
+}
+.focus {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 8px;
+}
+.pill {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+.pill-on  { color: var(--accent); background: var(--accent-dim); }
+.pill-off { color: var(--muted-2); background: transparent; }
+
+/* ============================ MEMORY ================================== */
+.memory-row {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.memory-row:last-child { border-bottom: none; }
+.memory-key code {
+  background: var(--panel-2);
+  border: 1px solid var(--rule-soft);
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-size: 11px;
+  color: var(--accent);
+  display: inline-block;
+}
+.memory-value {
+  min-width: 0;
+  color: var(--paper);
+  font-size: 12px;
+}
+.memory-value .md-body { font-size: 12px; }
+
+.memory-form {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  gap: 8px;
+  align-items: end;
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  margin-bottom: 16px;
+}
+@media (max-width: 720px) {
+  .memory-row, .memory-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================ LOG DETAIL ============================== */
+.log-row { cursor: pointer; transition: background 0.12s; }
+.log-row:hover td { background: var(--panel-2); color: var(--paper); }
+.run-id { font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
+.log-detail td { background: var(--ink) !important; padding: 12px 12px 12px 24px; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 880px) {
+  .detail-grid { grid-template-columns: 1fr; }
+}
+.detail-block {
+  background: var(--panel);
+  border: 1px solid var(--rule-soft);
+  padding: 10px 12px;
+  border-radius: 2px;
+  min-width: 0;
+}
+.detail-label {
+  font-size: 10px;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 6px;
+}
+
+/* ============================ STAT TOKENS ============================= */
+/* extra stat slot for token usage — colocates with existing stat-item rules */
+#stat-tokens {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================ KANBAN ============================ */
+.kanban-empty { padding: 20px; font-size: 12px; }
+.kanban-header {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule-soft);
+  margin-bottom: 10px;
+}
+.kanban-count {
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.kanban-card .company { font-size: 12px; font-weight: 500; color: var(--paper); }
+.kanban-card .title { font-size: 11px; color: var(--muted); margin: 2px 0; }
+.kanban-card .match { font-size: 10px; color: var(--muted-2); margin-top: 4px; }
+
+/* ============================ FINDINGS ============================ */
+.finding-card {
+  background: var(--panel-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.finding-card:last-child { margin-bottom: 0; }
+.finding-topic {
+  font-size: 12px;
+  color: var(--paper);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.finding-date {
+  font-size: 10px;
+  color: var(--muted-2);
+  margin-top: 8px;
+  letter-spacing: 0.04em;
+}
+
+/* ============================ TOPICS ============================ */
+.topic-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.topic-item:last-child { border-bottom: none; }
+.topic-title {
+  font-size: 12px;
+  color: var(--paper);
+  font-weight: 500;
+}
+.topic-meta {
+  font-size: 11px;
+  color: var(--muted-2);
+  margin-top: 3px;
+}
