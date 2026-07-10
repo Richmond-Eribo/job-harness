@@ -16,5 +16,8 @@
     "jsxImportSource": "hono/jsx"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "env.d.ts"],
-  "exclude": ["node_modules"]
+  // Test files use Node globals (require/__dirname) that vitest provides at
+  // runtime. They're type-checked & run by vitest, not tsc, so exclude them
+  // here to keep `tsc --noEmit` focused on the Workers app source only.
+  "exclude": ["node_modules", "src/test"]
 }

@@ -17,6 +17,17 @@
     "MAX_STEPS": "100",
   },
 
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true, // optional, default = true
+      "head_sampling_rate": 1, // optional, default = 1
+    },
+    "traces": {
+      "enabled": true, // automatic tracing, open beta
+    },
+  },
+
   // Static dashboard assets (CSS + client JS) served by the platform from ./public.
   // Keeps HTML payload small and lets browsers cache the assets independently.
   "assets": {

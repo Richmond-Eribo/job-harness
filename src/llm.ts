@@ -44,7 +44,7 @@ interface ParamsConfig {
   temperature?: number
   topP?: number
   responseFormat?: { type: "json" | "text" }
-  openai?: Record<string, any> // e.g. { reasoningEffort: "max" }
+  openai?: Record<string, any> // e.g. { reasoningEffort: "xhigh" }
   anthropic?: Record<string, any> // e.g. { thinking: { type:"enabled", budgetTokens:2048 } }
 }
 
@@ -118,7 +118,7 @@ function requireCustomUrl(provider: Provider, url: string | undefined): string {
     throw new Error(
       `provider "${provider}" requires model.customProviderUrl in ` +
         `llm-config.json. e.g. https://openrouter.ai/api/v1 (OpenRouter), ` +
-        `https://open.bigmodel.cn/api/paas/v4 (GLM), http://localhost:11434/v1 (Ollama).`,
+        `https://open.bigmodel.cn/api/paas/v4 (GLM),`,
     )
   }
   return trimmed
