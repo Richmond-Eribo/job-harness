@@ -160,6 +160,26 @@ app.get("/api/summaries", async c => {
 })
 
 // =============================================================================
+// Trace — model thinking + per-step usage breakdown
+// =============================================================================
+// Backs the Trace tab. listRuns() populates the run picker; getTrace(runId)
+// returns the ordered step list with reasoning, text, usage, duration.
+// =============================================================================
+
+app.get("/api/runs", async c => {
+  const limit = Number(c.req.query("limit") ?? "20")
+  const { harness } = await getAgents(c.env)
+  return c.json(await harness.listRuns(limit))
+})
+
+app.get("/api/run/:runId/trace", async c => {
+  const runId = c.req.param("runId")
+  if (!runId) return c.json({ error: "runId required" }, 400)
+  const { harness } = await getAgents(c.env)
+  return c.json(await harness.getTrace(runId))
+})
+
+// =============================================================================
 // Memory — the harness's remembered facts (the `context` table)
 // =============================================================================
 // These rows back the Memory tab. The harness already has read/write via the
@@ -185,6 +205,93 @@ app.delete("/api/memory/:key", async c => {
   const key = decodeURIComponent(c.req.param("key"))
   const { harness } = await getAgents(c.env)
   return c.json({ message: await harness.forgetMemory(key) })
+})
+
+// =============================================================================
+// User memory — human-authored notes injected into every system prompt
+// =============================================================================
+// Distinct from /api/memory (the agent's own recalled facts). These are the
+// operator's notes — higher authority than the agent's recall.
+// =============================================================================
+
+app.get("/api/user-memory", async c => {
+  const { harness } = await getAgents(c.env)
+  return c.json(await harness.getAllUserMemory())
+})
+
+app.put("/api/user-memory", async c => {
+  const body = await c.req.json()
+  if (!body?.key || typeof body.key !== "string") {
+    return c.json({ error: "key required" }, 400)
+  }
+  const { harness } = await getAgents(c.env)
+  return c.json({
+    message: await harness.setUserMemory(body.key, String(body.value ?? "")),
+  })
+})
+
+app.delete("/api/user-memory/:key", async c => {
+  const key = decodeURIComponent(c.req.param("key"))
+  const { harness } = await getAgents(c.env)
+  return c.json({ message: await harness.forgetUserMemory(key) })
+})
+
+// =============================================================================
+// Goals — the prominent platform. Set/read the active goal.
+// =============================================================================
+
+app.get("/api/goal", async c => {
+  const { harness } = await getAgents(c.env)
+  const status = await harness.getFullStatus()
+  return c.json({ goal: status.goal })
+})
+
+app.put("/api/goal", async c => {
+  const body = await c.req.json()
+  if (typeof body?.goal !== "string") {
+    return c.json({ error: "goal string required" }, 400)
+  }
+  const { harness } = await getAgents(c.env)
+  return c.json({ message: await harness.setGoal(body.goal) })
+})
+
+app.post("/api/goal/synthesize", async c => {
+  const { harness } = await getAgents(c.env)
+  const goal = await harness.synthesizeGoalFromCapabilities()
+  return c.json({ goal })
+})
+
+// =============================================================================
+// Trace events — append-only event log backing Traces + Logs pages
+// =============================================================================
+// getTraceEvents(runId) returns the ordered stream of events for a single run:
+// run_start, system (full prompt), prompt, reasoning, text, tool_call,
+// tool_result, step_end, run_end. This is what the TraceSheet renders.
+//
+// /api/runs/:runId/live is the SSE-ish long-poll endpoint: pass ?sinceSeq=N,
+// get back events with seq > N. The dashboard polls every ~2s while a run is
+// active to render the "what is the model working on right now" panel.
+// =============================================================================
+
+app.get("/api/runs/:runId/events", async c => {
+  const runId = c.req.param("runId")
+  const sinceSeq = Number(c.req.query("sinceSeq") ?? "0")
+  const { harness } = await getAgents(c.env)
+  try {
+    return c.json(await harness.getTraceEvents(runId, sinceSeq))
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+app.get("/api/trace-events", async c => {
+  const limit = Number(c.req.query("limit") ?? "200")
+  const { harness } = await getAgents(c.env)
+  try {
+    return c.json(await harness.getRecentTraceEvents(limit))
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
 })
 
 // =============================================================================
