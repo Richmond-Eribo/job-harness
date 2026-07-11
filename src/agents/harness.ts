@@ -435,8 +435,21 @@ export class Harness extends Agent<Env, HarnessState> {
       return "Already running."
     }
 
+    // Auto-goal synthesis: if no goal is set anywhere, ask the model to write
+    // one based on the available tools. This makes a fresh deploy useful on
+    // first run without forcing the operator to set a goal first.
+    let runGoal = goal ?? this.state.goal
+    if (!runGoal || runGoal.trim().length === 0) {
+      const synthesized = await this.synthesizeGoalFromCapabilities()
+      if (synthesized) {
+        runGoal = synthesized
+      } else {
+        runGoal =
+          "Discover, rank, and apply to software / AI engineering roles that match the saved profile"
+      }
+    }
+
     const runId = generateRunId()
-    const runGoal = goal ?? this.state.goal
 
     this.setState({
       ...this.state,
@@ -528,6 +541,13 @@ export class Harness extends Agent<Env, HarnessState> {
 
     // Avoid fire-and-forget: callers (the watchdog) still want the eventual
     // completion marker for logging, so we await.
+    // Auto-goal synthesis if no goal is set: same fallback as start().
+    let wakeGoal = this.state.goal
+    if (!wakeGoal || wakeGoal.trim().length === 0) {
+      const synthesized = await this.synthesizeGoalFromCapabilities()
+      if (synthesized) wakeGoal = synthesized
+    }
+
     const runId = generateRunId()
     this.setState({
       ...this.state,
@@ -535,12 +555,13 @@ export class Harness extends Agent<Env, HarnessState> {
       currentStep: 0,
       tokensUsed: 0,
       runId,
+      goal: wakeGoal ?? this.state.goal,
       lastRunAt: new Date().toISOString(),
       lastError: null,
     })
 
     try {
-      await this.runLoopWrapped(runId, this.state.goal)
+      await this.runLoopWrapped(runId, wakeGoal ?? this.state.goal)
     } catch (error: any) {
       this.setState({
         ...this.state,
@@ -757,8 +778,19 @@ export class Harness extends Agent<Env, HarnessState> {
       action: r.action,
       input: r.input,
       output: r.output,
-      agent: r.agent,
+      agent: r.agent ?? "harness",
       tokensUsed: r.tokens_used,
+      // v2 trace fields. Legacy rows written before the schema migration have
+      // NULL here; surface them as null/empty so the type stays uniform and
+      // the dashboard treats them as "no trace captured" rather than crashing.
+      reasoning: r.reasoning ?? null,
+      text: r.text_out ?? null,
+      promptTokens: r.prompt_tokens ?? null,
+      completionTokens: r.completion_tokens ?? null,
+      reasoningTokens: r.reasoning_tokens ?? null,
+      durationMs: r.duration_ms ?? null,
+      model: r.model ?? null,
+      warnings: r.warnings ? JSON.parse(r.warnings || "[]") : [],
       createdAt: r.created_at,
     }))
   }
@@ -782,6 +814,78 @@ export class Harness extends Agent<Env, HarnessState> {
       summary: r.summary,
       decisions: JSON.parse(r.decisions || "[]"),
       stepsTaken: r.steps_taken,
+      createdAt: r.created_at,
+    }))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trace retrieval — back the dashboard's Trace tab.
+  // ---------------------------------------------------------------------------
+  // listRuns() groups step_log rows by run_id to populate the run-picker.
+  // getTrace(runId) returns the ordered step list for a single run, including
+  // the reasoning chain-of-thought and per-component token usage. Legacy rows
+  // written before the v2 migration have NULL trace fields — they surface
+  // as null/empty gracefully rather than crashing the dashboard.
+  // ---------------------------------------------------------------------------
+
+  @unstable_callable()
+  async listRuns(
+    limit: number = 20,
+  ): Promise<
+    Array<{
+      runId: string
+      createdAt: string
+      steps: number
+      tokens: number | null
+    }>
+  > {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT run_id,
+              MIN(created_at) AS started_at,
+              MAX(step_number) AS steps,
+              MAX(tokens_used) AS tokens
+       FROM step_log
+       WHERE run_id IS NOT NULL
+       GROUP BY run_id
+       ORDER BY started_at DESC
+       LIMIT ?`,
+      [limit],
+    )
+    return rows.map((r: any) => ({
+      runId: r.run_id as string,
+      createdAt: r.started_at as string,
+      steps: (r.steps as number) ?? 0,
+      tokens: (r.tokens as number) ?? null,
+    }))
+  }
+
+  @unstable_callable()
+  async getTrace(runId: string): Promise<StepLogEntry[]> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT * FROM step_log WHERE run_id = ? ORDER BY step_number ASC`,
+      [runId],
+    )
+    return rows.map((r: any) => ({
+      id: r.id,
+      runId: r.run_id,
+      stepNumber: r.step_number,
+      action: r.action,
+      input: r.input,
+      output: r.output,
+      agent: r.agent ?? "harness",
+      tokensUsed: r.tokens_used,
+      reasoning: r.reasoning ?? null,
+      text: r.text_out ?? null,
+      promptTokens: r.prompt_tokens ?? null,
+      completionTokens: r.completion_tokens ?? null,
+      reasoningTokens: r.reasoning_tokens ?? null,
+      durationMs: r.duration_ms ?? null,
+      model: r.model ?? null,
+      warnings: r.warnings ? JSON.parse(r.warnings || "[]") : [],
       createdAt: r.created_at,
     }))
   }
