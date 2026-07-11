@@ -1,19 +1,116 @@
 // =============================================================================
-// Dashboard — the main view rendered by Hono's jsxRenderer.
+// Dashboard — sidebar two-panel admin layout (v3 redesign).
 // =============================================================================
-// This is the <body> content. It is static markup: all data is fetched and
-// rendered client-side by /js/dashboard.js against the /api/* routes.
-// CSS lives at /css/dashboard.css (served by the [assets] binding).
+// Layout (per redesign spec):
+//   ┌──────────────┬───────────────────────────────────────┐
+//   │  Sidebar     │  Topbar (title, status pill, search,   │
+//   │  (fixed-     │  bell, avatar)                         │
+//   │   width)     ├───────────────────────────────────────┤
+//   │  · logo      │  Stat cards row (4 equal columns)      │
+//   │  · nav list  ├───────────────────────────────────────┤
+//   │              │  Two-column row: chart (2/3) + list(1/3)│
+//   │              ├───────────────────────────────────────┤
+//   │  · collapse  │  Bottom row: 2 equal cards (Logs/...)  │
+//   │    (pinned)  │                                       │
+//   └──────────────┴───────────────────────────────────────┘
+//
+// Pages (visible via sidebar nav, all rendered; only one shown at a time):
+//   Goals   — the agent's goal, prominent and editable (auto-synthesize)
+//   Jobs    — Kanban board by status (the project-management view)
+//   Traces  — runs table → opens a Sheet showing prompt + reasoning + tool calls
+//   Logs    — dense step log table → opens a Sheet with full detail
+//   Memory  — agent memory + user memory (operator notes)
 // =============================================================================
 
 import type { FC } from "hono/jsx"
 
+const ICONS = {
+  logo: `<svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="14" height="14" rx="3"/><circle cx="10" cy="10" r="3" fill="currentColor" stroke="none"/></svg>`,
+  grid: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>`,
+  target: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3"/><circle cx="8" cy="8" r="0.7" fill="currentColor"/></svg>`,
+  briefcase: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="12" height="9" rx="1.5"/><path d="M5 5V3.5A1.5 1.5 0 0 1 6.5 2h3A1.5 1.5 0 0 1 11 3.5V5"/></svg>`,
+  activity: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 8h3l2-5 4 10 2-5h3"/></svg>`,
+  scroll: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h10v10H3z"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="9" x2="9" y2="9"/></svg>`,
+  brain: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M5 5a3 3 0 0 0 0 6M11 5a3 3 0 0 1 0 6M3 8h2M11 8h2"/></svg>`,
+  settings: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg>`,
+  chevronLeft: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3L5 8l5 5"/></svg>`,
+  search: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><line x1="11" y1="11" x2="14" y2="14"/></svg>`,
+  bell: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12V8a5 5 0 0 1 10 0v4M6.5 12a1.5 1.5 0 0 0 3 0"/></svg>`,
+  play: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4 3l9 5-9 5z"/></svg>`,
+  pause: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><rect x="4" y="3" width="3" height="10"/><rect x="9" y="3" width="3" height="10"/></svg>`,
+  plus: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>`,
+}
+
+const nav: Array<{ id: string; label: string; icon: string; active?: boolean }> = [
+  { id: "overview", label: "Overview", icon: ICONS.grid, active: true },
+  { id: "goals", label: "Goals", icon: ICONS.target },
+  { id: "jobs", label: "Jobs", icon: ICONS.briefcase },
+  { id: "traces", label: "Traces", icon: ICONS.activity },
+  { id: "logs", label: "Logs", icon: ICONS.scroll },
+  { id: "memory", label: "Memory", icon: ICONS.brain },
+  { id: "settings", label: "Settings", icon: ICONS.settings },
+]
+
+const Sidebar: FC = () => (
+  <aside class="sb" id="sidebar">
+    {/* Header: logo icon + wordmark */}
+    <div class="sb-head">
+      <span class="sb-logo" dangerouslySetInnerHTML={{ __html: ICONS.logo }} />
+      <span class="sb-word">Harness</span>
+    </div>
+
+    {/* Vertical nav */}
+    <nav class="sb-nav">
+      {nav.map(item => (
+        <a
+          class={"sb-item" + (item.active ? " sb-item-active" : "")}
+          data-page={item.id}
+          onclick={`goPage('${item.id}')`}
+        >
+          <span class="sb-accent" />
+          <span class="sb-icon" dangerouslySetInnerHTML={{ __html: item.icon }} />
+          <span class="sb-label">{item.label}</span>
+        </a>
+      ))}
+    </nav>
+
+    {/* Pinned collapse toggle */}
+    <div class="sb-foot">
+      <button class="sb-collapse" onclick="collapseSidebar()" id="collapse-btn">
+        <span dangerouslySetInnerHTML={{ __html: ICONS.chevronLeft }} />
+        <span>Collapse</span>
+      </button>
+    </div>
+  </aside>
+)
+
+const StatCard: FC<{ label: string; id: string; subId?: string; sub: string }> = ({
+  label,
+  id,
+  subId,
+  sub,
+}) => (
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">{label}</span>
+      <span class="stat-badge" />
+    </div>
+    <div class="stat-value">
+      <span id={id}>—</span>
+    </div>
+    <div class="stat-sub" id={subId ?? "_x"}>
+      {sub}
+    </div>
+  </div>
+)
+
 const Dashboard: FC = () => {
   return (
     <>
-      {/* Auth Screen */}
+      {/* ───────────── Auth Screen ───────────── */}
       <div id="auth-screen" class="auth-screen">
         <div class="auth-card">
+          <span class="sb-logo" dangerouslySetInnerHTML={{ __html: ICONS.logo }} />
           <h2>Agent Harness</h2>
           <p>Enter your dashboard token to continue.</p>
           <div class="form-group">
@@ -24,135 +121,175 @@ const Dashboard: FC = () => {
               autocomplete="off"
             />
           </div>
-          <button
-            onclick="authenticate()"
-            style="width: 100%; margin-top: 8px;"
-          >
-            Connect
-          </button>
+          <button onclick="authenticate()">Connect</button>
         </div>
       </div>
 
-      {/* Main Dashboard (hidden until auth) */}
-      <div id="dashboard" style="display: none;">
-        <div class="header">
-          <div class="header-left">
-            <h1>Agent Harness</h1>
-            <span id="status-badge" class="status-badge status-idle">
-              IDLE
-            </span>
-          </div>
-          <div class="header-right">
-            <span id="model-info" class="model-info">
-              —
-            </span>
-            <button class="secondary small" onclick="logout()">
-              Logout
-            </button>
-          </div>
-        </div>
+      {/* ───────────── App Shell (hidden until auth) ───────────── */}
+      <div id="dashboard" class="app" style="display: none;">
+        <Sidebar />
 
-        <div class="container">
-          {/* Status Panel */}
-          <div class="status-panel">
-            <div class="status-grid">
-              <div class="stat-item">
-                <div class="stat-value" id="stat-step">
-                  0
-                </div>
-                <div class="stat-label">Current Step</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-value" id="stat-max">
-                  100
-                </div>
-                <div class="stat-label">Max Steps</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-value" id="stat-last-run">
-                  —
-                </div>
-                <div class="stat-label">Last Run</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-value" id="stat-jobs">
-                  0
-                </div>
-                <div class="stat-label">Jobs Tracked</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-value" id="stat-tokens">
-                  0
-                </div>
-                <div class="stat-label">Tokens Used</div>
-              </div>
+        {/* Main content area */}
+        <main class="main">
+          {/* Top bar (single row, full width) */}
+          <header class="topbar">
+            <div class="topbar-left">
+              <h1 class="page-title" id="page-title">Overview</h1>
+              <button
+                class="pill"
+                onclick="startRun()"
+                title="Start a run on the goal"
+              >
+                <span dangerouslySetInnerHTML={{ __html: ICONS.play }} />
+                <span>Run</span>
+              </button>
+              <button
+                class="pill secondary"
+                onclick="pauseRun()"
+                title="Pause"
+              >
+                <span dangerouslySetInnerHTML={{ __html: ICONS.pause }} />
+              </button>
             </div>
-            <div style="margin-top: 12px;">
-              <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted);">
-                <span>Progress</span>
-                <span id="progress-text">0 / 100</span>
+            <div class="topbar-right">
+              <span id="status-badge" class="status-badge status-idle">
+                IDLE
+              </span>
+              <div class="search">
+                <span dangerouslySetInnerHTML={{ __html: ICONS.search }} />
+                <input type="text" placeholder="Search…" id="search-input" oninput="onSearch(this.value)" />
               </div>
-              <div class="progress-bar">
-                <div
-                  class="progress-fill"
-                  id="progress-fill"
-                  style="width: 0%"
-                ></div>
-              </div>
+              <span class="bell">
+                <span dangerouslySetInnerHTML={{ __html: ICONS.bell }} />
+                <span class="bell-dot" />
+              </span>
+              <span class="avatar">A</span>
             </div>
-            <div style="margin-top: 8px; font-size: 13px; color: var(--text-secondary);">
-              <strong>Goal:</strong> <span id="goal-text">—</span>
-            </div>
-          </div>
+          </header>
 
-          {/* Controls — terse mono labels, no emoji; primary actions read as verbs */}
-          <div class="controls">
-            <button onclick="startRun()">Start run</button>
-            <button class="secondary" onclick="pauseRun()">Pause</button>
-            <button class="secondary" onclick="resumeRun()">Resume</button>
-            <button class="danger" onclick="stopRun()">Stop</button>
-            <button class="secondary" onclick="showModal('goal-modal')">Edit goal</button>
-            <button class="secondary" onclick="showModal('schedule-modal')">Schedules</button>
-            <button class="secondary" onclick="showModal('job-modal')">Add job</button>
-            <button class="secondary" onclick="showModal('profile-modal')">Profile</button>
-            <button class="secondary" onclick="showModal('research-modal')">Research</button>
-          </div>
+          {/* Body (scrollable) */}
+          <div class="main-scroll">
+            {/* ───────────── Overview page (default landing) ───────────── */}
+            <section class="page" id="page-overview">
+            {/* Stat cards row */}
+            <section class="stat-row">
+              <StatCard label="Goal status" id="stat-goal-status" sub="Last run —" subId="stat-last-run" />
+              <StatCard label="Steps" id="stat-step" sub="of 100" subId="stat-max" />
+              <StatCard label="Tokens used" id="stat-tokens" sub="no cap" subId="stat-tokens-budget" />
+              <StatCard label="Jobs in pipeline" id="stat-jobs" sub="active cards" />
+            </section>
 
-          {/* Tabs */}
-          <div class="tabs">
-            <button class="tab active" data-num="01" onclick="switchTab('overview')">
-              Overview
-            </button>
-            <button class="tab" data-num="02" onclick="switchTab('pipeline')">
-              Job Pipeline
-            </button>
-            <button class="tab" data-num="03" onclick="switchTab('research')">
-              Research
-            </button>
-            <button class="tab" data-num="04" onclick="switchTab('log')">
-              Activity Log
-            </button>
-            <button class="tab" data-num="05" onclick="switchTab('memory')">
-              Memory
-            </button>
-          </div>
-
-          {/* Tab: Overview */}
-          <div id="tab-overview">
-            <div class="grid grid-2">
+            {/* ───────────── Two-column content row ───────────── */}
+            <section class="row-two">
+              {/* Left wider column (2/3): Token spend chart + active run */}
               <div class="card">
-                <div class="card-header">
-                  <span class="card-title">Recent Summaries</span>
-                </div>
-                <div id="summaries-list">
-                  <div class="empty">
-                    No runs yet. Start your first run above.
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Token spend</div>
+                    <div class="card-sub">across recent runs</div>
+                  </div>
+                  <div class="legend">
+                    <span class="leg"><i class="dot dot-in" />Prompt</span>
+                    <span class="leg"><i class="dot dot-out" />Completion</span>
+                    <span class="leg"><i class="dot dot-r" />Reasoning</span>
                   </div>
                 </div>
+                <svg
+                  id="tokens-spark"
+                  class="spark-big"
+                  viewBox="0 0 480 160"
+                  preserveAspectRatio="none"
+                />
+                <div class="card-sub" id="tokens-spark-axis">—</div>
               </div>
+
+              {/* Right narrower column (1/3): Right-column breakdown list */}
               <div class="card">
-                <div class="card-header">
-                  <span class="card-title">Schedules</span>
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Pipeline by stage</div>
+                    <div class="card-sub">live counts</div>
+                  </div>
+                </div>
+                <div id="pipeline-mini" class="mini-list" />
+              </div>
+            </section>
+
+            {/* ───────────── Two-column bottom row ───────────── */}
+            <section class="row-eq-2">
+              {/* Recent summaries card */}
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Recent runs</div>
+                    <div class="card-sub">last run summaries</div>
+                  </div>
+                  <a class="link" onclick="goPage('traces')">View all</a>
+                </div>
+                <div id="summaries-list" class="scroll-list">
+                  <div class="empty">No runs yet.</div>
+                </div>
+              </div>
+
+              {/* Live trace card */}
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Live activity</div>
+                    <div class="card-sub">
+                      <span id="run-id-label">no active run</span>
+                    </div>
+                  </div>
+                  <a class="link" onclick="goPage('logs')">View all</a>
+                </div>
+                <div id="live-events" class="scroll-list">
+                  <div class="empty">Start a run to see live trace.</div>
+                </div>
+              </div>
+            </section>
+            </section>
+
+            {/* ───────────── PAGES (one shown at a time) ───────────── */}
+
+            {/* Page: Goals — the prominent platform */}
+            <section class="page" id="page-goals" style="display:none;">
+              <div class="hero-card">
+                <div class="kicker">CURRENT GOAL</div>
+                <div class="hero-goal" id="goal-text">—</div>
+                <div class="hero-actions">
+                  <button onclick="showModal('goal-modal')" class="primary-lg">
+                    Edit goal
+                  </button>
+                  <button onclick="synthesizeGoal()" class="ghost-lg">
+                    <span dangerouslySetInnerHTML={{ __html: ICONS.plus }} />
+                    Auto-synthesize
+                  </button>
+                  <button onclick="startRun()" class="play-lg">
+                    <span dangerouslySetInnerHTML={{ __html: ICONS.play }} />
+                    Start run
+                  </button>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Recent run summaries</div>
+                    <div class="card-sub">every run ends with a model summary</div>
+                  </div>
+                  <button class="small secondary" onclick="loadSummaries()">
+                    ↻ Refresh
+                  </button>
+                </div>
+                <div id="summaries-list-page" class="scroll-list" />
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Schedules</div>
+                    <div class="card-sub">cron rules the watchdog watches</div>
+                  </div>
                   <button
                     class="small secondary"
                     onclick="showModal('schedule-modal')"
@@ -160,56 +297,78 @@ const Dashboard: FC = () => {
                     + Add
                   </button>
                 </div>
-                <div id="schedules-list">
+                <div id="schedules-list" class="scroll-list">
                   <div class="empty">No schedules configured.</div>
                 </div>
               </div>
-            </div>
-          </div>
+            </section>
 
-          {/* Tab: Pipeline */}
-          <div id="tab-pipeline" style="display: none;">
-            <div class="kanban" id="kanban-board">
-              <div class="empty">Loading pipeline...</div>
-            </div>
-          </div>
-
-          {/* Tab: Research */}
-          <div id="tab-research" style="display: none;">
-            <div class="grid grid-2">
-              <div class="card">
-                <div class="card-header">
-                  <span class="card-title">Topics</span>
-                </div>
-                <div id="topics-list">
-                  <div class="empty">No research topics yet.</div>
-                </div>
+            {/* Page: Jobs (Kanban) */}
+            <section class="page" id="page-jobs" style="display:none;">
+              <div class="kanban" id="kanban-board">
+                <div class="empty">Loading pipeline...</div>
               </div>
-              <div class="card">
-                <div class="card-header">
-                  <span class="card-title">Recent Findings</span>
-                </div>
-                <div id="findings-list">
-                  <div class="empty">No findings yet.</div>
-                </div>
+              <div style="margin-top:12px;">
+                <button class="small secondary" onclick="showModal('job-modal')">
+                  + Add job
+                </button>
+                <button class="small secondary" onclick="showModal('profile-modal')">
+                  Profile
+                </button>
+                <button class="small secondary" onclick="startRun()">
+                  Start discovery run
+                </button>
               </div>
-            </div>
-          </div>
+            </section>
 
-          {/* Tab: Activity Log */}
-          <div id="tab-log" style="display: none;">
-            <div class="card">
-              <div class="card-header">
-                <span class="card-title">Step Log</span>
-                <div style="display:flex; gap:8px; align-items:center;">
-                  <span style="font-size:11px; color:var(--muted-2);">click a row for input/output</span>
+            {/* Page: Traces */}
+            <section class="page" id="page-traces" style="display:none;">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Run traces</div>
+                    <div class="card-sub">
+                      each run = prompt + reasoning + tool calls + responses
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="small secondary" onclick="loadRunsTable()">
+                      ↻
+                    </button>
+                  </div>
+                </div>
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Started</th>
+                      <th>Run</th>
+                      <th>Steps</th>
+                      <th>Tokens</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody id="runs-table-body">
+                    <tr><td colspan={5}>No runs yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* Page: Logs (dense table) */}
+            <section class="page" id="page-logs" style="display:none;">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Activity log</div>
+                    <div class="card-sub">
+                      Step by step. Click a row for full input + output + tokens.
+                    </div>
+                  </div>
                   <button class="small secondary" onclick="loadLog()">
-                    Refresh
+                    ↻ Refresh
                   </button>
                 </div>
-              </div>
-              <div style="overflow-x: auto;">
-                <table class="log-table">
+                <table class="data-table">
                   <thead>
                     <tr>
                       <th>Time</th>
@@ -221,55 +380,105 @@ const Dashboard: FC = () => {
                     </tr>
                   </thead>
                   <tbody id="log-body">
-                    <tr>
-                      <td colspan={6} class="empty">
-                        No activity yet.
-                      </td>
-                    </tr>
+                    <tr><td colspan={6} class="empty">No activity yet.</td></tr>
                   </tbody>
                 </table>
               </div>
-            </div>
-          </div>
+            </section>
 
-          {/* Tab: Memory — the harness's remembered facts (the `context` table) */}
-          <div id="tab-memory" style="display: none;">
-            <div class="card">
-              <div class="card-header">
-                <span class="card-title">Memory</span>
-                <span style="font-size:11px; color:var(--muted-2);">facts persisted via the `remember` tool</span>
-              </div>
-
-              {/* Add-fact form */}
-              <div class="memory-form">
-                <div>
-                  <label class="form-label">Key</label>
-                  <input
-                    type="text"
-                    id="memory-key-input"
-                    placeholder="focus_topic"
-                  />
+            {/* Page: Memory (agent + user) */}
+            <section class="page" id="page-memory" style="display:none;">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Operator notes (User Memory)</div>
+                    <div class="card-sub">
+                      Human-authored. Injected as a high-authority prompt layer.
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <label class="form-label">Value</label>
-                  <input
-                    type="text"
-                    id="memory-value-input"
-                    placeholder="What to remember"
-                  />
+                <div class="memory-form">
+                  <input type="text" id="um-key-input" placeholder="key e.g. target_companies" />
+                  <input type="text" id="um-value-input" placeholder="value" />
+                  <button onclick="saveUserMemory()">Save</button>
                 </div>
-                <button onclick="rememberFact()">Remember</button>
+                <div id="um-list" class="scroll-list">
+                  <div class="empty">No notes yet.</div>
+                </div>
               </div>
 
-              <div id="memory-list">
-                <div class="empty">Loading memory...</div>
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Agent memory</div>
+                    <div class="card-sub">
+                      facts the agent chose to remember via the `remember` tool
+                    </div>
+                  </div>
+                </div>
+                <div class="memory-form">
+                  <input type="text" id="memory-key-input" placeholder="key e.g. focus_topic" />
+                  <input type="text" id="memory-value-input" placeholder="value" />
+                  <button onclick="rememberFact()">Remember</button>
+                </div>
+                <div id="memory-list">
+                  <div class="empty">Loading memory...</div>
+                </div>
               </div>
-            </div>
+
+              {/* Legacy tab containers (kept for back-compat with dashboard.js code paths) */}
+              <div id="tab-overview" style="display:none;" />
+              <div id="tab-pipeline" style="display:none;" />
+              <div id="tab-research" style="display:none;" />
+              <div id="tab-trace" style="display:none;" />
+              <div id="tab-log" style="display:none;" />
+              <div id="tab-memory" style="display:none;" />
+            </section>
+
+            {/* Page: Settings */}
+            <section class="page" id="page-settings" style="display:none;">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Configuration</div>
+                    <div class="card-sub">model + budget (BYOK)</div>
+                  </div>
+                </div>
+                <div id="settings-grid" class="settings-grid" />
+                <button class="small secondary" onclick="showModal('goal-modal')">
+                  Edit goal &amp; budget
+                </button>
+              </div>
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <div class="card-title">Research</div>
+                    <div class="card-sub">manual research trigger</div>
+                  </div>
+                  <button class="small secondary" onclick="showModal('research-modal')">
+                    + Run
+                  </button>
+                </div>
+                <div id="research-list" class="scroll-list">
+                  <div class="empty">Use the modal to run a research sweep.</div>
+                </div>
+              </div>
+            </section>
           </div>
-        </div>
+        </main>
       </div>
 
-      {/* Modals */}
+      {/* ───────────── Sheet drawer (Trace / Log detail) ───────────── */}
+      <div class="sheet-overlay" id="sheet-overlay" style="display:none;" onclick="closeSheet()" />
+      <aside class="sheet" id="sheet" style="display:none;">
+        <div class="sheet-head">
+          <h3 id="sheet-title">Trace</h3>
+          <button class="icon-btn" onclick="closeSheet()">✕</button>
+        </div>
+        <div class="sheet-body" id="sheet-body" />
+      </aside>
+
+      {/* Modals (existing IDs preserved for back-compat with dashboard.js) */}
       <div
         id="goal-modal"
         class="modal-overlay"
