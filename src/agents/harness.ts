@@ -1,6 +1,8 @@
 import { Agent, unstable_callable } from "agents"
-import { generateText } from "ai"
+import { generateText, streamText } from "ai"
 import { getModel, getModelInfo, getParams } from "../llm"
+// import type { TraceEntry } from "../utils/trace"
+import obsConfig from "../observability-config.json"
 import { DEFAULT_HARNESS_STATE } from "../types"
 import type {
   Env,
@@ -8,9 +10,12 @@ import type {
   StepLogEntry,
   DailySummary,
   ScheduleEntry,
+  TraceEvent,
+  TraceEventInput,
+  UserMemory,
 } from "../types"
 import { execSql } from "../db/db"
-import type { SqlAgent } from "../db/db"
+import type { SqlAgent, SqlValue } from "../db/db"
 import {
   validateCron,
   previousFire,
@@ -18,6 +23,8 @@ import {
   describeCron,
 } from "../utils/cron"
 import { generateRunId, summarizeStep } from "../utils/run"
+import { extractTrace } from "../utils/trace"
+import type { TraceEntry } from "../utils/trace"
 import { buildSystemPrompt, buildKickoffMessage } from "./prompt"
 import { buildAgentTools } from "../tools"
 
@@ -164,6 +171,107 @@ export class Harness extends Agent<Env, HarnessState> {
 
   private dbInitialized = false
 
+  // Monotonic per-run event sequence. Reset on each runLoop start.
+  private traceSeq = 0
+
+  /**
+   * Append one row to trace_events. Caps payload length via observability
+   * config. Never throws — logging must never crash the loop.
+   */
+  private pushTraceEvent(ev: TraceEventInput): void {
+    const cap = obsConfig.trace ?? {}
+    const maxReasoning = cap.maxReasoningChars ?? 8000
+    const maxText = cap.maxTextChars ?? 16000
+    const seq = ++this.traceSeq
+
+    let payload = ev.payload ?? null
+    if (payload != null) {
+      // Heuristic cap: reasoning/text-heavy events are clipped; others left
+      // alone (small JSON like tool args).
+      if (
+        (ev.eventType === "reasoning" || ev.eventType === "text") &&
+        payload.length > (ev.eventType === "reasoning" ? maxReasoning : maxText)
+      ) {
+        payload = payload.slice(0, ev.eventType === "reasoning" ? maxReasoning : maxText)
+      }
+    }
+
+    try {
+      execSql(
+        this,
+        `INSERT INTO trace_events
+          (run_id, step_number, seq, event_type, role, label, payload,
+           tokens_in, tokens_out, tokens_reasoning, duration_ms, model)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          ev.runId,
+          ev.stepNumber ?? null,
+          seq,
+          ev.eventType,
+          ev.role ?? null,
+          ev.label ?? null,
+          payload,
+          ev.tokensIn ?? null,
+          ev.tokensOut ?? null,
+          ev.tokensReasoning ?? null,
+          ev.durationMs ?? null,
+          ev.model ?? null,
+        ],
+      )
+    } catch {
+      // never crash the loop on logging
+    }
+  }
+
+  /**
+   * Stream-chunk handler. Maps AI SDK v4 onChunk types → trace_events rows.
+   * Accumulates reasoning/text deltas into per-step buffers so we write one
+   * reasoning event and one text event per step (not one per token).
+   */
+  private reasoningBuf = ""
+  private textBuf = ""
+  private onChunk(runId: string, stepNumber: number, chunk: any): void {
+    try {
+      switch (chunk?.type) {
+        case "tool-call":
+        case "tool-call-streaming-start":
+          this.pushTraceEvent({
+            runId,
+            stepNumber,
+            eventType: "tool_call",
+            label: chunk.toolName ?? null,
+            payload: chunk.args
+              ? JSON.stringify(chunk.args).slice(0, 4000)
+              : chunk.input
+                ? JSON.stringify(chunk.input).slice(0, 4000)
+                : null,
+          })
+          break
+        case "tool-result":
+          this.pushTraceEvent({
+            runId,
+            stepNumber,
+            eventType: "tool_result",
+            label: chunk.toolName ?? null,
+            payload: chunk.result != null
+              ? JSON.stringify(chunk.result).slice(0, 4000)
+              : null,
+          })
+          break
+        case "reasoning-delta":
+          if (typeof chunk.textDelta === "string")
+            this.reasoningBuf += chunk.textDelta
+          break
+        case "text-delta":
+          if (typeof chunk.textDelta === "string")
+            this.textBuf += chunk.textDelta
+          break
+      }
+    } catch {
+      // swallow
+    }
+  }
+
   /** Exposed so tool factories (in tools/) can log + advance the step counter. */
   advanceForTool(runId: string, toolName: string, input: string | null) {
     this.setState({ ...this.state, currentStep: this.state.currentStep + 1 })
@@ -223,6 +331,62 @@ export class Harness extends Agent<Env, HarnessState> {
       )
     } catch {
       // Don't let logging failures crash the loop
+    }
+  }
+
+  /**
+   * Trace-aware step logger. Persists EVERYTHING we observed about the turn:
+   * the model's reasoning (chain-of-thought), full text output, per-component
+   * token usage (prompt/completion/reasoning), wall-clock duration, model id,
+   * and provider warnings. Falls back to logStep() if trace capture is off.
+   *
+   * Reasoning/text are capped via observability-config.json so a single
+   * verbose reasoning stream can't blow the SQLite row budget. Reasoning
+   * capture itself is FREE in model tokens — the model produced the reasoning
+   * whether we persist it or not; we only pay SQLite storage.
+   */
+  private logStepTrace(runId: string, t: TraceEntry) {
+    const cap = obsConfig.trace ?? {}
+    const { captureReasoning = true } = cap
+    const maxReasoning = cap.maxReasoningChars ?? 8000
+    const maxText = cap.maxTextChars ?? 16000
+
+    try {
+      const params: SqlValue[] = [
+        runId,
+        t.stepNumber,
+        t.action,
+        t.toolArgs || null,
+        t.toolOutput,
+        captureReasoning && t.reasoning
+          ? t.reasoning.slice(0, maxReasoning)
+          : null,
+        t.text ? t.text.slice(0, maxText) : null,
+        t.usage.promptTokens,
+        t.usage.completionTokens,
+        t.usage.reasoningTokens,
+        t.durationMs,
+        t.model,
+        t.warnings.length ? JSON.stringify(t.warnings) : null,
+        t.usage.totalTokens,
+      ]
+      execSql(
+        this,
+        `INSERT INTO step_log
+          (run_id, step_number, action, input, output, agent,
+           reasoning, text_out, prompt_tokens, completion_tokens,
+           reasoning_tokens, duration_ms, model, warnings, tokens_used)
+         VALUES (?, ?, ?, ?, ?, 'harness', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        params,
+      )
+    } catch {
+      // Worst case: fall back to the non-trace logger so the step still
+      // appears in the activity log even if schema/trace columns are off.
+      try {
+        this.logStep(runId, t.stepNumber, t.action, t.toolArgs || null, t.toolOutput)
+      } catch {
+        // truly swallow — never let logging crash the loop
+      }
     }
   }
 
