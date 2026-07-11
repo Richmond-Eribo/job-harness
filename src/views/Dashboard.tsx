@@ -493,39 +493,22 @@ const Dashboard: FC = () => {
               id="goal-input"
               rows={3}
               placeholder="What should the agent focus on?"
-            ></textarea>
+            />
           </div>
           <div class="form-group">
             <label class="form-label">Max Steps Per Run</label>
-            <input
-              type="number"
-              id="max-steps-input"
-              value="100"
-              min="1"
-              max="500"
-            />
+            <input type="number" id="max-steps-input" value="100" min="1" max="500" />
           </div>
           <div class="form-group">
             <label class="form-label">Token Budget (0 = unlimited)</label>
-            <input
-              type="number"
-              id="budget-input"
-              value="0"
-              min="0"
-              step="10000"
-              placeholder="e.g. 200000"
-            />
-            <div style="font-size: 11px; color: var(--muted-2); margin-top: 4px;">
-              Soft ceiling on cumulative tokens spent per run. 0 disables the
-              cap. With <code>reasoningEffort: xhigh</code>, set a real cap
-              before billing.
+            <input type="number" id="budget-input" value="0" min="0" step="10000" placeholder="e.g. 200000" />
+            <div style="font-size:11px; color:var(--muted-2); margin-top:4px;">
+              Soft ceiling on cumulative tokens spent per run. 0 disables the cap.
             </div>
           </div>
           <div class="form-row">
             <button onclick="saveGoal()">Save</button>
-            <button class="secondary" onclick="hideModal('goal-modal')">
-              Cancel
-            </button>
+            <button class="secondary" onclick="hideModal('goal-modal')">Cancel</button>
           </div>
         </div>
       </div>
@@ -538,16 +521,15 @@ const Dashboard: FC = () => {
       >
         <div class="modal">
           <h3>Manage schedules</h3>
-          <div id="schedule-list-modal"></div>
-          <hr style="border-color: var(--border); margin: 16px 0;" />
-          <h4 style="margin-bottom: 12px;">Add Schedule</h4>
+          <div id="schedule-list-modal" />
+          <hr class="modal-sep" />
+          <h4 style="margin-bottom:12px;">Add Schedule</h4>
           <div class="form-group">
             <label class="form-label">Cron Expression (UTC)</label>
             <input type="text" id="cron-input" placeholder="0 8 * * *" />
-            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+            <div style="font-size:11px; color:var(--muted-2); margin-top:4px;">
               Examples: <code>0 8 * * *</code> (daily 8am),{" "}
-              <code>0 8,18 * * *</code> (8am+6pm), <code>0 */6 * * *</code>{" "}
-              (every 6h)
+              <code>0 8,18 * * *</code> (8am+6pm)
             </div>
           </div>
           <div class="form-group">
@@ -581,19 +563,11 @@ const Dashboard: FC = () => {
           </div>
           <div class="form-group">
             <label class="form-label">Job Title</label>
-            <input
-              type="text"
-              id="job-title"
-              placeholder="e.g. Senior Software Engineer"
-            />
+            <input type="text" id="job-title" placeholder="e.g. Senior Software Engineer" />
           </div>
           <div class="form-group">
             <label class="form-label">Description</label>
-            <textarea
-              id="job-description"
-              rows={4}
-              placeholder="Paste the job description here..."
-            ></textarea>
+            <textarea id="job-description" rows={4} placeholder="Paste the job description here..." />
           </div>
           <div class="form-group">
             <label class="form-label">URL</label>
@@ -601,9 +575,7 @@ const Dashboard: FC = () => {
           </div>
           <div class="form-row">
             <button onclick="addJob()">Add Job</button>
-            <button class="secondary" onclick="hideModal('job-modal')">
-              Cancel
-            </button>
+            <button class="secondary" onclick="hideModal('job-modal')">Cancel</button>
           </div>
         </div>
       </div>
@@ -618,49 +590,27 @@ const Dashboard: FC = () => {
           <h3>Your profile</h3>
           <div class="form-group">
             <label class="form-label">CV / Resume</label>
-            <textarea
-              id="profile-cv"
-              rows={8}
-              placeholder="Paste your CV here..."
-            ></textarea>
+            <textarea id="profile-cv" rows={8} placeholder="Paste your CV here..." />
           </div>
           <div class="form-group">
             <label class="form-label">Target Roles</label>
-            <input
-              type="text"
-              id="profile-roles"
-              placeholder="e.g. Senior Software Engineer, AI/ML Engineer"
-            />
+            <input type="text" id="profile-roles" placeholder="e.g. Senior Software Engineer" />
           </div>
           <div class="form-group">
             <label class="form-label">Target Locations</label>
-            <input
-              type="text"
-              id="profile-locations"
-              placeholder="e.g. London, Remote"
-            />
+            <input type="text" id="profile-locations" placeholder="e.g. London, Remote" />
           </div>
           <div class="form-group">
             <label class="form-label">Key Skills</label>
-            <input
-              type="text"
-              id="profile-skills"
-              placeholder="e.g. TypeScript, Python, React, Cloudflare Workers"
-            />
+            <input type="text" id="profile-skills" placeholder="TypeScript, React, Cloudflare Workers" />
           </div>
           <div class="form-group">
             <label class="form-label">Preferences / Notes</label>
-            <textarea
-              id="profile-preferences"
-              rows={3}
-              placeholder="Salary expectations, work style preferences, etc."
-            ></textarea>
+            <textarea id="profile-preferences" rows={3} placeholder="Work style, etc." />
           </div>
           <div class="form-row">
             <button onclick="saveProfile()">Save Profile</button>
-            <button class="secondary" onclick="hideModal('profile-modal')">
-              Cancel
-            </button>
+            <button class="secondary" onclick="hideModal('profile-modal')">Cancel</button>
           </div>
         </div>
       </div>
@@ -675,11 +625,7 @@ const Dashboard: FC = () => {
           <h3>Run research</h3>
           <div class="form-group">
             <label class="form-label">Topic</label>
-            <input
-              type="text"
-              id="research-topic"
-              placeholder="e.g. Cloudflare Agents SDK best practices"
-            />
+            <input type="text" id="research-topic" placeholder="e.g. Agents SDK best practices" />
           </div>
           <div class="form-group">
             <label class="form-label">Depth</label>
@@ -693,9 +639,7 @@ const Dashboard: FC = () => {
           </div>
           <div class="form-row">
             <button onclick="runResearch()">Start Research</button>
-            <button class="secondary" onclick="hideModal('research-modal')">
-              Cancel
-            </button>
+            <button class="secondary" onclick="hideModal('research-modal')">Cancel</button>
           </div>
         </div>
       </div>
@@ -710,13 +654,9 @@ const Dashboard: FC = () => {
           <h3>Cover letter</h3>
           <div
             id="cover-letter-content"
-            style="white-space: pre-wrap; font-size: 14px; line-height: 1.7;"
-          ></div>
-          <button
-            class="secondary"
-            onclick="hideModal('cover-letter-modal')"
-            style="margin-top: 16px;"
-          >
+            style="white-space: pre-wrap; font-size:14px; line-height:1.7;"
+          />
+          <button class="secondary" onclick="hideModal('cover-letter-modal')" style="margin-top:16px;">
             Close
           </button>
         </div>

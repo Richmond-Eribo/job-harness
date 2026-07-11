@@ -23,15 +23,21 @@ const Layout: FC<PropsWithChildren> = ({ children }) => {
           content="Autonomous AI agent orchestrator dashboard"
         />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Instrument+Serif:ital@1&display=swap"
+          rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
           rel="stylesheet"
         />
         {/* Static CSS served from the [assets] binding */}
         <link rel="stylesheet" href="/css/dashboard.css" />
         {/* v2 additions: markdown + JSON + chips + memory + log detail styling */}
         <link rel="stylesheet" href="/css/dashboard-v2.css" />
+        {/* v3 additions: sidebar + sheet + stat cards + tables for the redesign */}
+        <link rel="stylesheet" href="/css/dashboard-v3.css" />
       </head>
       <body>
         {children}
