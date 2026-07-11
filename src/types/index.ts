@@ -31,3 +31,7 @@ export type {
 } from "./job"
 
 export type { StepLogEntry, DailySummary } from "./log"
+
+export type { TraceEvent, TraceEventInput, TraceEventType } from "./trace"
+
+export type { UserMemory } from "./memory"

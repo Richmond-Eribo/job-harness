@@ -13,8 +13,19 @@
   // Only MAX_STEPS is kept as a Worker var. Model identity (provider/model/url)
   // and generation params live in src/llm-config.json — NOT here. The API key
   // is a real secret set via `wrangler secret put LLM_API_KEY`.
+  // CAPTURE_TRACE is the non-secret on/off for reasoning capture (detailed
+  // caps live in src/observability-config.json).
   "vars": {
     "MAX_STEPS": "100",
+    "CAPTURE_TRACE": "1",
+  },
+
+  // Workers AI binding. Optional in v1 (harness calls the BYOK model via the
+  // AI SDK). Powers the planned v2 path: route through env.AI without an
+  // external API key. The binding is present now so schema/infra doesn't need
+  // to change when we flip.
+  "ai": {
+    "binding": "AI",
   },
 
   "observability": {

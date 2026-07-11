@@ -23,7 +23,7 @@ export const DEFAULT_HARNESS_STATE: HarnessState = {
   status: "idle",
   currentStep: 0,
   maxSteps: 100,
-  tokenBudget: 0,
+  tokenBudget: 128000, // 128k tokens
   tokensUsed: 0,
   goal: "Research AI trends and apply to relevant software/AI engineering roles",
   runId: null,

@@ -24,7 +24,7 @@ describe("initDb SQL splitting", () => {
     // Should have individual CREATE TABLE statements
     const createTableCount = (src.match(/CREATE TABLE IF NOT EXISTS/g) || [])
       .length
-    expect(createTableCount).toBe(5) // context, step_log, daily_summaries, schedules, config
+    expect(createTableCount).toBe(7) // context, step_log, daily_summaries, schedules, config, trace_events, user_memory
   })
 
   it("splits CREATE TABLE statements into individual calls in job-agent.ts", () => {

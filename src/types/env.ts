@@ -16,10 +16,26 @@ export interface Env {
   RESEARCH_AGENT: DurableObjectNamespace<ResearchAgent>
   JOB_AGENT: DurableObjectNamespace<JobApplicationAgent>
 
+  // Workers AI binding. Optional in v1 (the harness still calls the BYOK model
+  // via the AI SDK); becomes the default for v2 when we drop the LLM_API_KEY
+  // dependency and route through env.AI instead. Typed loosely so tsc doesn't
+  // choke if the binding is absent during local dev.
+  AI?: Ai
+
   // Secrets only — model identity + provider + generation params live in
   // src/llm-config.json (tunable, version-controlled). Env keeps the API key
   // plus runtime knobs that DON'T make sense in a static config (DO tokens).
   LLM_API_KEY: string
   MAX_STEPS: string
   DASHBOARD_TOKEN: string
+
+  // v2 non-secret knobs (sourced from wrangler.jsonc vars). Trace capture
+  // toggle — "1" = on (default); any other value = off. Detailed cap values
+  // (maxReasoningChars etc.) live in src/observability-config.json.
+  CAPTURE_TRACE?: string
+
+  // Forward-looking sendmail (Phase 2) — kept on Env so the sendmail tool can
+  // read them at runtime without a redeploy when populated.
+  MAIL_FROM?: string
+  MAIL_ALLOWLIST?: string
 }

@@ -1,0 +1,28 @@
+# =========================================================================
+# Copy to .dev.vars (local dev) or set via `wrangler secret put <NAME>` (prod).
+#
+# This is the source of truth for all environment-bound configuration that
+# CANNOT live in version control because it's secret (credentials) or
+# environment-specific.
+#
+# Non-secret knobs live in:
+#   - src/llm-config.json              (provider, model, generation params)
+#   - src/observability-config.json    (trace capture toggles)
+#   - wrangler.jsonc vars              (MAX_STEPS, CAPTURE_TRACE)
+# =========================================================================
+
+# --- LLM ---
+# Secret only. Provider/model/url + generation params live in src/llm-config.json.
+# Get a key from https://z.ai/ (GLM) or swap provider in llm-config.json + key here.
+LLM_API_KEY=""
+
+# --- Dashboard ---
+# Bearer token the dashboard JS sends as `Authorization: Bearer <token>`.
+# Pick any opaque random string. Used to gate /api/* routes.
+DASHBOARD_TOKEN=""
+
+# --- Forward-looking (sendmail tool — Phase 2, NOT yet wired) ---
+# When MAIL_FROM is empty, the sendmail tool returns needs_approval but never
+# transports anything. Set these to enable real delivery in a future phase.
+# MAIL_FROM="agent@example.com"
+# MAIL_ALLOWLIST="you@example.com,recruiter@acme.com"
