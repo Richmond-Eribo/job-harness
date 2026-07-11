@@ -901,6 +901,23 @@ export class Harness extends Agent<Env, HarnessState> {
     let lastToolArgs = ""
     let consecutiveNoToolTurns = 0
 
+    // ── Run bookkeeping for trace_events ───────────────────────────────────
+    // Reset the monotonic seq counter + write a run_start and a system event
+    // capturing the FULL composed prompt. Then snapshot the kickoff prompt
+    // as one event so the dashboard can show "messages sent".
+    this.traceSeq = 0
+    this.pushTraceEvent({
+      runId,
+      eventType: "run_start",
+      payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
+    })
+    this.pushTraceEvent({
+      runId,
+      eventType: "system",
+      role: "system",
+      payload: systemPrompt,
+    })
+
     while (true) {
       // ---- Stop condition: exceeded step ceiling ----
       if (this.state.currentStep >= maxSteps) {
@@ -935,21 +952,62 @@ export class Harness extends Agent<Env, HarnessState> {
         return
       }
 
-      // ---- One LLM turn (single step so the loop stays visible) ----
+      // ---- Snapshot the prompt as a trace event for this turn ----
+      this.pushTraceEvent({
+        runId,
+        stepNumber: this.state.currentStep,
+        eventType: "prompt",
+        role: "user",
+        payload: JSON.stringify(messages).slice(0, 16000),
+      })
+
+      // ---- Reset per-step delta buffers before streaming ----
+      this.reasoningBuf = ""
+      this.textBuf = ""
+
+      // ---- One LLM turn, STREAMED so the dashboard can see live progress ----
+      // streamText fires onChunk for reasoning-delta / text-delta / tool-call /
+      // tool-result. We map those into trace_events live. In AI SDK v4, the
+      // streamText result's metadata (usage, response, finishReason, steps,
+      // text) are PROMISES that resolve once the stream completes — we consume
+      // the stream first, then await each.
+      const turnStart = Date.now()
+      const currentStepNumber = this.state.currentStep
       let result
       try {
-        result = await generateText({
+        result = streamText({
           model,
           tools,
           system: systemPrompt,
           messages,
           maxSteps: 1,
           ...getParams(this.env),
+          onError: ({ error }: any) => {
+            this.pushTraceEvent({
+              runId,
+              stepNumber: currentStepNumber,
+              eventType: "error",
+              payload: String(error?.message ?? error),
+            })
+          },
+          onChunk: ({ chunk }: any) => {
+            this.onChunk(runId, currentStepNumber, chunk)
+          },
         })
+        // Drain the stream so all chunks fire and metadata promises resolve.
+        for await (const _ of result.fullStream) {
+          // consumed via onChunk above; do nothing here
+        }
       } catch (err: any) {
+        this.pushTraceEvent({
+          runId,
+          stepNumber: currentStepNumber,
+          eventType: "error",
+          payload: err?.message ?? String(err),
+        })
         this.logStep(
           runId,
-          this.state.currentStep,
+          currentStepNumber,
           "llm_error",
           null,
           err?.message ?? String(err),
@@ -957,8 +1015,57 @@ export class Harness extends Agent<Env, HarnessState> {
         throw err
       }
 
+      // ---- Await the resolved metadata (Promises in v4) ----
+      const resolvedText = await result.text
+      const resolvedUsage = await result.usage
+      const resolvedWarnings = await result.warnings
+      const resolvedResponse = await result.response
+      const resolvedFinishReason = await result.finishReason
+      const resolvedSteps = await result.steps
+
+      // ---- Flush captured reasoning/text deltas for this step ----
+      if (this.reasoningBuf.trim()) {
+        this.pushTraceEvent({
+          runId,
+          stepNumber: currentStepNumber,
+          eventType: "reasoning",
+          role: "assistant",
+          payload: this.reasoningBuf,
+        })
+      }
+      if (this.textBuf.trim()) {
+        this.pushTraceEvent({
+          runId,
+          stepNumber: currentStepNumber,
+          eventType: "text",
+          role: "assistant",
+          payload: this.textBuf,
+        })
+      }
+
+      // ---- step_end event: usage, duration, model, finishReason ----
+      this.pushTraceEvent({
+        runId,
+        stepNumber: currentStepNumber,
+        eventType: "step_end",
+        label: resolvedFinishReason ?? null,
+        payload: JSON.stringify({
+          finishReason: resolvedFinishReason,
+          warnings: resolvedWarnings ?? [],
+        }),
+        tokensIn: resolvedUsage?.promptTokens ?? null,
+        tokensOut: resolvedUsage?.completionTokens ?? null,
+        tokensReasoning:
+          (resolvedUsage as any)?.reasoningTokens ??
+          (resolvedSteps?.[resolvedSteps.length - 1]?.usage as any)
+            ?.reasoningTokens ??
+          null,
+        durationMs: Date.now() - turnStart,
+        model: resolvedResponse?.modelId ?? null,
+      })
+
       // ---- Observe usage (drives token-budget stop condition) ----
-      const used = result.usage?.totalTokens ?? 0
+      const used = resolvedUsage?.totalTokens ?? 0
       if (used > 0) {
         this.setState({
           ...this.state,
@@ -972,7 +1079,17 @@ export class Harness extends Agent<Env, HarnessState> {
       }
 
       // ---- Inspect what the model did this turn for guard purposes ----
-      const stepSummary = summarizeStep(result)
+      // Reconstruct a generateText-like result shape for summarizeStep() and
+      // extractTrace() which expect { steps, text, usage, response }.
+      const resultLike = {
+        steps: resolvedSteps,
+        text: resolvedText,
+        usage: resolvedUsage,
+        response: resolvedResponse,
+        warnings: resolvedWarnings,
+        finishReason: resolvedFinishReason,
+      }
+      const stepSummary = summarizeStep(resultLike)
       const toolName = stepSummary.toolName
 
       if (!toolName) {
@@ -982,7 +1099,7 @@ export class Harness extends Agent<Env, HarnessState> {
             runId,
             goal,
             "Stopped: the agent produced no tool calls for two turns in a row (idle/stuck). " +
-              (result.text || ""),
+              (resolvedText || ""),
             "idle_detected",
           )
           return
@@ -1004,17 +1121,14 @@ export class Harness extends Agent<Env, HarnessState> {
       lastToolName = toolName
       lastToolArgs = toolArgs
 
-      // ---- Record the turn (and its environmental feedback) in the log ----
-      this.logStep(
-        runId,
-        this.state.currentStep,
-        toolName ?? "think",
-        toolArgs || null,
-        stepSummary.toolOutput ?? result.text?.slice(0, 2000) ?? null,
-      )
+      // ---- Record the turn in step_log too (back-compat with Log tab) ----
+      // The full trace lives in trace_events; step_log remains the legacy log.
+      const trace = extractTrace(resultLike, currentStepNumber)
+      trace.durationMs = Date.now() - turnStart
+      this.logStepTrace(runId, trace)
 
       // ---- Append the model's turn to the running conversation ----
-      messages.push(...(result.response.messages as any[]))
+      messages.push(...(resolvedResponse.messages as any[]))
 
       // ---- Advance step counter ----
       this.setState({
@@ -1030,6 +1144,158 @@ export class Harness extends Agent<Env, HarnessState> {
     reason: string,
     code: string,
   ): Promise<void> {
+    this.pushTraceEvent({
+      runId,
+      eventType: "run_end",
+      label: code,
+      payload: JSON.stringify({ reason, code }),
+    })
     this.finishRunPersisted(runId, goal, reason, [code], code)
+  }
+
+  // ---------------------------------------------------------------------------
+  // v3 trace_events + user_memory RPCs
+  // ---------------------------------------------------------------------------
+
+  @unstable_callable()
+  async getTraceEvents(
+    runId: string,
+    sinceSeq: number = 0,
+    limit: number = 500,
+  ): Promise<TraceEvent[]> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT * FROM trace_events WHERE run_id = ? AND seq > ?
+       ORDER BY seq ASC LIMIT ?`,
+      [runId, sinceSeq, limit],
+    )
+    return rows.map((r: any) => ({
+      id: r.id,
+      runId: r.run_id,
+      stepNumber: r.step_number ?? null,
+      seq: r.seq,
+      eventType: r.event_type,
+      role: r.role ?? null,
+      label: r.label ?? null,
+      payload: r.payload ?? null,
+      tokensIn: r.tokens_in ?? null,
+      tokensOut: r.tokens_out ?? null,
+      tokensReasoning: r.tokens_reasoning ?? null,
+      durationMs: r.duration_ms ?? null,
+      model: r.model ?? null,
+      createdAt: r.created_at,
+    }))
+  }
+
+  @unstable_callable()
+  async getRecentTraceEvents(
+    limit: number = 200,
+  ): Promise<TraceEvent[]> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT * FROM trace_events ORDER BY id DESC LIMIT ?`,
+      [limit],
+    )
+    return rows
+      .map((r: any) => ({
+        id: r.id,
+        runId: r.run_id,
+        stepNumber: r.step_number ?? null,
+        seq: r.seq,
+        eventType: r.event_type,
+        role: r.role ?? null,
+        label: r.label ?? null,
+        payload: r.payload ?? null,
+        tokensIn: r.tokens_in ?? null,
+        tokensOut: r.tokens_out ?? null,
+        tokensReasoning: r.tokens_reasoning ?? null,
+        durationMs: r.duration_ms ?? null,
+        model: r.model ?? null,
+        createdAt: r.created_at,
+      }))
+      .reverse()
+  }
+
+  // ----- user_memory (human-authored notes; high-authority prompt layer) -----
+
+  @unstable_callable()
+  async getAllUserMemory(): Promise<UserMemory[]> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT key, value, updated_at FROM user_memory ORDER BY key ASC`,
+    )
+    return rows.map((r: any) => ({
+      key: r.key as string,
+      value: r.value as string,
+      updatedAt: r.updated_at as string,
+    }))
+  }
+
+  @unstable_callable()
+  async setUserMemory(key: string, value: string): Promise<string> {
+    this.ensureDb()
+    execSql(
+      this,
+      `INSERT INTO user_memory (key, value, updated_at)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')`,
+      [key, value, value],
+    )
+    return `Saved user note ${key}.`
+  }
+
+  @unstable_callable()
+  async forgetUserMemory(key: string): Promise<string> {
+    this.ensureDb()
+    execSql(this, `DELETE FROM user_memory WHERE key = ?`, [key])
+    return `Removed user note ${key}.`
+  }
+
+  // ----- goal RPCs (configuration shortcuts) ---------------------------------
+
+  @unstable_callable()
+  async setGoal(goal: string): Promise<string> {
+    this.ensureDb()
+    this.setState({ ...this.state, goal })
+    execSql(
+      this,
+      `INSERT INTO config (key, value) VALUES ('goal', ?)
+       ON CONFLICT(key) DO UPDATE SET value = ?`,
+      [goal, goal],
+    )
+    return `Goal set.`
+  }
+
+  /**
+   * Auto-synthesize a goal when none exists. One non-tool generateText call
+   * that looks at the available tool names + today's date and writes a single
+   * concrete goal. Cheaper than a full loop; only runs when no goal is set.
+   */
+  async synthesizeGoalFromCapabilities(): Promise<string | null> {
+    try {
+      const model = getModel(this.env)
+      const toolNames = Object.keys(buildAgentTools(this, this.env, "_goal-synth", "")).join(
+        ", ",
+      )
+      const today = new Date().toISOString().slice(0, 10)
+      const { text } = await generateText({
+        model,
+        system:
+          "You are choosing a concrete, useful goal for an autonomous job-search AI. Reply with only the goal, max 2 sentences, no preamble.",
+        prompt: `Available tools: ${toolNames}. Today: ${today}. Write ONE concrete goal this agent could make daily progress on with these tools. Focus on the job-search capability. Reply with only the goal text.`,
+        ...getParams(this.env),
+      })
+      const goal = text.trim()
+      if (goal) {
+        await this.setGoal(goal)
+        return goal
+      }
+    } catch {
+      // non-fatal — caller falls back to default goal
+    }
+    return null
   }
 }
