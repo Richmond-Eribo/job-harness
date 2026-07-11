@@ -81,6 +81,78 @@ export function initDb(agent: SqlAgent) {
       value TEXT NOT NULL
     )`,
   )
+
+  // v2 trace columns — additive ALTER TABLE guarded by pragma table_info so
+  // runs are idempotent across restarts. Legacy rows have NULL for these.
+  ensureColumn(agent, "step_log", "reasoning", "TEXT")
+  ensureColumn(agent, "step_log", "text_out", "TEXT")
+  ensureColumn(agent, "step_log", "prompt_tokens", "INTEGER")
+  ensureColumn(agent, "step_log", "completion_tokens", "INTEGER")
+  ensureColumn(agent, "step_log", "reasoning_tokens", "INTEGER")
+  ensureColumn(agent, "step_log", "duration_ms", "INTEGER")
+  ensureColumn(agent, "step_log", "model", "TEXT")
+  ensureColumn(agent, "step_log", "warnings", "TEXT")
+
+  // ── v3: append-only trace_events + user_memory tables ─────────────────
+  // trace_events is the hierarchical record of every model turn: prompt,
+  // reasoning, text, tool calls + results, step_end usage. Supersedes the
+  // flat step_log trace columns for new runs; step_log is kept for back-compat.
+  execSql(
+    agent,
+    `CREATE TABLE IF NOT EXISTS trace_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      step_number INTEGER,
+      seq INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      role TEXT,
+      label TEXT,
+      payload TEXT,
+      tokens_in INTEGER,
+      tokens_out INTEGER,
+      tokens_reasoning INTEGER,
+      duration_ms INTEGER,
+      model TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+  )
+  execSql(
+    agent,
+    `CREATE INDEX IF NOT EXISTS idx_trace_run ON trace_events (run_id, seq)`,
+  )
+  execSql(
+    agent,
+    `CREATE INDEX IF NOT EXISTS idx_trace_type ON trace_events (event_type, created_at DESC)`,
+  )
+
+  // user_memory: human-authored notes injected into every system prompt as a
+  // high-authority layer above the agent's own context table.
+  execSql(
+    agent,
+    `CREATE TABLE IF NOT EXISTS user_memory (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`,
+  )
+}
+
+/**
+ * Add a SQLite column if it's not already present. SQLite has no
+ * IF NOT EXISTS for ALTER TABLE — we check pragma table_info first.
+ * Idempotent across restarts; safe to call on every initDb().
+ */
+function ensureColumn(
+  agent: SqlAgent,
+  table: string,
+  column: string,
+  ddl: string,
+) {
+  const cols = execSql(agent, `PRAGMA table_info(${table})`)
+  const exists = cols.some((c: any) => c.name === column)
+  if (!exists) {
+    execSql(agent, `ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+  }
 }
 
 // =============================================================================
