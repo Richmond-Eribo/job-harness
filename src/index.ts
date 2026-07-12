@@ -20,7 +20,13 @@ import type { Env } from "./types"
 import { Harness } from "./agents"
 
 import { renderer } from "./views/Layout"
-import { renderDashboard } from "./views/renderDashboard"
+import { renderPage } from "./views/renderDashboard"
+import OverviewPage from "./views/pages/Overview"
+import JobsPage from "./views/pages/Jobs"
+import TracesPage from "./views/pages/Traces"
+import LogsPage from "./views/pages/Logs"
+import MemoryPage from "./views/pages/Memory"
+import SettingsPage from "./views/pages/Settings"
 import { getAgents, HARNESS_ID } from "./utils/get-agents"
 
 // Re-export all Durable Object classes (required by Cloudflare)
@@ -31,10 +37,7 @@ export { Harness, ResearchAgent, JobApplicationAgent } from "./agents"
 
 const app = new Hono<{ Bindings: Env }>()
 
-// JSX renderer middleware: wraps c.render(...) calls in <Layout>.
-app.use("/", renderer)
-
-// CORS on every route (preflight handled automatically by the middleware).
+// CORS on everything (preflight handled automatically by the middleware).
 app.use(
   "*",
   cors({
@@ -44,8 +47,9 @@ app.use(
   }),
 )
 
-// Bearer-token auth on everything under /api/*.
-// The dashboard HTML at "/" stays public (it prompts for the token client-side).
+// Bearer-token auth on the JSON API only. The HTML routes intentionally stay
+// public — the dashboard prompts for the token client-side on first visit,
+// and every data-fetching route is under /api/* where this middleware applies.
 app.use(
   "/api/*",
   bearerAuth<{ Bindings: Env }>({
@@ -57,11 +61,86 @@ app.use(
 )
 
 // =============================================================================
-// Dashboard (public) — rendered through Hono's jsxRenderer → <Layout><Dashboard/></Layout>.
-// Assets (CSS/JS) are linked from the [assets] binding, not inlined.
+// Pages — each route is its own URL, server-renders only what that page needs.
+// The browser's back/forward + Cmd-click-into-new-tab work for free because
+// these are real HTTP routes with real URLs (Vercel Web Interface Guidelines:
+// "links use <a>/<Link>", "URL reflects state").
+//
+// ROUTE SHAPE NOTE: Each page route is `app.get(path, renderer, handler)`.
+// Hono's jsxRenderer is a route-level middleware — it MUST be attached inline
+// per route (or to a sub-app via app.route()) to set up `c.render()`. Putting
+// it on `app.use()` does NOT reliably fire for GET handlers in current Hono
+// version — the renderer must run before the handler so c.render exists,
+// and the per-route `app.get(path, renderer, handler)` form is the
+// documented pattern (cf. https://hono.dev/docs/middleware/builtin/jsx-renderer).
 // =============================================================================
 
-app.get("/", c => renderDashboard(c))
+app.get("/", renderer, async c => {
+  const { harness, jobAgent } = await getAgents(c.env)
+  const [status, turns, tokensByDay, summaries] = await Promise.all([
+    harness.getFullStatus().catch(() => null),
+    harness.getTurnTokenStats().catch(() => null),
+    harness.getTokensByDay(14).catch(() => []),
+    harness.getDailySummaries(5).catch(() => []),
+  ])
+  return renderPage(c, "overview", OverviewPage, {
+    status,
+    turns,
+    tokensByDay,
+    summaries,
+  })
+})
+
+app.get("/jobs", renderer, async c => {
+  const { jobAgent } = await getAgents(c.env)
+  let pipeline: {
+    listings: any[]
+    stats: { total: number; byStatus: Record<string, number> }
+  } = { listings: [], stats: { total: 0, byStatus: {} } }
+  try {
+    pipeline = await jobAgent.getPipeline()
+  } catch (_) {}
+  return renderPage(c, "jobs", JobsPage, {
+    listings: pipeline.listings ?? [],
+    stats: pipeline.stats,
+  })
+})
+
+app.get("/traces", renderer, async c => {
+  const { harness } = await getAgents(c.env)
+  let runs: any[] = []
+  try {
+    runs = await harness.listRuns(30)
+  } catch (_) {}
+  return renderPage(c, "traces", TracesPage, { runs })
+})
+
+app.get("/logs", renderer, async c => {
+  const { harness } = await getAgents(c.env)
+  let log: any[] = []
+  try {
+    log = await harness.getLog(50)
+  } catch (_) {}
+  return renderPage(c, "logs", LogsPage, { log })
+})
+
+app.get("/memory", renderer, async c => {
+  const { harness } = await getAgents(c.env)
+  const [userMemory, agentMemory] = await Promise.all([
+    harness.getAllUserMemory().catch(() => []),
+    harness.getAllMemory().catch(() => []),
+  ])
+  return renderPage(c, "memory", MemoryPage, { userMemory, agentMemory })
+})
+
+app.get("/settings", renderer, async c => {
+  const { harness } = await getAgents(c.env)
+  const [config, schedules] = await Promise.all([
+    harness.getConfig().catch(() => ({})),
+    harness.listSchedules().catch(() => []),
+  ])
+  return renderPage(c, "settings", SettingsPage, { config, schedules })
+})
 
 // =============================================================================
 // Status & Control
@@ -262,6 +341,34 @@ app.post("/api/goal/synthesize", async c => {
 })
 
 // =============================================================================
+// Plan — structured execution plan for the current/next run
+// =============================================================================
+
+app.get("/api/plan", async c => {
+  const { harness } = await getAgents(c.env)
+  try {
+    return c.json({ plan: await harness.getPlan() })
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+app.post("/api/plan/advance", async c => {
+  const body = await c.req.json().catch(() => ({}))
+  const { harness } = await getAgents(c.env)
+  try {
+    const plan = await harness.advancePlan(
+      body.stepId ?? null,
+      body.status ?? "complete",
+      body.result ?? null,
+    )
+    return c.json({ plan })
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+// =============================================================================
 // Trace events — append-only event log backing Traces + Logs pages
 // =============================================================================
 // getTraceEvents(runId) returns the ordered stream of events for a single run:
@@ -289,6 +396,51 @@ app.get("/api/trace-events", async c => {
   const { harness } = await getAgents(c.env)
   try {
     return c.json(await harness.getRecentTraceEvents(limit))
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+// Token spend grouped by day — bars for the Overview chart.
+app.get("/api/tokens-by-day", async c => {
+  const days = Number(c.req.query("days") ?? "14")
+  const { harness } = await getAgents(c.env)
+  try {
+    return c.json(await harness.getTokensByDay(days))
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+// Per-turn output token stats — drives the Overview "Output tokens / turn" card.
+app.get("/api/turn-tokens", async c => {
+  const { harness } = await getAgents(c.env)
+  try {
+    return c.json(await harness.getTurnTokenStats())
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+// Notifications — recent operator-relevant happenings for the bell dropdown.
+app.get("/api/notifications", async c => {
+  const limit = Number(c.req.query("limit") ?? "12")
+  const { harness } = await getAgents(c.env)
+  try {
+    return c.json(await harness.getRecentNotifications(limit))
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+// Single job detail — listing + cover letters + follow-ups. Backs the Kanban
+// card → Sheet drawer.
+app.get("/api/jobs/:id", async c => {
+  const jobId = Number(c.req.param("id"))
+  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
+  const { jobAgent } = await getAgents(c.env)
+  try {
+    return c.json(await jobAgent.getJob(jobId))
   } catch (e: any) {
     return c.json({ error: e?.message ?? String(e) }, 500)
   }
