@@ -1,16 +1,25 @@
 // =============================================================================
-// renderDashboard — renders the dashboard through Hono's jsxRenderer.
+// renderPage — renders a single page through the PageLayout + the HTML shell.
 // =============================================================================
-// Lives in a .tsx file (not .ts) because it contains JSX. index.ts (a .ts file)
-// calls this so it doesn't need JSX itself.
+// Replaces the old `renderDashboard(c)` which rendered all six pages at once.
+// Each Hono route now calls `renderPage(c, "overview", <OverviewPage …/>)` —
+// the renderer middleware wraps the PageLayout in the shared HtmlShell.
 // =============================================================================
 
 import type { Context } from "hono"
+import type { FC } from "hono/jsx"
 import type { Env } from "../types"
-import Dashboard from "./Dashboard"
+import { PageLayout } from "./Layout"
 
-export function renderDashboard(c: Context<{ Bindings: Env }>) {
-  // jsxRenderer middleware is registered in index.ts, so c.render() is available
-  // here. The renderer wraps <Dashboard/> in <Layout>.
-  return c.render(<Dashboard />)
+export function renderPage(
+  c: Context<{ Bindings: Env }>,
+  activePage: string,
+  Page: FC<any>,
+  props: Record<string, any> = {},
+) {
+  return c.render(
+    <PageLayout activePage={activePage}>
+      <Page {...props} />
+    </PageLayout>,
+  )
 }
