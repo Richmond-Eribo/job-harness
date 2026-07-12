@@ -1813,6 +1813,208 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Removed user note ${key}.`
   }
 
+  // ----- analytics RPCs (Overview bar chart + notifications) ----------------
+
+  /**
+   * Token spend GROUPED BY DAY. The Overview bar chart shows OUTPUT (completion)
+   * tokens per day — the metric that actually grows with traffic — plus the
+   * prompt + reasoning components for the stacked legend. "Per day" (not "per
+   * run") is the unit because the operator wants to see spend trend over TIME,
+   * which is what a bar chart is for.
+   */
+  @unstable_callable()
+  async getTokensByDay(days: number = 14): Promise<
+    Array<{
+      day: string
+      inTokens: number
+      outTokens: number
+      reasoningTokens: number
+      events: number
+    }>
+  > {
+    this.ensureDb()
+    const n = Math.max(1, Math.min(days, 90))
+    const rows = execSql(
+      this,
+      `SELECT substr(created_at, 1, 10) AS day,
+              SUM(COALESCE(tokens_in, 0))        AS in_tokens,
+              SUM(COALESCE(tokens_out, 0))       AS out_tokens,
+              SUM(COALESCE(tokens_reasoning, 0)) AS reasoning_tokens,
+              COUNT(*)                           AS events
+         FROM trace_events
+        WHERE created_at >= date('now', ?)
+        GROUP BY day
+        ORDER BY day ASC`,
+      [`-${n} days`],
+    )
+    return rows.map((r: any) => ({
+      day: r.day as string,
+      inTokens: Number(r.in_tokens) || 0,
+      outTokens: Number(r.out_tokens) || 0,
+      reasoningTokens: Number(r.reasoning_tokens) || 0,
+      events: Number(r.events) || 0,
+    }))
+  }
+
+  /**
+   * Per-turn output tokens + prompt-token trend over recent step_end events.
+   * Surfaces cost-growth visibility: if prompt tokens are growing fast across
+   * turns, the operator can see context is bloating BEFORE the run hits the
+   * wall. This is the early-warning signal for the P0a "selective retention"
+   * fix's effectiveness.
+   */
+  @unstable_callable()
+  async getTurnTokenStats(): Promise<{
+    lastTurn: number | null
+    maxTurn: number | null
+    meanTurn: number | null
+    turns: number
+    promptTrend: number[] // last N step_end prompt-tokens (oldest first)
+  }> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT tokens_in, tokens_out
+         FROM trace_events
+        WHERE event_type = 'step_end'
+        ORDER BY id ASC`,
+    )
+    if (rows.length === 0) {
+      return {
+        lastTurn: null,
+        maxTurn: null,
+        meanTurn: null,
+        turns: 0,
+        promptTrend: [],
+      }
+    }
+    const outs = rows
+      .map((r: any) => Number(r.tokens_out) || 0)
+      .filter(n => n > 0)
+    const ins = rows.map((r: any) => Number(r.tokens_in) || 0)
+    if (outs.length === 0) {
+      return {
+        lastTurn: null,
+        maxTurn: null,
+        meanTurn: null,
+        turns: rows.length,
+        promptTrend: ins.slice(-12),
+      }
+    }
+    const sum = outs.reduce((a, b) => a + b, 0)
+    return {
+      lastTurn: outs[outs.length - 1],
+      maxTurn: Math.max(...outs),
+      meanTurn: Math.round(sum / outs.length),
+      turns: outs.length,
+      // Last 12 step_end prompt-tokens — if these are growing fast, the
+      // context retention policy needs tightening.
+      promptTrend: ins.slice(-12),
+    }
+  }
+
+  /**
+   * Notifications — recent operator-relevant happenings, derived from trace
+   * events. Powers the bell dropdown. One row per notable event:
+   *   run started / ended (with stop reason)
+   *   job discovery returned new listings (tool_result of discover_jobs)
+   *   cover letter drafted (tool_call of write_cover_letter)
+   *   error during a run
+   */
+  @unstable_callable()
+  async getRecentNotifications(limit: number = 12): Promise<
+    Array<{
+      id: number
+      kind: "run" | "job" | "cover_letter" | "error" | "memory"
+      title: string
+      detail: string | null
+      createdAt: string
+    }>
+  > {
+    this.ensureDb()
+    const n = Math.max(1, Math.min(limit, 50))
+    // Pull the event types we care about, newest first.
+    const rows = execSql(
+      this,
+      `SELECT id, run_id, step_number, event_type, label, payload,
+              tokens_out, created_at
+         FROM trace_events
+        WHERE event_type IN ('run_start','run_end','tool_call','tool_result','error')
+        ORDER BY id DESC
+        LIMIT ?`,
+      [n * 4], // over-fetch then filter down
+    )
+
+    type Note = {
+      id: number
+      kind: "run" | "job" | "cover_letter" | "error" | "memory"
+      title: string
+      detail: string | null
+      createdAt: string
+    }
+    const notes: Note[] = []
+
+    for (const r of rows) {
+      if (notes.length >= n) break
+      const et = r.event_type as string
+      const when = r.created_at as string
+      const payload = r.payload as string | null
+      const label = r.label as string | null
+      const id = r.id as number
+
+      if (et === "run_start") {
+        notes.push({
+          id,
+          kind: "run",
+          title: "Run started",
+          detail: (r.run_id as string)?.slice(0, 14) ?? null,
+          createdAt: when,
+        })
+      } else if (et === "run_end") {
+        notes.push({
+          id,
+          kind: "run",
+          title: "Run ended",
+          detail: label ?? null,
+          createdAt: when,
+        })
+      } else if (et === "error") {
+        notes.push({
+          id,
+          kind: "error",
+          title: "Run error",
+          detail: payload ? payload.slice(0, 160) : null,
+          createdAt: when,
+        })
+      } else if (et === "tool_call" && label === "discover_jobs") {
+        notes.push({
+          id,
+          kind: "job",
+          title: "Searched for jobs",
+          detail: payload ? safePick(payload, "criteria") : null,
+          createdAt: when,
+        })
+      } else if (et === "tool_call" && label === "write_cover_letter") {
+        notes.push({
+          id,
+          kind: "cover_letter",
+          title: "Drafted cover letter",
+          detail: payload ?? null,
+          createdAt: when,
+        })
+      } else if (et === "tool_call" && label === "remember") {
+        notes.push({
+          id,
+          kind: "memory",
+          title: "Agent saved a memory",
+          detail: payload ? safePick(payload, "key") : null,
+          createdAt: when,
+        })
+      }
+    }
+    return notes
+  }
+
   // ----- goal RPCs (configuration shortcuts) ---------------------------------
 
   @unstable_callable()
