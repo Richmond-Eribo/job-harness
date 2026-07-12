@@ -7,6 +7,8 @@ import { DEFAULT_HARNESS_STATE } from "../types"
 import type {
   Env,
   HarnessState,
+  Plan,
+  PlanStep,
   StepLogEntry,
   DailySummary,
   ScheduleEntry,
@@ -142,6 +144,31 @@ export function initDb(agent: SqlAgent) {
       updated_at TEXT DEFAULT (datetime('now'))
     )`,
   )
+
+  // ── v4: run_checkpoints — app-level crash recovery (P1b) ──────────────
+  // agents@0.0.74 has no runFiber/stash (those landed later). We build the
+  // same durability property at the app layer: one row per step stores the
+  // conversation + plan, replaced atomically each turn. On start()/wake() we
+  // check for an unfinished run with a checkpoint and resume from it instead
+  // of starting fresh.
+  execSql(
+    agent,
+    `CREATE TABLE IF NOT EXISTS run_checkpoints (
+      run_id TEXT PRIMARY KEY,
+      goal TEXT NOT NULL,
+      step_number INTEGER NOT NULL,
+      messages_json TEXT NOT NULL,
+      plan_json TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`,
+  )
+  execSql(
+    agent,
+    `CREATE INDEX IF NOT EXISTS idx_checkpoint_status
+       ON run_checkpoints (status, updated_at DESC)`,
+  )
 }
 
 /**
@@ -159,6 +186,99 @@ function ensureColumn(
   const exists = cols.some((c: any) => c.name === column)
   if (!exists) {
     execSql(agent, `ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+  }
+}
+
+/**
+ * Parse a JSON tool-args payload and return one field, defensively.
+ * Used by notification summarizers that read LLM tool-call args.
+ */
+function safePick(jsonStr: string, key: string): string | null {
+  try {
+    const obj = JSON.parse(jsonStr)
+    const v = obj?.[key]
+    return v != null ? String(v).slice(0, 160) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Selective retention for the in-memory conversation history.
+ *
+ * `messages` is the array we re-send to the LLM on every loop iteration. Tool
+ * results (especially `discover_jobs`) carry large JSON payloads (~5–10KB),
+ * so without pruning the prompt-token cost grows quadratically with step
+ * count — by step 30 of a job-search run we were re-sending ~100KB of stale
+ * listings every turn.
+ *
+ * Strategy: KEEP the most recent `retain` tool messages verbatim (they're
+ * likely the ones the model is actively reasoning about). REPLACE older tool
+ * messages' CONTENT with a short placeholder pointing the model at the tool
+ * it can use to re-fetch. System / user / assistant-text turns are never
+ * touched — those carry continuity, decisions, and reasoning.
+ *
+ * SCHEMA NOTE: AI SDK v4 tool messages are sent as
+ *   { role:"tool", id, content: [{ type:"tool-result", toolCallId, toolName, result }] }
+ * — content is an ARRAY of typed parts, and each part MUST keep its
+ * `toolCallId` so the provider can correlate it with the assistant's
+ * `tool-call`. Rewriting the array to `[{ type:"text", ... }]` makes the
+ * whole conversation fail validation ("message must be a CoreMessage"). So
+ * we DON'T touch the array shape — we just replace each part's `result`
+ * with a short string, preserving the schema-critical keys.
+ *
+ * This is in-place mutation. The full, un-pruned record still lives in the
+ * `trace_events` SQLite table for the dashboard's Trace view.
+ */
+function compactToolResults(messages: any[], retain: number): void {
+  if (retain < 0) return
+
+  // Extract a short string preview from any tool-result `result` value.
+  const previewOf = (v: unknown): string => {
+    if (typeof v === "string") return v
+    if (v == null) return ""
+    try {
+      return JSON.stringify(v)
+    } catch {
+      return String(v)
+    }
+  }
+
+  // Collect indices of tool messages, newest-first.
+  const toolMsgIdx: number[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "tool") toolMsgIdx.push(i)
+  }
+  // Anything beyond the first `retain` (i.e. older) gets its result pruned.
+  for (let n = retain; n < toolMsgIdx.length; n++) {
+    const idx = toolMsgIdx[n]
+    const msg = messages[idx]
+    if (!msg) continue
+
+    // Tool content is one of:
+    //   string                        (older AI SDK e.g. OpenAI raw)
+    //   array of tool-result parts    (AI SDK v4 typed shape)
+    // Handle both, and preserve whichever shape we received.
+    const content = msg.content
+    if (Array.isArray(content)) {
+      msg.content = content.map((part: any) => {
+        if (part && part.type === "tool-result") {
+          const orig = previewOf(part.result).replace(/\s+/g, " ").trim()
+          const placeholder =
+            `[pruned to save context — call pipeline_status, list_jobs, or recall to re-fetch. ` +
+            `was: ${orig.slice(0, 60)}${orig.length > 60 ? "…" : ""}]`
+          return { ...part, result: placeholder }
+        }
+        // Non-result parts (rare on tool messages) left alone
+        return part
+      })
+    } else if (typeof content === "string") {
+      const orig = content.replace(/\s+/g, " ").trim()
+      msg.content =
+        `[pruned to save context — call pipeline_status, list_jobs, or recall to re-fetch. ` +
+        `was: ${orig.slice(0, 60)}${orig.length > 60 ? "…" : ""}]`
+    }
+    // else: defensive — leave untouched
   }
 }
 
@@ -192,7 +312,10 @@ export class Harness extends Agent<Env, HarnessState> {
         (ev.eventType === "reasoning" || ev.eventType === "text") &&
         payload.length > (ev.eventType === "reasoning" ? maxReasoning : maxText)
       ) {
-        payload = payload.slice(0, ev.eventType === "reasoning" ? maxReasoning : maxText)
+        payload = payload.slice(
+          0,
+          ev.eventType === "reasoning" ? maxReasoning : maxText,
+        )
       }
     }
 
@@ -220,6 +343,117 @@ export class Harness extends Agent<Env, HarnessState> {
       )
     } catch {
       // never crash the loop on logging
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Checkpoint / recovery (P1b) — app-level durability
+  // ---------------------------------------------------------------------------
+  // agents@0.0.74 has no runFiber/stash/onFiberRecovered primitives. We build
+  // the same property at the app layer using the DO's own SQLite: one row per
+  // run stores the latest conversation + plan, overwritten every turn. On
+  // start()/wake() we probe for a checkpoint that belongs to a run whose
+  // status is still "running" (i.e. never marked done/errored) and resume
+  // from it instead of starting fresh. This recovers from eviction, crash,
+  // and accidental redeploy mid-run.
+  //
+  // The checkpoint covers the IN-MEMORY variables the loop relies on: the
+  // running `messages` array, current step number, and the plan. Any other
+  // loop-local bookkeeping (toolName history, delta buffers) is reconstructed
+  // from the restored messages — losing the stuck-detection counters across a
+  // restart means we may let one extra identical call through before flagging
+  // it; acceptable.
+
+  private writeCheckpoint(
+    runId: string,
+    goal: string,
+    stepNumber: number,
+    messages: any[],
+    plan: Plan | null,
+  ): void {
+    try {
+      // Cap the messages JSON so a runaway buffer can't blow up the row.
+      const messagesJson = JSON.stringify(messages).slice(0, 1024 * 1024)
+      const planJson = plan ? JSON.stringify(plan) : null
+      execSql(
+        this,
+        `INSERT INTO run_checkpoints (run_id, goal, step_number, messages_json, plan_json, status, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'running', datetime('now'))
+         ON CONFLICT(run_id) DO UPDATE SET
+           step_number = excluded.step_number,
+           messages_json = excluded.messages_json,
+           plan_json = excluded.plan_json,
+           status = 'running',
+           updated_at = datetime('now')`,
+        [runId, goal, stepNumber, messagesJson, planJson],
+      )
+    } catch {
+      // never let checkpoint writes crash the loop
+    }
+  }
+
+  private markCheckpoint(
+    runId: string,
+    status: "done" | "error" | "interrupted",
+  ): void {
+    try {
+      execSql(
+        this,
+        `UPDATE run_checkpoints SET status = ?, updated_at = datetime('now')
+         WHERE run_id = ?`,
+        [status, runId],
+      )
+    } catch {
+      // swallow
+    }
+  }
+
+  /**
+   * Find the most recent unfinished run's checkpoint. Returns null if no
+   * resumable run exists. Used by start()/wake() to decide whether to resume
+   * or begin a fresh run.
+   */
+  private findResumableCheckpoint(): {
+    runId: string
+    goal: string
+    stepNumber: number
+    messages: any[]
+    plan: Plan | null
+    updatedAt: string
+  } | null {
+    try {
+      const rows = execSql(
+        this,
+        `SELECT run_id, goal, step_number, messages_json, plan_json, updated_at
+           FROM run_checkpoints
+          WHERE status = 'running'
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+      )
+      if (rows.length === 0) return null
+      const r = rows[0] as any
+      let messages: any[] = []
+      try {
+        messages = JSON.parse(r.messages_json as string)
+      } catch {
+        return null // corrupt checkpoint — start fresh
+      }
+      let plan: Plan | null = null
+      try {
+        if (r.plan_json) plan = JSON.parse(r.plan_json as string)
+      } catch {
+        // plan optional
+      }
+      return {
+        runId: r.run_id as string,
+        goal: r.goal as string,
+        stepNumber: r.step_number as number,
+        messages,
+        plan,
+        updatedAt: r.updated_at as string,
+      }
+    } catch {
+      return null
     }
   }
 
@@ -253,9 +487,10 @@ export class Harness extends Agent<Env, HarnessState> {
             stepNumber,
             eventType: "tool_result",
             label: chunk.toolName ?? null,
-            payload: chunk.result != null
-              ? JSON.stringify(chunk.result).slice(0, 4000)
-              : null,
+            payload:
+              chunk.result != null
+                ? JSON.stringify(chunk.result).slice(0, 4000)
+                : null,
           })
           break
         case "reasoning-delta":
@@ -301,6 +536,9 @@ export class Harness extends Agent<Env, HarnessState> {
         "all",
       ],
     )
+    // Mark the run's checkpoint as completed so the next start() doesn't try
+    // to resume from a finished run.
+    this.markCheckpoint(runId, "done")
     this.setState({ ...this.state, status: "done" })
   }
 
@@ -383,7 +621,13 @@ export class Harness extends Agent<Env, HarnessState> {
       // Worst case: fall back to the non-trace logger so the step still
       // appears in the activity log even if schema/trace columns are off.
       try {
-        this.logStep(runId, t.stepNumber, t.action, t.toolArgs || null, t.toolOutput)
+        this.logStep(
+          runId,
+          t.stepNumber,
+          t.action,
+          t.toolArgs || null,
+          t.toolOutput,
+        )
       } catch {
         // truly swallow — never let logging crash the loop
       }
@@ -435,35 +679,86 @@ export class Harness extends Agent<Env, HarnessState> {
       return "Already running."
     }
 
-    // Auto-goal synthesis: if no goal is set anywhere, ask the model to write
-    // one based on the available tools. This makes a fresh deploy useful on
-    // first run without forcing the operator to set a goal first.
-    let runGoal = goal ?? this.state.goal
-    if (!runGoal || runGoal.trim().length === 0) {
-      const synthesized = await this.synthesizeGoalFromCapabilities()
-      if (synthesized) {
-        runGoal = synthesized
-      } else {
-        runGoal =
-          "Discover, rank, and apply to software / AI engineering roles that match the saved profile"
+    // ── Crash recovery: resume an unfinished run if one exists ──────────
+    // If a previous run died (eviction, crash, redeploy) leaving a checkpoint
+    // with status='running', resume that run instead of starting fresh.
+    // The probe in runLoop() will restore messages + plan from the checkpoint.
+    let runId: string
+    let resuming = false
+    const existing = this.findResumableCheckpoint()
+    if (
+      existing &&
+      this.state.status !== "done" &&
+      this.state.lastRunAt &&
+      Date.now() - new Date(this.state.lastRunAt).getTime() <
+        1000 * 60 * 60 * 24 // <24h old
+    ) {
+      runId = existing.runId
+      resuming = true
+      this.pushTraceEvent({
+        runId,
+        eventType: "system",
+        label: "resume-probe",
+        payload: JSON.stringify({
+          reason: "found unfinished checkpoint, resuming",
+          step: existing.stepNumber,
+        }),
+      })
+    } else {
+      // Auto-goal synthesis: if no goal is set anywhere, ask the model to write
+      // one based on the available tools. This makes a fresh deploy useful on
+      // first run without forcing the operator to set a goal first.
+      let runGoal = goal ?? this.state.goal
+      if (!runGoal || runGoal.trim().length === 0) {
+        const synthesized = await this.synthesizeGoalFromCapabilities()
+        if (synthesized) {
+          runGoal = synthesized
+        } else {
+          runGoal =
+            "Discover, rank, and apply to software / AI engineering roles that match the saved profile"
+        }
       }
+      runId = generateRunId()
+      // Stash the run goal on `this` so the setState below picks it up.
+      ;(this as any)._pendingRunGoal = runGoal
     }
 
-    const runId = generateRunId()
+    const effectiveGoal =
+      (resuming ? existing?.goal : (this as any)._pendingRunGoal) ??
+      goal ??
+      this.state.goal
 
     this.setState({
       ...this.state,
       status: "running",
-      currentStep: 0,
-      tokensUsed: 0,
+      currentStep: resuming ? (existing?.stepNumber ?? 0) : 0,
+      tokensUsed: resuming ? this.state.tokensUsed : 0,
       runId,
-      goal: runGoal,
+      goal: effectiveGoal,
       lastRunAt: new Date().toISOString(),
       lastError: null,
     })
 
+    // ANTI-PATTERN NOTE: awaiting the loop here blocks this RPC for the
+    // entire multi-minute run. Durable Objects serialize their request
+    // queue, so while runLoopWrapped is in-flight, /api/status and every
+    // other harness RPC are queued behind it (you'll see 30s
+    // blockConcurrencyWhile errors under load). Scheduling it via
+    // this.schedule(0, ...) makes it WORSE — the scheduled task still runs
+    // on the same DO and still blocks the queue, plus the alarm dispatcher
+    // doesn't have a request lifecycle to attach to, so it can fatal-reset
+    // the DO.
+    //
+    // The proper fix is to move the loop OFF the DO entirely — either by
+    // delegating to a Cloudflare Workflow (each step is a Workflow step
+    // with built-in retries, the DO only owns state), or by reshaping the
+    // loop as one-iteration-per-alarm-tick (each alarm runs ONE LLM turn,
+    // persists state, re-arms itself with schedule(0, …); requests can
+    // interleave between ticks). Neither is a one-line fix; tracked as a
+    // P1 architectural follow-up. For now we await so the loop at least
+    // completes, knowing the UI will lag.
     try {
-      await this.runLoopWrapped(runId, runGoal)
+      await this.runLoopWrapped(runId, effectiveGoal)
     } catch (error: any) {
       this.setState({
         ...this.state,
@@ -471,6 +766,11 @@ export class Harness extends Agent<Env, HarnessState> {
         lastError: error.message ?? String(error),
       })
       this.logStep(runId, this.state.currentStep, "error", null, error.message)
+      this.pushTraceEvent({
+        runId,
+        eventType: "error",
+        payload: `Run failed: ${error.message ?? String(error)} — checkpoint preserved for resume.`,
+      })
       return `Run failed: ${error.message}`
     }
 
@@ -569,7 +869,10 @@ export class Harness extends Agent<Env, HarnessState> {
         lastError: error.message ?? String(error),
       })
       this.logStep(runId, this.state.currentStep, "error", null, error.message)
-      return { ran: true, reason: "errored: " + (error.message ?? String(error)) }
+      return {
+        ran: true,
+        reason: "errored: " + (error.message ?? String(error)),
+      }
     }
 
     return { ran: true, reason: "completed" }
@@ -829,9 +1132,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // ---------------------------------------------------------------------------
 
   @unstable_callable()
-  async listRuns(
-    limit: number = 20,
-  ): Promise<
+  async listRuns(limit: number = 20): Promise<
     Array<{
       runId: string
       createdAt: string
@@ -988,6 +1289,74 @@ export class Harness extends Agent<Env, HarnessState> {
     const maxSteps = this.state.maxSteps
     const tokenBudget = this.state.tokenBudget
 
+    // ── Crash recovery: probe for a resumable checkpoint ────────────────
+    // If THIS runId has a checkpoint with status='running', the previous
+    // invocation was evicted / crashed mid-run. Resume it instead of starting
+    // fresh — restore messages + plan, mark with a trace event so the
+    // operator can see recovery happened.
+    let resumedFromCheckpoint = false
+    let resumedStepNumber = this.state.currentStep
+    let resumedMessages: any[] | null = null
+    let resumedPlan: Plan | null = null
+    try {
+      const rows = execSql(
+        this,
+        `SELECT step_number, messages_json, plan_json FROM run_checkpoints
+          WHERE run_id = ? AND status = 'running'`,
+        [runId],
+      )
+      if (rows.length > 0) {
+        const r = rows[0] as any
+        const parsed = JSON.parse(r.messages_json as string)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          resumedMessages = parsed
+          resumedStepNumber = r.step_number as number
+          try {
+            if (r.plan_json) resumedPlan = JSON.parse(r.plan_json as string)
+          } catch {
+            // plan optional
+          }
+          resumedFromCheckpoint = true
+        }
+      }
+    } catch {
+      // checkpoints table may not exist yet — treat as no checkpoint
+    }
+
+    // ── Generate (or reuse) a structured plan ────────────────────────────
+    // Per Cloudflare's long-running-agents doc, a plan persisted in state is
+    // the canonical durability + orientation primitive: it lets a recovered
+    // invocation know where it was, and "are we stuck?" reduces to "is
+    // plan.currentStep advancing?". One extra LLM round trip at run start,
+    // paid back many times over in context-efficiency across the run.
+    //
+    // We regenerate the plan every fresh run (runId changes) so the agent
+    // starts each session with a plan that reflects the current pipeline
+    // state + memory. The previous run's plan survives in trace_events for
+    // audit; only the current plan lives in state. On a RESUMED run we reuse
+    // the checkpointed plan without another round trip.
+    let plan = resumedPlan ?? this.state.plan
+    const planNeedsFresh =
+      !resumedFromCheckpoint && (!plan || (plan as any)._runId !== runId)
+    if (planNeedsFresh) {
+      try {
+        plan = await this.generatePlan(goal)
+        // Stamp the plan with the run it belongs to so recovery logic can tell
+        // whether a stored plan is for THIS run or a previous one.
+        ;(plan as any)._runId = runId
+        this.setState({ ...this.state, plan })
+        this.pushTraceEvent({
+          runId,
+          eventType: "system",
+          role: "system",
+          label: "plan",
+          payload: JSON.stringify(plan),
+        })
+      } catch {
+        plan = null // plan generation is best-effort; loop still works without it
+      }
+    }
+
     const tools = buildAgentTools(this, this.env, runId, goal)
     const systemPrompt = buildSystemPrompt(
       this,
@@ -995,15 +1364,57 @@ export class Harness extends Agent<Env, HarnessState> {
       goal,
       maxSteps,
       tokenBudget,
+      plan,
     )
 
-    const messages: any[] = [
+    // On a resumed run, reuse the checkpointed messages array so the model
+    // picks up the conversation where it left off. Otherwise begin fresh.
+    const messages: any[] = resumedMessages ?? [
       { role: "user", content: buildKickoffMessage(goal, runId) },
     ]
 
+    if (resumedFromCheckpoint) {
+      // Restore the step counter to where we were + emit a recovery trace
+      // event so the dashboard can surface "this run was resumed after crash".
+      this.setState({ ...this.state, currentStep: resumedStepNumber })
+      this.pushTraceEvent({
+        runId,
+        stepNumber: resumedStepNumber,
+        eventType: "run_start",
+        label: "resumed",
+        payload: JSON.stringify({
+          reason: "checkpoint recovery",
+          step: resumedStepNumber,
+          messages: messages.length,
+        }),
+      })
+    }
+
+    // ---- Stuck-detection state ----
+    // Instead of "called the same tool twice in a row = loop" (which kills
+    // legitimate patterns like "discover_jobs on Monday then again on Tuesday"),
+    // we track the last FEW tool calls and only flag repetition when:
+    //   (a) the same tool is called with identical args N times in a row
+    //       (default N=3), AND
+    //   (b) the wall-clock between calls is short (likely an actual loop).
+    // A search the operator wants to run twice in two different plan steps
+    // will be separated by other tool calls (pipeline_status, remember, …) so
+    // the consecutive-identical count resets naturally.
+    let consecutiveIdenticalToolCalls = 0
     let lastToolName = ""
     let lastToolArgs = ""
+    let lastToolCallAtMs = 0
+    const IDENTICAL_TOOL_LIMIT = 3
+    const IDENTICAL_TOOL_WINDOW_MS = 60_000 // <60s between identical calls = suspicious
     let consecutiveNoToolTurns = 0
+
+    // ---- Context-retention policy ----
+    // Tool results from `discover_jobs` carry large JSON payloads (5–10KB each).
+    // Without pruning, the prompt grows ~5KB per search and gets re-sent every
+    // turn — prompt token cost grows quadratically. We keep the most recent
+    // tool results intact and REPLACE older tool_result content with a short
+    // placeholder pointing the model at the tools it can use to re-fetch.
+    const RETAIN_RECENT_TOOL_RESULTS = 4
 
     // ── Run bookkeeping for trace_events ───────────────────────────────────
     // Reset the monotonic seq counter + write a run_start and a system event
@@ -1195,14 +1606,25 @@ export class Harness extends Agent<Env, HarnessState> {
       }
       const stepSummary = summarizeStep(resultLike)
       const toolName = stepSummary.toolName
+      const toolArgs = stepSummary.toolArgs
 
+      // ---- Smarter stuck detection ----
+      // Behavior we WANT to allow:
+      //   • Model pauses to plan or reports progress in text before next tool
+      //   • The same search runs daily ("discover_jobs(senior AI, remote)")
+      //   • A → B → A is always fine
+      // Behavior we want to BLOCK:
+      //   • N identical tool calls back-to-back within a short wall-clock
+      //     window (the model is genuinely looping with no new input).
+      // We bump the no-tool-turns limit to 3 so the model can reason twice
+      // between actions — it's a job agent, planning is part of the job.
       if (!toolName) {
         consecutiveNoToolTurns++
-        if (consecutiveNoToolTurns >= 2) {
+        if (consecutiveNoToolTurns >= 3) {
           await this.finishRunAuto(
             runId,
             goal,
-            "Stopped: the agent produced no tool calls for two turns in a row (idle/stuck). " +
+            "Stopped: the agent produced no tool calls for three turns in a row (idle/stuck). " +
               (resolvedText || ""),
             "idle_detected",
           )
@@ -1212,18 +1634,37 @@ export class Harness extends Agent<Env, HarnessState> {
         consecutiveNoToolTurns = 0
       }
 
-      const toolArgs = stepSummary.toolArgs
-      if (toolName && toolName === lastToolName && toolArgs === lastToolArgs) {
-        await this.finishRunAuto(
-          runId,
-          goal,
-          `Stopped: detected a repeated tool call (${toolName} with identical args) — likely stuck loop.`,
-          "repeated_loop_detected",
-        )
-        return
+      if (toolName) {
+        const now = Date.now()
+        const argsMatch = toolName === lastToolName && toolArgs === lastToolArgs
+        if (argsMatch) {
+          // Same tool, same args. Only count toward the limit if the previous
+          // call was recent (likely a tight loop). If a meaningful amount of
+          // time has passed, treat this as a fresh, deliberate re-search.
+          const elapsed = now - lastToolCallAtMs
+          if (elapsed < IDENTICAL_TOOL_WINDOW_MS) {
+            consecutiveIdenticalToolCalls++
+          } else {
+            // Stale: this is a legitimate re-run after a long pause (e.g. a
+            // scheduled re-search). Reset the counter.
+            consecutiveIdenticalToolCalls = 1
+          }
+          if (consecutiveIdenticalToolCalls >= IDENTICAL_TOOL_LIMIT) {
+            await this.finishRunAuto(
+              runId,
+              goal,
+              `Stopped: ${IDENTICAL_TOOL_LIMIT} identical calls to ${toolName} within ${IDENTICAL_TOOL_WINDOW_MS / 1000}s — likely a tight loop.`,
+              "repeated_loop_detected",
+            )
+            return
+          }
+        } else {
+          consecutiveIdenticalToolCalls = 0
+        }
+        lastToolName = toolName
+        lastToolArgs = toolArgs
+        lastToolCallAtMs = now
       }
-      lastToolName = toolName
-      lastToolArgs = toolArgs
 
       // ---- Record the turn in step_log too (back-compat with Log tab) ----
       // The full trace lives in trace_events; step_log remains the legacy log.
@@ -1234,11 +1675,27 @@ export class Harness extends Agent<Env, HarnessState> {
       // ---- Append the model's turn to the running conversation ----
       messages.push(...(resolvedResponse.messages as any[]))
 
+      // ---- Selective retention: prune old tool_result content ----
+      // Tool results from `discover_jobs` carry large JSON payloads (~5–10KB).
+      // Without pruning, every turn re-sends the entire history back to the
+      // model, so prompt-token cost grows quadratically. We keep the most
+      // recent few tool results intact and REPLACE older ones with a short
+      // placeholder that tells the model which tool to call to re-fetch.
+      // The model has `pipeline_status` and `recall` for exactly this purpose.
+      compactToolResults(messages, RETAIN_RECENT_TOOL_RESULTS)
+
       // ---- Advance step counter ----
+      const nextStep = this.state.currentStep + 1
       this.setState({
         ...this.state,
-        currentStep: this.state.currentStep + 1,
+        currentStep: nextStep,
       })
+
+      // ---- Crash recovery checkpoint (P1b) ----
+      // Persist the in-memory loop state after every turn so an eviction or
+      // crash mid-run can be resumed from this exact point. Slips one INSERT
+      // per turn — cheap relative to the LLM call that just finished.
+      this.writeCheckpoint(runId, goal, nextStep, messages, plan)
     }
   }
 
@@ -1293,9 +1750,7 @@ export class Harness extends Agent<Env, HarnessState> {
   }
 
   @unstable_callable()
-  async getRecentTraceEvents(
-    limit: number = 200,
-  ): Promise<TraceEvent[]> {
+  async getRecentTraceEvents(limit: number = 200): Promise<TraceEvent[]> {
     this.ensureDb()
     const rows = execSql(
       this,
@@ -1373,17 +1828,159 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Goal set.`
   }
 
+  // ----- plan management (P1: planning as a durability strategy) ------------
+
+  /**
+   * Have the model break the goal into concrete steps at run start. Persisted
+   * to `this.state.plan` so it:
+   *   • Survives eviction (Cloudflare "planning as durability strategy")
+   *   • Drives "are we stuck?" — plan.currentStep must advance
+   *   • Lets a recovered invocation know where it was without replaying history
+   *
+   * Single non-tool LLM call. Asks for strict JSON so we parse defensively;
+   * if parsing fails or the model refuses, fall back to a 1-step plan equal
+   * to the goal so the run still proceeds.
+   */
+  async generatePlan(goal: string): Promise<Plan> {
+    const nowIso = new Date().toISOString()
+    const fallback: Plan = {
+      goal,
+      steps: [
+        {
+          id: "step-1",
+          description: goal,
+          status: "in_progress",
+          result: null,
+        },
+      ],
+      currentStep: 0,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }
+
+    try {
+      const model = getModel(this.env)
+      const toolNames = Object.keys(
+        buildAgentTools(this, this.env, "_plan-synth", goal),
+      ).join(", ")
+
+      const { text } = await generateText({
+        model,
+        system:
+          "You are a planner for an autonomous job-search agent. Break the goal into 4-6 concrete, ordered steps the agent can execute using ONLY these available tools. " +
+          "Each step must be actionable in one or two tool calls. Output STRICT JSON: " +
+          '{"steps":[{"id":"step-1","description":"..."},{"id":"step-2","description":"..."}]}. ' +
+          "No prose, no markdown fences.",
+        prompt: `Goal: ${goal}\nAvailable tools: ${toolNames}\n\nReturn the JSON plan now.`,
+        ...getParams(this.env),
+      })
+
+      const trimmed = text.trim()
+      const start = trimmed.indexOf("{")
+      const end = trimmed.lastIndexOf("}")
+      if (start !== -1 && end !== -1 && end > start) {
+        const parsed = JSON.parse(trimmed.slice(start, end + 1))
+        const rawSteps: any[] = Array.isArray(parsed?.steps) ? parsed.steps : []
+        if (rawSteps.length > 0) {
+          const steps: PlanStep[] = rawSteps.slice(0, 8).map((s, i) => ({
+            id: String(s?.id ?? `step-${i + 1}`),
+            description: String(s?.description ?? "(no description)"),
+            status: i === 0 ? "in_progress" : "pending",
+            result: null,
+          }))
+          return {
+            goal,
+            steps,
+            currentStep: 0,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          }
+        }
+      }
+    } catch {
+      // Non-fatal — fall back to the single-step plan
+    }
+    return fallback
+  }
+
+  @unstable_callable()
+  async getPlan(): Promise<Plan | null> {
+    return this.state.plan
+  }
+
+  /**
+   * Mark the plan's current step as complete (or failed) and advance to the
+   * next pending step. Used by:
+   *   • The operator (dashboard plan-progress UI / future tool)
+   *   • Recovery — onFiberRecovered resumes by re-reading plan.currentStep
+   *   • `finish` tool — when the model reports step completion
+   *
+   * Cheap: pure setState + sqlite touch on the trace_events log.
+   */
+  @unstable_callable()
+  async advancePlan(
+    stepId: string | null,
+    status: "complete" | "failed" | "skipped",
+    result?: string | null,
+  ): Promise<Plan | null> {
+    const plan = this.state.plan
+    if (!plan) return null
+
+    const updatedSteps = plan.steps.map(s => {
+      // Update the named step, OR if no id supplied, update the current step.
+      const isTarget = stepId
+        ? s.id === stepId
+        : s.id === plan.steps[plan.currentStep]?.id
+      if (!isTarget) return s
+      return { ...s, status, result: result ?? s.result }
+    })
+
+    // Find the next pending step
+    const nextIdx = updatedSteps.findIndex(s => s.status === "pending")
+    const nextCurrentStep = nextIdx === -1 ? plan.currentStep : nextIdx
+
+    const updatedPlan: Plan = {
+      ...plan,
+      steps: updatedSteps,
+      currentStep: nextCurrentStep,
+      updatedAt: new Date().toISOString(),
+    }
+    this.setState({ ...this.state, plan: updatedPlan })
+    return updatedPlan
+  }
+
   /**
    * Auto-synthesize a goal when none exists. One non-tool generateText call
    * that looks at the available tool names + today's date and writes a single
    * concrete goal. Cheaper than a full loop; only runs when no goal is set.
+   *
+   * P3: caches the synthesized goal in the `config` table so subsequent cold
+   * starts don't pay the extra round trip on every cron tick. Once written,
+   * the operator can edit it from the dashboard.
    */
   async synthesizeGoalFromCapabilities(): Promise<string | null> {
     try {
+      // P3: if we already synthesized + cached a goal, skip the LLM round-trip.
+      try {
+        const cached = execSql(
+          this,
+          `SELECT value FROM config WHERE key = 'goal'`,
+        )
+        if (
+          cached.length > 0 &&
+          (cached[0].value as string)?.trim().length > 0
+        ) {
+          this.setState({ ...this.state, goal: cached[0].value as string })
+          return cached[0].value as string
+        }
+      } catch {
+        // config table may not exist yet — fall through to synthesis
+      }
+
       const model = getModel(this.env)
-      const toolNames = Object.keys(buildAgentTools(this, this.env, "_goal-synth", "")).join(
-        ", ",
-      )
+      const toolNames = Object.keys(
+        buildAgentTools(this, this.env, "_goal-synth", ""),
+      ).join(", ")
       const today = new Date().toISOString().slice(0, 10)
       const { text } = await generateText({
         model,
