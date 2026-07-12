@@ -6,7 +6,7 @@
 
 export type { Env } from "./env"
 
-export type { HarnessStatus, HarnessState } from "./harness"
+export type { HarnessStatus, HarnessState, Plan, PlanStep } from "./harness"
 export { DEFAULT_HARNESS_STATE } from "./harness"
 
 export type { ScheduleEntry } from "./schedule"

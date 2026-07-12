@@ -4,6 +4,33 @@
 
 export type HarnessStatus = "idle" | "running" | "paused" | "done" | "error"
 
+/**
+ * A structured execution plan. Persisted into `HarnessState.plan` so it:
+ *   1. Survives eviction / restart (Cloudflare "planning as a durability
+ *      strategy" — the plan is a recovery mechanism, not just a progress view).
+ *   2. Lets us answer "are we stuck?" as `currentStep !== prevSnapshot`
+ *      instead of fuzzing on identical tool calls.
+ *   3. Reconstructs context after a long wait — the plan tells a recovered
+ *      invocation where it was, so we don't have to replay every prior turn.
+ *
+ * Status codes per Cloudflare's long-running-agent example:
+ *   pending → in_progress → complete | failed | skipped
+ */
+export interface PlanStep {
+  id: string
+  description: string
+  status: "pending" | "in_progress" | "complete" | "failed" | "skipped"
+  result?: string | null
+}
+
+export interface Plan {
+  goal: string
+  steps: PlanStep[]
+  currentStep: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface HarnessState {
   status: HarnessStatus
   currentStep: number
@@ -17,6 +44,10 @@ export interface HarnessState {
   runId: string | null
   lastRunAt: string | null
   lastError: string | null
+  // v2 durability: the active plan. Persisted across evictions so we can
+  // resume from where we left off and decide "stuck?" by checking plan
+  // progress rather than tool-call patterns.
+  plan: Plan | null
 }
 
 export const DEFAULT_HARNESS_STATE: HarnessState = {
@@ -29,4 +60,5 @@ export const DEFAULT_HARNESS_STATE: HarnessState = {
   runId: null,
   lastRunAt: null,
   lastError: null,
+  plan: null,
 }
