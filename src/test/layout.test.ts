@@ -77,7 +77,7 @@ describe("Dashboard component", () => {
     const fs = require("fs")
     const path = require("path")
     const src = fs.readFileSync(
-      path.join(__dirname, "..", "views", "Dashboard.tsx"),
+      path.join(__dirname, "..", "views", "Layout.tsx"),
       "utf-8",
     )
 
@@ -89,7 +89,7 @@ describe("Dashboard component", () => {
     const fs = require("fs")
     const path = require("path")
     const src = fs.readFileSync(
-      path.join(__dirname, "..", "views", "Dashboard.tsx"),
+      path.join(__dirname, "..", "views", "Layout.tsx"),
       "utf-8",
     )
 

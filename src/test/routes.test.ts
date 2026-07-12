@@ -114,8 +114,14 @@ describe("Dashboard route", () => {
     const path = require("path")
     const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
+    // Pages-as-routes: one route per page, all going through renderPage.
     expect(src).toContain('app.get("/"')
-    expect(src).toContain("renderDashboard")
+    expect(src).toContain("renderPage")
+    expect(src).toContain('app.get("/jobs"')
+    expect(src).toContain('app.get("/traces"')
+    expect(src).toContain('app.get("/logs"')
+    expect(src).toContain('app.get("/memory"')
+    expect(src).toContain('app.get("/settings"')
   })
 })
 
