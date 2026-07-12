@@ -12,7 +12,7 @@ export function makeRememberTool(agent: SqlAgent) {
   return tool({
     description:
       "Persist a fact for future runs by key (overwrites). Use for salient, durable facts: 'priority_companies', 'focus_topic', 'blacklist', etc. Keep values short.",
-    parameters: z.object({
+    inputSchema: z.object({
       key: z.string().describe("Snake_case key, e.g. 'focus_topic'"),
       value: z.string().describe("The fact to remember"),
     }),
@@ -33,7 +33,7 @@ export function makeRecallTool(agent: SqlAgent) {
   return tool({
     description:
       "Retrieve a previously remembered fact by key. Returns the value or a not-found message.",
-    parameters: z.object({ key: z.string() }),
+    inputSchema: z.object({ key: z.string() }),
     execute: async ({ key }) => {
       const rows = execSql(agent, `SELECT value FROM context WHERE key = ?`, [
         key,

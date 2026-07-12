@@ -43,7 +43,9 @@ export const SettingsPage: FC<{
           ))}
         </div>
         <div style="margin-top: 12px;">
-          <button class="btn ghost" onclick="showModal('goal-modal')">Edit goal + budget</button>
+          <button class="btn ghost" onclick="showModal('goal-modal')">
+            Edit goal + budget + model
+          </button>
         </div>
       </div>
 
@@ -54,11 +56,17 @@ export const SettingsPage: FC<{
             <div class="card-sub">what the agent is working toward</div>
           </div>
           <div style="display:flex; gap: 8px;">
-            <button class="btn sm ghost" onclick="showModal('goal-modal')">Edit</button>
-            <button class="btn sm ghost" onclick="synthesizeGoal()">Auto-synthesize</button>
+            <button class="btn sm ghost" onclick="showModal('goal-modal')">
+              Edit
+            </button>
+            <button class="btn sm ghost" onclick="synthesizeGoal()">
+              Auto-synthesize
+            </button>
           </div>
         </div>
-        <div class="hero-goal" id="goal-text">{esc(config?.goal || "—")}</div>
+        <div class="hero-goal" id="goal-text">
+          {esc(config?.goal || "—")}
+        </div>
       </div>
 
       <div class="card">
@@ -111,7 +119,9 @@ export const SettingsPage: FC<{
             <div class="card-title">Research</div>
             <div class="card-sub">manual research trigger</div>
           </div>
-          <button class="btn sm ghost" onclick="showModal('research-modal')">+ Run</button>
+          <button class="btn sm ghost" onclick="showModal('research-modal')">
+            + Run
+          </button>
         </div>
         <div id="research-list" class="scroll-list">
           <div class="empty">Use the modal to run a research sweep.</div>

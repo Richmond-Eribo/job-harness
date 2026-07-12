@@ -56,16 +56,25 @@ its own, with a dashboard to watch and steer it.
 - **Grounded, never hallucinated** — jobs come from real API feeds (Arbeitnow,
   Remotive); research comes from real sources (arXiv, Hacker News). The LLM only
   ranks and summarizes real data.
-- **Persistent memory** — per-agent SQLite storage. Findings, the job pipeline,
-  run summaries, and explicit "remembered" facts all survive across runs.
+- **Two memory layers** —
+  - **Agent memory** (the `context` table): facts the agent itself recalls /
+    remembers via `remember` / `recall` tools.
+  - **User memory** (the `user_memory` table): operator-authored notes injected
+    into every system prompt as higher-authority guidance.
+- **Full observability** — every run emits a structured trace event stream
+  (`run_start`, `system`, `prompt`, `reasoning`, `text`, `tool_call`,
+  `tool_result`, `step_end`, `run_end`) to the `trace_events` SQLite table, with
+  live-poll and per-day / per-turn token breakdowns surfaced on the dashboard.
 - **Schedules via full cron** — ranges, steps, lists, named days. Powered by
   `cron-parser` (no failing hand-rolled matchers).
-- **Cost-bounded** — hard stops on `maxSteps`, a token budget, idle detection,
-  and repeated-loop detection.
-- **Dashboard** — live status, controls, logs, schedules, research findings, and
-  a job Kanban pipeline.
-- **Model-agnostic** — switch between Anthropic Claude and OpenAI GPT purely via
-  env vars.
+- **Cost-bounded** — hard stops on `maxSteps`, idle detection, and
+  repeated-loop detection. A token budget exists but **defaults to 0
+  (unlimited)** — set it from the dashboard before trusting long runs.
+- **Multi-page dashboard** — server-rendered JSX pages for **Overview, Jobs,
+  Traces, Logs, Memory,** and **Settings**, plus a structured-plan view and a
+  goal editor.
+- **Model-agnostic** — Anthropic Claude **or** OpenAI GPT, configured via env
+  vars and `src/llm-config.json` (baked at build time — see [Model config](#model-config)).
 - **Free tier** — Durable Objects + cron only; no Containers or Sandbox
   required.
 
@@ -76,7 +85,7 @@ its own, with a dashboard to watch and steer it.
 ```
                 ┌─────────────────────────────────────────┐
    cron (2 min) │            Worker (Hono)                 │
-   watchdog  ──▶│  scheduled() → Harness.checkSchedulesDue│
+   watchdog  ──▶│  scheduled() → Harness.wake()           │
                 └───────────────┬─────────────────────────┘
                                 ▼
                 ┌─────────────────────────────────────────┐
@@ -185,8 +194,16 @@ All toggable config lives in env vars / secrets:
 | `LLM_MODEL`       |    –     | e.g. `claude-sonnet-4-20250514`, `gpt-4o`  |
 | `MAX_STEPS`       |    –     | Step ceiling per run (default `100`)       |
 
-Runtime config (goal, maxSteps, token budget) can also be changed live from the
-dashboard without redeploying — it's persisted in SQLite.
+### Model config
+
+> **Heads-up (known v1 limitation):** model identity (provider / model / base
+> URL) and generation params live in [`src/llm-config.json`](src/llm-config.json),
+> which is a **static import — baked at build time**. Switching providers or
+> models therefore requires a code change + redeploy (not a runtime edit).
+> `PUT /api/config` updates the **goal / maxSteps / token budget** triplet only.
+
+Runtime config (goal, maxSteps, token budget) **is** editable live from the
+dashboard without redeploying — persisted in the SQLite `config` table.
 
 ### Schedules
 
@@ -205,34 +222,69 @@ built in (if a window was never served, it triggers on the next watchdog tick).
 
 ## 🌐 API
 
-Everything under `/api/*` requires a `Authorization: Bearer <DASHBOARD_TOKEN>`
+Everything under `/api/*` requires an `Authorization: Bearer <DASHBOARD_TOKEN>`
 header.
 
-| Method        | Path                         | Description                         |
-| ------------- | ---------------------------- | ----------------------------------- |
-| `GET`         | `/`                          | Dashboard (HTML)                    |
-| `GET`         | `/api/status`                | Full harness status                 |
-| `POST`        | `/api/start`                 | Start a run (optional `{ goal }`)   |
-| `POST`        | `/api/stop`                  | Stop the run                        |
-| `POST`        | `/api/pause`                 | Pause                               |
-| `POST`        | `/api/resume`                | Resume                              |
-| `GET` / `PUT` | `/api/config`                | Read / update live config           |
-| `GET`         | `/api/schedules`             | List schedules                      |
-| `POST`        | `/api/schedules`             | Add a schedule `{ cron, focus }`    |
-| `DELETE`      | `/api/schedules/:id`         | Remove a schedule                   |
-| `PUT`         | `/api/schedules/:id/toggle`  | Enable/disable a schedule           |
-| `GET`         | `/api/log`                   | Step log (`?limit=`)                |
-| `GET`         | `/api/summaries`             | Per-run summaries                   |
-| `GET`         | `/api/research`              | Topics + recent findings            |
-| `POST`        | `/api/research/run`          | Trigger a search `{ topic, depth }` |
-| `GET`         | `/api/pipeline`              | Job pipeline grouped by stage       |
-| `POST`        | `/api/jobs`                  | Manually add a job                  |
-| `PUT`         | `/api/jobs/:id/status`       | Move a job stage                    |
-| `POST`        | `/api/jobs/:id/cover-letter` | Generate a cover letter             |
-| `POST`        | `/api/jobs/:id/follow-up`    | Add a follow-up reminder            |
-| `GET`         | `/api/profile`               | Read user profile (CV/preferences)  |
-| `PUT`         | `/api/profile`               | Update profile                      |
-| `GET`         | `/api/follow-ups`            | Due follow-ups                      |
+> [!CAUTION]
+> **Known DO-concurrency limitation:** `start()` awaits the entire multi-minute
+> run loop, and Durable Objects serialize their request queue. While a run is
+> in flight, **every other `/api/*` call is queued behind it**. The dashboard
+> will feel unresponsive during long runs, and `POST /api/pause` / `POST
+> /api/resume` can't actually interleave with the loop. (See
+> [`docs/REDESIGN.md`](docs/REDESIGN.md) for the planned one-iteration-per-alarm
+> fix.) In practice `pause` is a **stop + write-summary**, and `resume` is a
+> frontend status flip — true pause/resume is **not implemented**.
+
+| Method        | Path                         | Description                                       |
+| ------------- | ---------------------------- | ------------------------------------------------- |
+| `GET`         | `/`                          | Dashboard (HTML, Overview page)                   |
+| `GET`         | `/jobs`                      | Jobs Kanban + covers (HTML page)                  |
+| `GET`         | `/traces`                    | Trace viewer (HTML page)                          |
+| `GET`         | `/logs`                      | Step logs (HTML page)                             |
+| `GET`         | `/memory`                    | Memory editor (HTML page)                         |
+| `GET`         | `/settings`                  | Config editor (HTML page)                         |
+| **Run control**            |                              |                                                   |
+| `GET`         | `/api/status`                | Full harness status                               |
+| `POST`        | `/api/start`                 | Start a run (optional `{ goal }`)                 |
+| `POST`        | `/api/stop`                  | Stop the run                                      |
+| `POST`        | `/api/pause`                 | Pause (⚠️ effectively stops — see caveat)         |
+| `POST`        | `/api/resume`                | Resume (⚠️ status flip only — see caveat)         |
+| **Config / plans / goals** |                              |                                                   |
+| `GET` / `PUT` | `/api/config`                | Read / update { goal, maxSteps, tokenBudget }     |
+| `GET` / `PUT` | `/api/goal`                  | Read / set the active goal                        |
+| `POST`        | `/api/goal/synthesize`       | Auto-synthesize a goal from capabilities          |
+| `GET`         | `/api/plan`                  | Current/next structured plan                      |
+| `POST`        | `/api/plan/advance`          | Advance a plan step                               |
+| **Schedules**              |                              |                                                   |
+| `GET`         | `/api/schedules`             | List schedules                                    |
+| `POST`        | `/api/schedules`             | Add a schedule `{ cron, focus }`                  |
+| `DELETE`      | `/api/schedules/:id`         | Remove a schedule                                 |
+| `PUT`         | `/api/schedules/:id/toggle`  | Enable/disable a schedule                         |
+| **Traces / logs**          |                              |                                                   |
+| `GET`         | `/api/runs`                  | Recent runs                                       |
+| `GET`         | `/api/runs/:runId/events`    | Trace events for a run (`?sinceSeq=N`)            |
+| `GET`         | `/api/run/:runId/trace`      | Trace summary for a run                           |
+| `GET`         | `/api/trace-events`          | Most-recent trace events (`?limit=`)              |
+| `GET`         | `/api/log`                   | Step log (`?limit=`)                              |
+| `GET`         | `/api/summaries`             | Per-run daily summaries                           |
+| `GET`         | `/api/tokens-by-day`         | Token spend grouped by day                        |
+| `GET`         | `/api/turn-tokens`           | Per-turn output token stats                       |
+| **Memory**                 |                              |                                                   |
+| `GET` / `PUT` | `/api/memory`                | Agent-recalled facts (the `context` table)        |
+| `DELETE`      | `/api/memory/:key`           | Forget a fact                                     |
+| `GET` / `PUT` | `/api/user-memory`           | Operator notes injected into every prompt         |
+| `DELETE`      | `/api/user-memory/:key`      | Delete an operator note                           |
+| **Research**               |                              |                                                   |
+| `GET`         | `/api/research`              | Topics + recent findings                          |
+| `POST`        | `/api/research/run`          | Trigger a search `{ topic, depth }`               |
+| **Jobs**                   |                              |                                                   |
+| `GET`         | `/api/pipeline`              | Job pipeline grouped by stage                     |
+| `POST`        | `/api/jobs`                  | Manually add a job                                |
+| `PUT`         | `/api/jobs/:id/status`       | Move a job stage                                  |
+| `POST`        | `/api/jobs/:id/cover-letter` | Generate a cover letter                           |
+| `POST`        | `/api/jobs/:id/follow-up`    | Add a follow-up reminder                          |
+| `GET` / `PUT` | `/api/profile`               | Read / update user profile (CV/preferences)       |
+| `GET`         | `/api/follow-ups`            | Due follow-ups                                    |
 
 ---
 
@@ -241,34 +293,68 @@ header.
 ```
 src/
   index.ts           # Hono router, API routes, cron watchdog, DO exports
-  harness.ts         # The orchestrator (autonomous agent loop + tools)
-  research-agent.ts  # arXiv + Hacker News capability agent
-  job-agent.ts       # job discovery + cover letters + pipeline agent
+  db.ts              # SQL helpers (execSql tagged-template shim)
   llm.ts             # Model-agnostic LLM factory (BYOK)
-  types.ts           # Shared types: Env, state, domain models
-  views/             # Hono JSX dashboard (Layout, Dashboard, renderDashboard)
+  llm-config.json    # ⚙ static model config (baked at build time)
+  observability-config.json  # trace-event capture toggles
+  types.ts           # Shared types
+  agents/
+    harness.ts           # The orchestrator (autonomous agent loop + DB)
+    research-agent.ts    # arXiv + Hacker News capability agent
+    job-agent.ts         # job discovery + cover letters + pipeline agent
+    prompt.ts            # System-prompt builder
+    prompt-loader.ts     # Loads prompts/ from disk
+    index.ts             # Agent exports
+  tools/
+    finish.tool.ts  research.tool.ts  jobs.tool.ts  memory.tool.ts
+    index.ts              # tool registry wired into the harness
+  types/
+    env.ts harness.ts index.ts job.ts log.ts memory.ts
+    research.ts schedule.ts trace.ts
+  utils/
+    cron.ts          # range/step/list parsing + missed-fire catch-up
+    get-agents.ts    # getAgentByName wrappers
+    run.ts           # run helpers
+    trace.ts         # trace-event emission helpers
+  db/
+    db.ts            # low-level SQL plumbing
+  views/
+    Layout.tsx           # <html> shell + nav
+    renderDashboard.tsx  # page renderer
+    pages/
+      Overview.tsx Jobs.tsx Traces.tsx Logs.tsx Memory.tsx Settings.tsx
 public/
   css/dashboard.css
-  js/dashboard.js
+  js/dashboard.js   markdown.js   json.js
+  # markdown.js  — client-side Markdown rendering for LLM output
+  # json.js       — pretty-printing for tool I/O
 scripts/
-  setup.sh           # one-command provisioning
+  setup.sh               # one-command provisioning
+prompts/
+  default.md   # default system-prompt template
+  soul.md      # higher-order agent persona / philosophy
 docs/
-  task.md            # build progress tracker
   implementation_plan.md
-wrangler.jsonc       # DOs, cron trigger, vars, assets
+  REDESIGN.md            # v1 redesign decisions + known TODOs
+wrangler.jsonc           # DOs, cron trigger, vars, assets
 ```
 
 ---
 
-## 🛠️ Tech stack
-
 - **Cloudflare Workers** + **Durable Objects** (SQLite-backed persistence)
-- **`agents` SDK** (`unstable_callable` RPC, `getAgentByName`, `this.sql` tagged
-  templates)
-- **Vercel AI SDK** (`ai`, `@ai-sdk/anthropic`, `@ai-sdk/openai`)
-- **Hono** (HTTP router + JSX dashboard)
+- **[`agents`](https://developers.cloudflare.com/agents/) SDK** (installed via
+  `agents@latest`) — provides `getAgentByName`, `this.sql` tagged templates,
+  `schedule()` + alarm-based self-healing, and the RPC decorator. *(Pre-1.0;
+  some APIs are unstable and may require a cast.)*
+- **Vercel AI SDK** (`ai@latest`, `@ai-sdk/anthropic@latest`,
+  `@ai-sdk/openai@latest`)
+- **Hono 4** — HTTP router + server-rendered JSX dashboard (no SPA / build step
+  for the UI; static assets in `public/` served by the platform)
 - **cron-parser** (schedule matching + missed-fire catch-up, pinned to UTC)
 - **Zod** (tool parameter schemas)
+- **Workers observability** — `trace_events` SQLite table + live-poll endpoint,
+  powered by `src/observability-config.json` and `wrangler.jsonc`'s built-in
+  `observability.logs.traces` block
 
 ---
 
@@ -277,12 +363,21 @@ wrangler.jsonc       # DOs, cron trigger, vars, assets
 The agent loop enforces multiple independent stop conditions:
 
 1. **`finish` tool** — the LLM ends the run itself when the goal is met.
-2. **`maxSteps`** — hard ceiling on LLM turns per run.
-3. **Token budget** — soft cumulative-token ceiling per run (0 = unlimited).
+2. **`maxSteps`** — hard ceiling on LLM turns per run (default **100**).
+3. **Token budget** — soft cumulative-token ceiling per run. ⚠️ **Defaults to 0
+   (unlimited).** Set a sensible value (e.g. 500k) from the dashboard before
+   trusting long runs.
 4. **Idle detection** — no tool call for two consecutive turns → stop.
 5. **Repeated-loop detection** — same tool + identical args twice → stop.
 
-This bounds LLM spend even if the agent gets confused.
+This bounds LLM spend even if the agent gets confused — but **gaps remain**:
+
+- **No rate-limiting** on `/api/*`. A valid token holder can spam
+  `POST /api/start` and trigger unbounded spend.
+- **`CORS origin: "*"`** on all routes — fine for a personal dashboard, a
+  concern for any multi-user deployment.
+- The dashboard polls `/api/status` every ~8s; during a long run that endpoint
+  is queued behind the loop (see [API caveat](#-api)).
 
 ---
 

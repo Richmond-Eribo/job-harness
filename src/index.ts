@@ -137,7 +137,7 @@ app.get("/settings", renderer, async c => {
   const { harness } = await getAgents(c.env)
   const [config, schedules] = await Promise.all([
     harness.getConfig().catch(() => ({})),
-    harness.listSchedules().catch(() => []),
+    harness.listAppSchedules().catch(() => []),
   ])
   return renderPage(c, "settings", SettingsPage, { config, schedules })
 })
@@ -193,7 +193,7 @@ app.put("/api/config", async c => {
 
 app.get("/api/schedules", async c => {
   const { harness } = await getAgents(c.env)
-  return c.json(await harness.listSchedules())
+  return c.json(await harness.listAppSchedules())
 })
 
 app.post("/api/schedules", async c => {
@@ -277,7 +277,9 @@ app.put("/api/memory", async c => {
     return c.json({ error: "key required" }, 400)
   }
   const { harness } = await getAgents(c.env)
-  return c.json({ message: await harness.setMemory(body.key, String(body.value ?? "")) })
+  return c.json({
+    message: await harness.setMemory(body.key, String(body.value ?? "")),
+  })
 })
 
 app.delete("/api/memory/:key", async c => {
@@ -541,6 +543,32 @@ app.put("/api/profile", async c => {
   const body = await c.req.json()
   const { jobAgent } = await getAgents(c.env)
   return c.json({ message: await jobAgent.setProfile(body) })
+})
+
+// CV file upload — stores the uploaded bytes as profile.cv. Text formats
+// (.txt/.md) are normally handled client-side (populated into the textarea
+// without a round-trip), but binary formats (PDF/DOCX) need a server round-
+// trip because they can't be edited inline. We store the bytes as a base64
+// data URL so the getProfile() consumer can see the format and size, and the
+// cover-letter writer can pass them on to the LLM.
+app.post("/api/profile/cv", async c => {
+  const { jobAgent } = await getAgents(c.env)
+  const filename = c.req.query("filename") || "cv"
+  const contentType = c.req.header("Content-Type") || "application/octet-stream"
+  const raw = await c.req.arrayBuffer()
+  // Cap at 2 MB — CVs are small; prevent abuse.
+  if (raw.byteLength > 2 * 1024 * 1024) {
+    return c.json({ error: "File too large (max 2 MB)" }, 413)
+  }
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(raw)))
+  const dataUrl = `data:${contentType};filename=${encodeURIComponent(
+    filename,
+  )};base64,${base64}`
+  await jobAgent.setProfile({ cv: dataUrl })
+  return c.json({
+    message: `CV uploaded (${filename}, ${raw.byteLength} bytes)`,
+    cv: dataUrl,
+  })
 })
 
 // =============================================================================

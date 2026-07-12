@@ -90,6 +90,16 @@ function toast(message, type = "success") {
 // =========================================================================
 function showModal(id) {
   document.getElementById(id).style.display = "flex"
+  // Lazy pre-fill: each modal that needs values loaded from the API names its
+  // loader in the MODAL_LOADERS map. Keeps showModal() generic.
+  const loader = MODAL_LOADERS[id]
+  if (typeof loader === "function") loader()
+}
+// Modals that pre-fill themselves from the API on open. Add an entry per modal
+// that has inputs; keep it opt-in so showModal stays cheap for static modals.
+const MODAL_LOADERS = {
+  "goal-modal": loadGoalModal,
+  "profile-modal": loadProfile,
 }
 function hideModal(id) {
   document.getElementById(id).style.display = "none"
@@ -213,7 +223,9 @@ async function refreshBarsFromApi() {
     }
     const max = Math.max(
       1,
-      ...rows.map(r => (r.inTokens || 0) + (r.outTokens || 0) + (r.reasoningTokens || 0)),
+      ...rows.map(
+        r => (r.inTokens || 0) + (r.outTokens || 0) + (r.reasoningTokens || 0),
+      ),
     )
     const today = new Date().toISOString().slice(0, 10)
     const fmtDay = day => {
@@ -224,7 +236,8 @@ async function refreshBarsFromApi() {
     wrap.className = "bars"
     wrap.innerHTML = rows
       .map(r => {
-        const tot = (r.inTokens || 0) + (r.outTokens || 0) + (r.reasoningTokens || 0)
+        const tot =
+          (r.inTokens || 0) + (r.outTokens || 0) + (r.reasoningTokens || 0)
         const hPct = (tot / max) * 100
         const segIn = r.inTokens || 0
         const segOut = r.outTokens || 0
@@ -261,11 +274,16 @@ async function refreshBarsFromApi() {
       .join("")
     if (axis) {
       const totalAll = rows.reduce(
-        (a, r) => a + (r.inTokens || 0) + (r.outTokens || 0) + (r.reasoningTokens || 0),
+        (a, r) =>
+          a + (r.inTokens || 0) + (r.outTokens || 0) + (r.reasoningTokens || 0),
         0,
       )
       axis.innerHTML =
-        "<span>" + rows.length + " days</span><span>" + totalAll.toLocaleString() + " tokens total</span>"
+        "<span>" +
+        rows.length +
+        " days</span><span>" +
+        totalAll.toLocaleString() +
+        " tokens total</span>"
     }
   } catch (_) {
     /* ignore */
@@ -319,9 +337,7 @@ function renderNotifications(notes) {
     .map(
       n =>
         '<div class="notif-row" onclick="onNotifClick(' +
-        JSON.stringify(n)
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;") +
+        JSON.stringify(n).replace(/"/g, "&quot;").replace(/'/g, "&#39;") +
         ')">' +
         '<span class="notif-dot kind-' +
         n.kind +
@@ -330,7 +346,9 @@ function renderNotifications(notes) {
         '<div class="notif-title-line">' +
         md.escapeHtml(n.title) +
         "</div>" +
-        (n.detail ? '<div class="notif-detail">' + md.escapeHtml(n.detail) + "</div>" : "") +
+        (n.detail
+          ? '<div class="notif-detail">' + md.escapeHtml(n.detail) + "</div>"
+          : "") +
         '<div class="notif-when">' +
         whenFmt(n.createdAt) +
         "</div>" +
@@ -404,7 +422,10 @@ document.addEventListener("click", e => {
   // Close the mobile nav drawer when clicking the backdrop
   const app = document.getElementById("dashboard")
   if (app && app.classList.contains("nav-open")) {
-    if (e.target instanceof HTMLElement && e.target.classList.contains("sb-backdrop")) {
+    if (
+      e.target instanceof HTMLElement &&
+      e.target.classList.contains("sb-backdrop")
+    ) {
       closeNav()
     }
   }
@@ -415,7 +436,9 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return
   if (notifOpen) {
     toggleNotifications(new Event("click"))
-  } else if (document.getElementById("dashboard")?.classList.contains("nav-open")) {
+  } else if (
+    document.getElementById("dashboard")?.classList.contains("nav-open")
+  ) {
     closeNav()
   } else {
     const sheet = document.getElementById("sheet")
@@ -454,9 +477,7 @@ async function loadTraceRuns() {
           "<option value=" +
           JSON.stringify(r.runId) +
           ">" +
-          md.escapeHtml(
-            r.runId.slice(0, 12) + " · " + r.steps + " steps",
-          ) +
+          md.escapeHtml(r.runId.slice(0, 12) + " · " + r.steps + " steps") +
           "</option>",
       )
       .join("")
@@ -540,10 +561,41 @@ async function saveGoal() {
   if (goal) config.goal = goal
   if (maxSteps) config.maxSteps = maxSteps
   if (budget) config.tokenBudget = budget
+  // Model override fields — only sent if the operator filled one in. Blank
+  // values are skipped so they fall back to llm-config.json.
+  const provider = document.getElementById("llm-provider-input")?.value?.trim()
+  const model = document.getElementById("llm-model-input")?.value?.trim()
+  const url = document
+    .getElementById("custom-provider-url-input")
+    ?.value?.trim()
+  if (provider) config.llmProvider = provider
+  if (model) config.llmModel = model
+  if (url) config.customProviderUrl = url
   const res = await api("/config", "PUT", config)
   toast(res.message)
   hideModal("goal-modal")
   refreshStatus()
+}
+
+// Pre-fill the goal + model modal from the live config so the operator can
+// see (and edit) the current values rather than starting blank. Called from
+// showModal() when the goal modal opens.
+async function loadGoalModal() {
+  try {
+    const config = await api("/config")
+    const setVal = (id, v) => {
+      const el = document.getElementById(id)
+      if (el && v != null) el.value = v
+    }
+    setVal("goal-input", config.goal)
+    setVal("max-steps-input", config.maxSteps)
+    setVal("budget-input", config.tokenBudget)
+    setVal("llm-provider-input", config.llmProvider)
+    setVal("llm-model-input", config.llmModel)
+    setVal("custom-provider-url-input", config.customProviderUrl)
+  } catch (_) {
+    // leave the modal blank on failure
+  }
 }
 
 // =========================================================================
@@ -555,7 +607,8 @@ function timeFmt(iso) {
   if (isNaN(d.getTime())) return null
   const sameDay = d.toDateString() === new Date().toDateString()
   return sameDay
-    ? "Today " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    ? "Today " +
+        d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleString([], {
         month: "short",
         day: "numeric",
@@ -649,7 +702,9 @@ async function toggleSchedule(id, enabled) {
 // =========================================================================
 function parseSummary(raw) {
   const out = { body: raw || "", stopReason: null, tokens: null }
-  const m = String(raw).match(/\[stop_reason:\s*([^,\]]+),\s*tokens?:\s*(\d+)\]/i)
+  const m = String(raw).match(
+    /\[stop_reason:\s*([^,\]]+),\s*tokens?:\s*(\d+)\]/i,
+  )
   if (m) {
     out.stopReason = m[1].trim()
     out.tokens = Number(m[2])
@@ -676,7 +731,9 @@ function stopReasonChip(reason) {
       : reason === "max_steps_reached" || reason === "token_budget_reached"
         ? "warn"
         : "alarm"
-  return '<span class="chip chip-' + sev + '">' + md.escapeHtml(label) + "</span>"
+  return (
+    '<span class="chip chip-' + sev + '">' + md.escapeHtml(label) + "</span>"
+  )
 }
 
 async function loadSummaries() {
@@ -742,8 +799,12 @@ async function loadPipeline() {
     for (const col of PIPELINE_COLUMNS) {
       const jobs = data.listings.filter(j => j.status === col.key)
       html +=
-        '<div class="kanban-column" data-status="' + col.key + '">' +
-        '<div class="kanban-header" style="color:' + col.color + '">' +
+        '<div class="kanban-column" data-status="' +
+        col.key +
+        '">' +
+        '<div class="kanban-header" style="color:' +
+        col.color +
+        '">' +
         "<span>" +
         col.label.toUpperCase() +
         "</span>" +
@@ -761,16 +822,20 @@ async function loadPipeline() {
             .replace(/'/g, "&#39;")
           const score =
             j.matchScore != null
-              ? '<span class="badge-score">' + Math.round(j.matchScore * 100) + "%</span>"
+              ? '<span class="badge-score">' +
+                Math.round(j.matchScore * 100) +
+                "%</span>"
               : ""
           const src =
             '<span class="badge-src">' +
             (j.source === "auto-discovered" ? "AUTO" : "MANUAL") +
             "</span>"
           html +=
-            '<div class="kanban-card" onclick="openJobSheet(' +
+            '<div class="kanban-card" draggable="true" data-job-id="' +
             j.id +
-            ")\">" +
+            '" onclick="openJobSheet(' +
+            j.id +
+            ')">' +
             '<div class="company">' +
             md.escapeHtml(j.company) +
             "</div>" +
@@ -785,9 +850,75 @@ async function loadPipeline() {
       }
       html += "</div></div>"
     }
-    document.getElementById("kanban-board").innerHTML = html
+    const board = document.getElementById("kanban-board")
+    board.innerHTML = html
+    wireKanbanDnD(board)
   } catch (e) {
     console.error("Pipeline load failed:", e)
+  }
+}
+
+// =========================================================================
+// Kanban drag-and-drop — move a job between columns by dragging its card.
+// =========================================================================
+// Native HTML5 DnD (no library). A card sets dataTransfer on dragstart; the
+// target column highlights on dragover and fires the PUT on drop. If the API
+// call fails the next loadPipeline() refresh discards the local reordering.
+let _draggedJobId = null
+
+function wireKanbanDnD(board) {
+  if (!board) return
+  // dragstart on cards — remember which job we're dragging.
+  board.querySelectorAll(".kanban-card").forEach(card => {
+    card.addEventListener("dragstart", e => {
+      _draggedJobId = card.getAttribute("data-job-id")
+      card.classList.add("dragging")
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move"
+        // Firefox requires setData to actually start the drag.
+        try {
+          e.dataTransfer.setData("text/plain", _draggedJobId)
+        } catch (_) {}
+      }
+    })
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging")
+      _draggedJobId = null
+      // Clear any lingering drop-target highlight.
+      board
+        .querySelectorAll(".kanban-column.drop-target")
+        .forEach(c => c.classList.remove("drop-target"))
+    })
+  })
+  // dragover + drop on columns.
+  board.querySelectorAll(".kanban-column").forEach(col => {
+    col.addEventListener("dragover", e => {
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move"
+      col.classList.add("drop-target")
+    })
+    col.addEventListener("dragleave", () => {
+      col.classList.remove("drop-target")
+    })
+    col.addEventListener("drop", async e => {
+      e.preventDefault()
+      col.classList.remove("drop-target")
+      const jobId = _draggedJobId
+      const newStatus = col.getAttribute("data-status")
+      if (!jobId || !newStatus) return
+      await moveJobStageDrag(jobId, newStatus)
+    })
+  })
+}
+
+async function moveJobStageDrag(jobId, newStatus) {
+  try {
+    await api("/jobs/" + jobId + "/status", "PUT", { status: newStatus })
+    toast("Moved #" + jobId + " → " + newStatus)
+    loadPipeline()
+  } catch (e) {
+    toast("Move failed: " + (e?.message || e))
+    loadPipeline() // refresh to discard the local reordering
   }
 }
 
@@ -826,7 +957,9 @@ async function openJobSheet(jobId) {
           Math.round(j.matchScore * 100) +
           "%</span>",
       )
-    chips.push('<span class="job-detail-chip">' + md.escapeHtml(j.source) + "</span>")
+    chips.push(
+      '<span class="job-detail-chip">' + md.escapeHtml(j.source) + "</span>",
+    )
     if (j.url)
       chips.push(
         '<a class="job-detail-chip" href="' +
@@ -892,7 +1025,14 @@ async function openJobSheet(jobId) {
 
     // Actions: move stage / draft cover letter
     const stageOptions = PIPELINE_COLUMNS.map(
-      c => '<option value="' + c.key + '"' + (c.key === j.status ? " selected" : "") + ">" + c.label + "</option>",
+      c =>
+        '<option value="' +
+        c.key +
+        '"' +
+        (c.key === j.status ? " selected" : "") +
+        ">" +
+        c.label +
+        "</option>",
     ).join("")
     html +=
       '<div class="job-actions">' +
@@ -917,7 +1057,9 @@ async function openJobSheet(jobId) {
     loadTracesForJob(jobId, j)
   } catch (e) {
     body.innerHTML =
-      '<div class="empty">Failed to load: ' + md.escapeHtml(e.message) + "</div>"
+      '<div class="empty">Failed to load: ' +
+      md.escapeHtml(e.message) +
+      "</div>"
   }
 }
 
@@ -1054,16 +1196,15 @@ async function addJob() {
   const title = document.getElementById("job-title").value.trim()
   const description = document.getElementById("job-description").value.trim()
   const url = document.getElementById("job-url").value.trim()
-  if (!company || !title) return toast("Company and title are required", "error")
+  if (!company || !title)
+    return toast("Company and title are required", "error")
   const res = await api("/jobs", "POST", { company, title, description, url })
   toast(res.message)
   hideModal("job-modal")
-  ;["job-company", "job-title", "job-description", "job-url"].forEach(
-    id => {
-      const el = document.getElementById(id)
-      if (el) el.value = ""
-    },
-  )
+  ;["job-company", "job-title", "job-description", "job-url"].forEach(id => {
+    const el = document.getElementById(id)
+    if (el) el.value = ""
+  })
   loadPipeline()
 }
 
@@ -1098,6 +1239,68 @@ async function saveProfile() {
   const res = await api("/profile", "PUT", profile)
   toast(res.message)
   hideModal("profile-modal")
+}
+
+// =========================================================================
+// CV file upload — populates the textarea from a local file (text formats)
+// or POSTs binary formats (PDF/DOCX) to /api/profile/cv for server-side raw
+// storage. The server stores whatever bytes it gets and returns them in the
+// profile.cv field (the cover-letter writer treats it as opaque text).
+// =========================================================================
+async function uploadProfileCvFile() {
+  const input = document.getElementById("profile-cv-file")
+  if (!input || !input.files || input.files.length === 0) {
+    toast("Choose a file first")
+    return
+  }
+  const file = input.files[0]
+  const name = (file.name || "").toLowerCase()
+  const isTextLike =
+    name.endsWith(".txt") ||
+    name.endsWith(".md") ||
+    name.endsWith(".markdown") ||
+    name.endsWith(".rtf") ||
+    name.endsWith(".html")
+  const ta = document.getElementById("profile-cv")
+  try {
+    if (isTextLike) {
+      // Read inline — fast, no round-trip. Populates the textarea so the
+      // operator can edit before saving.
+      const text = await file.text()
+      ta.value = text
+      toast(
+        "Loaded " +
+          file.name +
+          " (" +
+          text.length +
+          " chars) — review then Save",
+      )
+    } else {
+      // Binary (PDF/DOCX/etc.) — upload raw. Client-side parsing would pull a
+      // heavy dependency; server stores the bytes as-is and the LLM handles
+      // the format at cover-letter time.
+      toast("Uploading " + file.name + "…")
+      const bytes = await file.arrayBuffer()
+      const token = localStorage.getItem("dashboard_token") || ""
+      const res = await fetch(
+        "/api/profile/cv?filename=" + encodeURIComponent(file.name),
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + token,
+            "Content-Type": file.type || "application/octet-stream",
+          },
+          body: bytes,
+        },
+      )
+      if (!res.ok) throw new Error("Upload failed: " + res.status)
+      const data = await res.json()
+      ta.value = data.cv || ""
+      toast("Uploaded " + file.name)
+    }
+  } catch (e) {
+    toast("CV load failed: " + (e?.message || e))
+  }
 }
 
 // =========================================================================

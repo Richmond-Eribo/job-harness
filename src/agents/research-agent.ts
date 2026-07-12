@@ -1,5 +1,5 @@
-import { Agent, unstable_callable } from "agents"
-import { generateText, tool } from "ai"
+import { Agent, callable } from "agents"
+import { generateText, tool, isStepCount } from "ai"
 import { z } from "zod"
 import { getModel, getParams } from "../llm"
 import type {
@@ -157,7 +157,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
   // Callable methods (invoked by Harness via RPC)
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async research(request: ResearchRequest): Promise<ResearchResponse> {
     this.ensureDb()
 
@@ -179,7 +179,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
       search_arxiv: tool({
         description:
           "Search arXiv for academic papers. Returns titles, summaries, URLs, and authors.",
-        parameters: z.object({
+        inputSchema: z.object({
           query: z.string().describe("Search query for arXiv papers"),
           maxResults: z.number().optional().default(5),
         }),
@@ -192,7 +192,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
       search_hackernews: tool({
         description:
           "Search Hacker News (via Algolia) for industry discussion, product launches, and developer sentiment on a topic. Complements arXiv for non-academic signals.",
-        parameters: z.object({
+        inputSchema: z.object({
           query: z.string().describe("Search query"),
           maxResults: z.number().optional().default(5),
         }),
@@ -205,7 +205,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
       save_finding: tool({
         description:
           "Save a research finding to the database for long-term memory.",
-        parameters: z.object({
+        inputSchema: z.object({
           topic: z.string(),
           query: z.string(),
           summary: z.string().describe("A clear summary of what was found"),
@@ -230,7 +230,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
 
     const result = await generateText({
       model,
-      maxSteps,
+      stopWhen: isStepCount(maxSteps),
       tools: researchTools,
       system: `You are a research assistant. Your job is to research the given topic thoroughly.
 
@@ -272,7 +272,7 @@ Find recent developments, key papers, and practical insights. Save your findings
     }
   }
 
-  @unstable_callable()
+  @callable()
   async getHistory(params: {
     topic: string
     limit?: number
@@ -297,7 +297,7 @@ Find recent developments, key papers, and practical insights. Save your findings
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async getTopics(): Promise<ResearchTopic[]> {
     this.ensureDb()
 
@@ -316,7 +316,7 @@ Find recent developments, key papers, and practical insights. Save your findings
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async getRecentFindings(limit: number = 20): Promise<ResearchResult[]> {
     this.ensureDb()
 

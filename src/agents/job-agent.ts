@@ -1,4 +1,4 @@
-import { Agent, unstable_callable } from "agents"
+import { Agent, callable } from "agents"
 import { generateText } from "ai"
 import { getModel, getParams } from "../llm"
 import type {
@@ -194,7 +194,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
   // Profile management
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async setProfile(profile: Partial<UserProfile>): Promise<string> {
     this.ensureDb()
 
@@ -214,7 +214,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
     return `Profile updated: ${entries.map(([k]) => k).join(", ")}`
   }
 
-  @unstable_callable()
+  @callable()
   async getProfile(): Promise<UserProfile> {
     this.ensureDb()
 
@@ -239,7 +239,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
   // Job search (autonomous discovery)
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async searchJobs(request: JobSearchRequest): Promise<JobSearchResponse> {
     this.ensureDb()
 
@@ -373,7 +373,7 @@ ${raw
   // Manual job management
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async addJob(job: {
     company: string
     title: string
@@ -398,7 +398,7 @@ ${raw
   // Cover letter generation
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async generateCoverLetter(
     request: CoverLetterRequest,
   ): Promise<CoverLetterResponse> {
@@ -481,7 +481,7 @@ Generate a tailored, compelling cover letter.`,
   // Pipeline management
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async getJob(jobId: number): Promise<{
     listing: JobListing | null
     coverLetters: CoverLetter[]
@@ -541,7 +541,7 @@ Generate a tailored, compelling cover letter.`,
     return { listing, coverLetters, followUps }
   }
 
-  @unstable_callable()
+  @callable()
   async updateStatus(params: {
     jobId: number
     status: JobStatus
@@ -562,7 +562,7 @@ Generate a tailored, compelling cover letter.`,
     return `Job ${params.jobId} updated to "${params.status}"`
   }
 
-  @unstable_callable()
+  @callable()
   async getPipeline(): Promise<{
     listings: JobListing[]
     stats: JobSearchResponse["pipelineUpdate"]
@@ -605,7 +605,7 @@ Generate a tailored, compelling cover letter.`,
   // Follow-ups
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async getDueFollowUps(): Promise<FollowUp[]> {
     this.ensureDb()
 
@@ -625,7 +625,7 @@ Generate a tailored, compelling cover letter.`,
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async addFollowUp(params: {
     jobId: number
     dueDate: string
@@ -646,13 +646,13 @@ Generate a tailored, compelling cover letter.`,
   // Stats
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async getStats(): Promise<JobSearchResponse["pipelineUpdate"]> {
     this.ensureDb()
     return this.getPipelineStats()
   }
 
-  @unstable_callable()
+  @callable()
   async getCoverLettersForJob(jobId: number): Promise<CoverLetter[]> {
     this.ensureDb()
 

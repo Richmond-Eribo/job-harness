@@ -12,6 +12,7 @@ import { z } from "zod"
 import { getAgentByName } from "agents"
 import type { Env } from "../types"
 import type { JobApplicationAgent } from "../agents"
+import { withRpcRetry } from "../utils/rpc-retry"
 
 type Advance = (toolName: string, input: string | null) => void
 
@@ -23,7 +24,7 @@ export function makeDiscoverJobsTool(env: Env, advance: Advance) {
     description:
       "Ask the JobAgent to find REAL job listings matching criteria. Returns listings that now exist in your pipeline. " +
       "Do not reference any job that did not come from this tool or the API. If nothing matched, it returns an empty list.",
-    parameters: z.object({
+    inputSchema: z.object({
       criteria: z
         .string()
         .describe(
@@ -43,10 +44,12 @@ export function makeDiscoverJobsTool(env: Env, advance: Advance) {
         JSON.stringify({ criteria, maxResults }).slice(0, 2000),
       )
       const agent = await JOB_AGENT(env)
-      const result = await agent.searchJobs({
-        criteria,
-        maxResults: maxResults ?? 5,
-      })
+      const result = await withRpcRetry(() =>
+        agent.searchJobs({
+          criteria,
+          maxResults: maxResults ?? 5,
+        }),
+      )
       return JSON.stringify(result)
     },
   })
@@ -56,14 +59,16 @@ export function makeWriteCoverLetterTool(env: Env, advance: Advance) {
   return tool({
     description:
       "Generate a tailored cover letter for a job ALREADY in your pipeline. Requires a valid jobId (from discover_jobs or pipeline_status). Errors if the id doesn't exist.",
-    parameters: z.object({
+    inputSchema: z.object({
       jobId: z.number().int().describe("An existing job id from your pipeline"),
     }),
     execute: async ({ jobId }) => {
       advance("write_cover_letter", String(jobId))
       const agent = await JOB_AGENT(env)
       try {
-        const result = await agent.generateCoverLetter({ jobId })
+        const result = await withRpcRetry(() =>
+          agent.generateCoverLetter({ jobId }),
+        )
         return JSON.stringify(result)
       } catch (e: any) {
         return `Could not write cover letter: ${e.message}. Confirm jobId exists via pipeline_status.`
@@ -76,10 +81,10 @@ export function makePipelineStatusTool(env: Env) {
   return tool({
     description:
       "Read the current job pipeline: all listings grouped by stage (discovered, draft, applied, interview, offer, rejected) plus due follow-ups. No side effects.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
     execute: async () => {
       const agent = await JOB_AGENT(env)
-      return JSON.stringify(await agent.getPipeline())
+      return JSON.stringify(await withRpcRetry(() => agent.getPipeline()))
     },
   })
 }
@@ -87,7 +92,7 @@ export function makePipelineStatusTool(env: Env) {
 export function makeListJobsTool(env: Env) {
   return tool({
     description: "List saved jobs, optionally filtered by status.",
-    parameters: z.object({
+    inputSchema: z.object({
       status: z
         .enum([
           "discovered",
@@ -101,7 +106,7 @@ export function makeListJobsTool(env: Env) {
     }),
     execute: async ({ status }) => {
       const agent = await JOB_AGENT(env)
-      const pipe = await agent.getPipeline()
+      const pipe = await withRpcRetry(() => agent.getPipeline())
       const listings = status
         ? pipe.listings.filter(j => j.status === status)
         : pipe.listings
@@ -113,7 +118,7 @@ export function makeListJobsTool(env: Env) {
 export function makeSetJobStatusTool(env: Env) {
   return tool({
     description: "Move a job to a new pipeline stage, optionally with notes.",
-    parameters: z.object({
+    inputSchema: z.object({
       jobId: z.number().int(),
       status: z.enum([
         "discovered",
@@ -127,7 +132,9 @@ export function makeSetJobStatusTool(env: Env) {
     }),
     execute: async ({ jobId, status, notes }) => {
       const agent = await JOB_AGENT(env)
-      return await agent.updateStatus({ jobId, status, notes })
+      return await withRpcRetry(() =>
+        agent.updateStatus({ jobId, status, notes }),
+      )
     },
   })
 }

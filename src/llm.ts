@@ -55,6 +55,36 @@ interface LlmConfig {
 
 const config = rawConfig as LlmConfig
 
+// ───────────────────────────────────────────────────────────────────────
+// Runtime model override (v1 gap fix)
+// ───────────────────────────────────────────────────────────────────────
+// llm-config.json is a static import (baked at build time), so without this
+// override mechanism the operator can't switch providers/models without a
+// redeploy. setModelOverride() takes a partial ModelConfig (provider, modelId,
+// customProviderUrl) — anything unset falls back to the JSON. The harness
+// reads overrides from the `config` SQLite table during ensureDb() and applies
+// them here, so PUT /api/config { llmProvider, llmModel, customProviderUrl }
+// takes effect on the next getModel() call without a redeploy.
+let modelOverride: Partial<ModelConfig> = {}
+
+export function setModelOverride(override: Partial<ModelConfig>): void {
+  modelOverride = override
+}
+
+export function clearModelOverride(): void {
+  modelOverride = {}
+}
+
+/** The runtime-effective model config (JSON merged with any DB override). */
+export function effectiveModelConfig(): ModelConfig {
+  return {
+    provider: modelOverride.provider ?? config.model.provider,
+    modelId: modelOverride.modelId ?? config.model.modelId,
+    customProviderUrl:
+      modelOverride.customProviderUrl ?? config.model.customProviderUrl,
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Model factory
 // -----------------------------------------------------------------------------
@@ -71,7 +101,7 @@ const config = rawConfig as LlmConfig
  * - "anthropic-compatible" → any /v1/messages endpoint. Requires model.customProviderUrl.
  */
 export function getModel(env: Env) {
-  const { provider, modelId, customProviderUrl } = config.model
+  const { provider, modelId, customProviderUrl } = effectiveModelConfig()
   const apiKey = env.LLM_API_KEY
 
   if (!apiKey) {
@@ -91,10 +121,11 @@ export function getModel(env: Env) {
     }
     case "openai-compatible": {
       const baseURL = requireCustomUrl(provider, customProviderUrl)
+      // `compatibility: "compatible"` was removed in @ai-sdk/openai v4. The
+      // provider now auto-detects strict vs compatible mode from the baseURL.
       const openai = createOpenAI({
         apiKey,
         baseURL,
-        compatibility: "compatible",
       })
       return openai(modelId)
     }
@@ -173,13 +204,13 @@ export function getModelInfo(_env: Env): {
   model: string
   endpoint?: string
 } {
+  const m = effectiveModelConfig()
   return {
-    provider: config.model.provider,
-    model: config.model.modelId,
+    provider: m.provider,
+    model: m.modelId,
     endpoint:
-      config.model.customProviderUrl &&
-      config.model.customProviderUrl.trim().length > 0
-        ? config.model.customProviderUrl
+      m.customProviderUrl && m.customProviderUrl.trim().length > 0
+        ? m.customProviderUrl
         : undefined,
   }
 }

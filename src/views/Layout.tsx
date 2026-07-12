@@ -205,42 +205,114 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
     </main>
 
     {/* Sheet */}
-    <div class="sheet-overlay" id="sheet-overlay" style="display:none;" onclick="closeSheet()" />
+    <div
+      class="sheet-overlay"
+      id="sheet-overlay"
+      style="display:none;"
+      onclick="closeSheet()"
+    />
     <aside class="sheet" id="sheet" style="display:none;">
       <div class="sheet-head">
         <h3 id="sheet-title">Detail</h3>
-        <button class="icon-btn" onclick="closeSheet()">✕</button>
+        <button class="icon-btn" onclick="closeSheet()">
+          ✕
+        </button>
       </div>
       <div class="sheet-body" id="sheet-body" />
     </aside>
 
     {/* Modals — shared across pages */}
-    <div id="goal-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)hideModal('goal-modal')">
+    <div
+      id="goal-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('goal-modal')"
+    >
       <div class="modal">
-        <h3>Edit goal</h3>
+        <h3>Edit goal + model</h3>
         <div class="form-group">
           <label class="form-label">Agent Goal</label>
-          <textarea id="goal-input" rows={3} placeholder="What should the agent focus on?" />
+          <textarea
+            id="goal-input"
+            rows={3}
+            placeholder="What should the agent focus on?"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Max Steps Per Run</label>
-          <input type="number" id="max-steps-input" value="100" min="1" max="500" />
+          <input
+            type="number"
+            id="max-steps-input"
+            value="100"
+            min="1"
+            max="500"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Token Budget (0 = unlimited)</label>
-          <input type="number" id="budget-input" value="0" min="0" step="10000" placeholder="e.g. 200000" />
+          <input
+            type="number"
+            id="budget-input"
+            value="0"
+            min="0"
+            step="10000"
+            placeholder="e.g. 200000"
+          />
           <div style="font-size:11px; color:var(--muted-2); margin-top:4px;">
             Soft ceiling on cumulative tokens spent per run. 0 disables the cap.
           </div>
         </div>
+        <hr class="modal-sep" />
+        <h4 style="margin-bottom:8px;">
+          Model override (runtime, no redeploy)
+        </h4>
+        <div class="form-group">
+          <label class="form-label">LLM Provider</label>
+          <select id="llm-provider-input">
+            <option value="">(use llm-config.json default)</option>
+            <option value="anthropic">anthropic</option>
+            <option value="openai">openai</option>
+            <option value="openai-compatible">openai-compatible</option>
+            <option value="anthropic-compatible">anthropic-compatible</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">LLM Model Id</label>
+          <input
+            type="text"
+            id="llm-model-input"
+            placeholder="e.g. claude-sonnet-4-20250514"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Custom Provider URL (optional)</label>
+          <input
+            type="url"
+            id="custom-provider-url-input"
+            placeholder="https://api.example.com/v1"
+          />
+        </div>
+        <div style="font-size:11px; color:var(--muted-2); margin-top:4px;">
+          Override one or more. Blank fields fall back to{" "}
+          <code>llm-config.json</code>. The API key (<code>LLM_API_KEY</code>)
+          is unchanged — switch to a provider with a different key by updating
+          the secret too.
+        </div>
         <div class="form-row">
           <button onclick="saveGoal()">Save</button>
-          <button class="secondary" onclick="hideModal('goal-modal')">Cancel</button>
+          <button class="secondary" onclick="hideModal('goal-modal')">
+            Cancel
+          </button>
         </div>
       </div>
     </div>
 
-    <div id="schedule-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)hideModal('schedule-modal')">
+    <div
+      id="schedule-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('schedule-modal')"
+    >
       <div class="modal">
         <h3>Manage schedules</h3>
         <div id="schedule-list-modal" />
@@ -264,12 +336,19 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
         </div>
         <div class="form-row">
           <button onclick="addSchedule()">Add Schedule</button>
-          <button class="secondary" onclick="hideModal('schedule-modal')">Close</button>
+          <button class="secondary" onclick="hideModal('schedule-modal')">
+            Close
+          </button>
         </div>
       </div>
     </div>
 
-    <div id="job-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)hideModal('job-modal')">
+    <div
+      id="job-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('job-modal')"
+    >
       <div class="modal">
         <h3>Add job listing</h3>
         <div class="form-group">
@@ -278,11 +357,19 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
         </div>
         <div class="form-group">
           <label class="form-label">Job Title</label>
-          <input type="text" id="job-title" placeholder="e.g. Senior Software Engineer" />
+          <input
+            type="text"
+            id="job-title"
+            placeholder="e.g. Senior Software Engineer"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Description</label>
-          <textarea id="job-description" rows={4} placeholder="Paste the job description here…" />
+          <textarea
+            id="job-description"
+            rows={4}
+            placeholder="Paste the job description here…"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">URL</label>
@@ -290,68 +377,143 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
         </div>
         <div class="form-row">
           <button onclick="addJob()">Add Job</button>
-          <button class="secondary" onclick="hideModal('job-modal')">Cancel</button>
+          <button class="secondary" onclick="hideModal('job-modal')">
+            Cancel
+          </button>
         </div>
       </div>
     </div>
 
-    <div id="profile-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)hideModal('profile-modal')">
+    <div
+      id="profile-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('profile-modal')"
+    >
       <div class="modal">
         <h3>Your profile</h3>
         <div class="form-group">
           <label class="form-label">CV / Resume</label>
-          <textarea id="profile-cv" rows={8} placeholder="Paste your CV here…" />
+          <textarea
+            id="profile-cv"
+            rows={8}
+            placeholder="Paste your CV here…"
+          />
+          <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
+            <input
+              type="file"
+              id="profile-cv-file"
+              accept=".txt,.md,.markdown,.pdf,.doc,.docx,.rtf,.html"
+              style="font-size: 11px; flex: 1;"
+            />
+            <button
+              type="button"
+              class="btn sm ghost"
+              onclick="uploadProfileCvFile()"
+            >
+              Load file
+            </button>
+          </div>
+          <div style="font-size: 10px; color: var(--text-3); margin-top: 4px;">
+            Loads .txt / .md inline. PDF / DOCX are uploaded raw to
+            /api/profile/cv.
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">Target Roles</label>
-          <input type="text" id="profile-roles" placeholder="e.g. Senior Software Engineer" />
+          <input
+            type="text"
+            id="profile-roles"
+            placeholder="e.g. Senior Software Engineer"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Target Locations</label>
-          <input type="text" id="profile-locations" placeholder="e.g. London, Remote" />
+          <input
+            type="text"
+            id="profile-locations"
+            placeholder="e.g. London, Remote"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Key Skills</label>
-          <input type="text" id="profile-skills" placeholder="TypeScript, React, Cloudflare Workers" />
+          <input
+            type="text"
+            id="profile-skills"
+            placeholder="TypeScript, React, Cloudflare Workers"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Preferences / Notes</label>
-          <textarea id="profile-preferences" rows={3} placeholder="Work style, etc." />
+          <textarea
+            id="profile-preferences"
+            rows={3}
+            placeholder="Work style, etc."
+          />
         </div>
         <div class="form-row">
           <button onclick="saveProfile()">Save Profile</button>
-          <button class="secondary" onclick="hideModal('profile-modal')">Cancel</button>
+          <button class="secondary" onclick="hideModal('profile-modal')">
+            Cancel
+          </button>
         </div>
       </div>
     </div>
 
-    <div id="research-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)hideModal('research-modal')">
+    <div
+      id="research-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('research-modal')"
+    >
       <div class="modal">
         <h3>Run research</h3>
         <div class="form-group">
           <label class="form-label">Topic</label>
-          <input type="text" id="research-topic" placeholder="e.g. Agents SDK best practices" />
+          <input
+            type="text"
+            id="research-topic"
+            placeholder="e.g. Agents SDK best practices"
+          />
         </div>
         <div class="form-group">
           <label class="form-label">Depth</label>
           <select id="research-depth">
             <option value="quick">Quick (3 steps)</option>
-            <option value="standard" selected>Standard (5 steps)</option>
+            <option value="standard" selected>
+              Standard (5 steps)
+            </option>
             <option value="deep">Deep (10 steps)</option>
           </select>
         </div>
         <div class="form-row">
           <button onclick="runResearch()">Start Research</button>
-          <button class="secondary" onclick="hideModal('research-modal')">Cancel</button>
+          <button class="secondary" onclick="hideModal('research-modal')">
+            Cancel
+          </button>
         </div>
       </div>
     </div>
 
-    <div id="cover-letter-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)hideModal('cover-letter-modal')">
+    <div
+      id="cover-letter-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('cover-letter-modal')"
+    >
       <div class="modal">
         <h3>Cover letter</h3>
-        <div id="cover-letter-content" style="white-space: pre-wrap; font-size:14px; line-height:1.7;" />
-        <button class="secondary" onclick="hideModal('cover-letter-modal')" style="margin-top:16px;">Close</button>
+        <div
+          id="cover-letter-content"
+          style="white-space: pre-wrap; font-size:14px; line-height:1.7;"
+        />
+        <button
+          class="secondary"
+          onclick="hideModal('cover-letter-modal')"
+          style="margin-top:16px;"
+        >
+          Close
+        </button>
       </div>
     </div>
   </div>

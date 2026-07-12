@@ -10,6 +10,7 @@ import { z } from "zod"
 import { getAgentByName } from "agents"
 import type { Env } from "../types"
 import type { ResearchAgent } from "../agents"
+import { withRpcRetry } from "../utils/rpc-retry"
 
 type Advance = (toolName: string, input: string | null) => void
 
@@ -18,7 +19,7 @@ export function makeResearchTool(env: Env, advance: Advance) {
     description:
       "Delegate a research task to the ResearchAgent. It searches arXiv and Hacker News and returns real findings with sources. " +
       "Use when you need facts, trends, or papers you don't already have. Pass a focused topic.",
-    parameters: z.object({
+    inputSchema: z.object({
       topic: z
         .string()
         .describe(
@@ -37,7 +38,11 @@ export function makeResearchTool(env: Env, advance: Advance) {
         env.RESEARCH_AGENT,
         "main",
       )
-      const result = await agent.research({ topic, depth: depth ?? "standard" })
+      // Retry transient RPC failures (DO eviction, network blip) so the run
+      // doesn't lose this research turn permanently. See utils/rpc-retry.ts.
+      const result = await withRpcRetry(() =>
+        agent.research({ topic, depth: depth ?? "standard" }),
+      )
       return JSON.stringify(result)
     },
   })

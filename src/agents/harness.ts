@@ -1,11 +1,12 @@
-import { Agent, unstable_callable } from "agents"
-import { generateText, streamText } from "ai"
-import { getModel, getModelInfo, getParams } from "../llm"
+import { Agent, callable } from "agents"
+import { generateText, streamText, isStepCount } from "ai"
+import { getModel, getModelInfo, getParams, setModelOverride } from "../llm"
 // import type { TraceEntry } from "../utils/trace"
 import obsConfig from "../observability-config.json"
 import { DEFAULT_HARNESS_STATE } from "../types"
 import type {
   Env,
+  HarnessStatus,
   HarnessState,
   Plan,
   PlanStep,
@@ -160,6 +161,7 @@ export function initDb(agent: SqlAgent) {
       messages_json TEXT NOT NULL,
       plan_json TEXT,
       status TEXT NOT NULL DEFAULT 'running',
+      loop_state_json TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )`,
@@ -169,6 +171,10 @@ export function initDb(agent: SqlAgent) {
     `CREATE INDEX IF NOT EXISTS idx_checkpoint_status
        ON run_checkpoints (status, updated_at DESC)`,
   )
+  // Backfill the loop_state_json column on databases created before the
+  // actor-loop refactor. ensureColumn() is idempotent so this is a no-op on
+  // fresh deploys.
+  ensureColumn(agent, "run_checkpoints", "loop_state_json", "TEXT")
 }
 
 /**
@@ -230,6 +236,34 @@ function safePick(jsonStr: string, key: string): string | null {
  * This is in-place mutation. The full, un-pruned record still lives in the
  * `trace_events` SQLite table for the dashboard's Trace view.
  */
+/**
+ * Per-iteration bookkeeping the agent loop used to keep in local variables.
+ * Persisted into run_checkpoints.loop_state_json so the actor-loop pattern
+ * (one LLM turn per alarm tick) can restore stuck-detection state across
+ * ticks. Without this, pausing/stopping between ticks would reset the
+ * identical-call and idle counters to zero each tick.
+ */
+interface LoopState {
+  consecutiveIdenticalToolCalls: number
+  lastToolName: string
+  lastToolArgs: string
+  lastToolCallAtMs: number
+  consecutiveNoToolTurns: number
+}
+
+function emptyLoopState(): LoopState {
+  return {
+    consecutiveIdenticalToolCalls: 0,
+    lastToolName: "",
+    lastToolArgs: "",
+    lastToolCallAtMs: 0,
+    consecutiveNoToolTurns: 0,
+  }
+}
+
+const IDENTICAL_TOOL_LIMIT = 3
+const IDENTICAL_TOOL_WINDOW_MS = 60_000 // <60s between identical calls = suspicious
+
 function compactToolResults(messages: any[], retain: number): void {
   if (retain < 0) return
 
@@ -370,22 +404,25 @@ export class Harness extends Agent<Env, HarnessState> {
     stepNumber: number,
     messages: any[],
     plan: Plan | null,
+    loopState?: LoopState,
   ): void {
     try {
       // Cap the messages JSON so a runaway buffer can't blow up the row.
       const messagesJson = JSON.stringify(messages).slice(0, 1024 * 1024)
       const planJson = plan ? JSON.stringify(plan) : null
+      const loopStateJson = loopState ? JSON.stringify(loopState) : null
       execSql(
         this,
-        `INSERT INTO run_checkpoints (run_id, goal, step_number, messages_json, plan_json, status, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'running', datetime('now'))
+        `INSERT INTO run_checkpoints (run_id, goal, step_number, messages_json, plan_json, status, loop_state_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'running', ?, datetime('now'))
          ON CONFLICT(run_id) DO UPDATE SET
            step_number = excluded.step_number,
            messages_json = excluded.messages_json,
            plan_json = excluded.plan_json,
            status = 'running',
+           loop_state_json = excluded.loop_state_json,
            updated_at = datetime('now')`,
-        [runId, goal, stepNumber, messagesJson, planJson],
+        [runId, goal, stepNumber, messagesJson, planJson, loopStateJson],
       )
     } catch {
       // never let checkpoint writes crash the loop
@@ -419,12 +456,13 @@ export class Harness extends Agent<Env, HarnessState> {
     stepNumber: number
     messages: any[]
     plan: Plan | null
+    loopState: LoopState
     updatedAt: string
   } | null {
     try {
       const rows = execSql(
         this,
-        `SELECT run_id, goal, step_number, messages_json, plan_json, updated_at
+        `SELECT run_id, goal, step_number, messages_json, plan_json, loop_state_json, updated_at
            FROM run_checkpoints
           WHERE status = 'running'
           ORDER BY updated_at DESC
@@ -444,12 +482,22 @@ export class Harness extends Agent<Env, HarnessState> {
       } catch {
         // plan optional
       }
+      let loopState: LoopState = emptyLoopState()
+      try {
+        if (r.loop_state_json) {
+          const parsed = JSON.parse(r.loop_state_json as string)
+          loopState = { ...emptyLoopState(), ...parsed }
+        }
+      } catch {
+        // loop_state optional — defaults are safe
+      }
       return {
         runId: r.run_id as string,
         goal: r.goal as string,
         stepNumber: r.step_number as number,
         messages,
         plan,
+        loopState,
         updatedAt: r.updated_at as string,
       }
     } catch {
@@ -639,28 +687,41 @@ export class Harness extends Agent<Env, HarnessState> {
       initDb(this)
       this.dbInitialized = true
 
-      // Load config overrides from SQLite into live state.
-      // NOTE: only state-owned keys (goal, maxSteps, tokenBudget) are promoted
-      // here; provider/model switching is intentionally NOT honored from
-      // SQLite because the API key lives in env (different secret between
-      // providers). Changing provider still requires a redeploy / secret swap.
+      // Load config overrides from SQLite into live state AND apply the
+      // runtime model override so PUT /api/config {llmProvider, llmModel,
+      // customProviderUrl} takes effect without a redeploy. The LLM_API_KEY
+      // env secret stays as-is — switching providers in the DB assumes the
+      // same key works for the new provider (common for OpenAI-compatible
+      // gateways); if not, swap the secret too.
       try {
         const rows = execSql(this, `SELECT key, value FROM config`)
-        for (const row of rows) {
-          if (row.key === "goal") {
-            this.setState({ ...this.state, goal: row.value as string })
-          } else if (row.key === "maxSteps") {
-            this.setState({
-              ...this.state,
-              maxSteps: parseInt(row.value as string, 10) || 100,
-            })
-          } else if (row.key === "tokenBudget") {
-            this.setState({
-              ...this.state,
-              tokenBudget: parseInt(row.value as string, 10) || 0,
-            })
-          }
+        const cfg: Record<string, string> = {}
+        for (const row of rows) cfg[row.key as string] = row.value as string
+
+        if (cfg.goal !== undefined) {
+          this.setState({ ...this.state, goal: cfg.goal })
         }
+        if (cfg.maxSteps !== undefined) {
+          this.setState({
+            ...this.state,
+            maxSteps: parseInt(cfg.maxSteps, 10) || 100,
+          })
+        }
+        if (cfg.tokenBudget !== undefined) {
+          this.setState({
+            ...this.state,
+            tokenBudget: parseInt(cfg.tokenBudget, 10) || 0,
+          })
+        }
+        // Model override — any of the three keys, applied partial-ly so the
+        // operator can switch just the model id (e.g. gpt-4o → gpt-4o-mini)
+        // without re-specifying provider + baseURL.
+        const override: Record<string, string> = {}
+        if (cfg.llmProvider) override.provider = cfg.llmProvider
+        if (cfg.llmModel) override.modelId = cfg.llmModel
+        if (cfg.customProviderUrl)
+          override.customProviderUrl = cfg.customProviderUrl
+        if (Object.keys(override).length > 0) setModelOverride(override)
       } catch {
         // Config table may not have rows yet
       }
@@ -671,7 +732,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // Lifecycle: start / pause / resume / stop / getStatus
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async start(goal?: string): Promise<string> {
     this.ensureDb()
 
@@ -739,26 +800,19 @@ export class Harness extends Agent<Env, HarnessState> {
       lastError: null,
     })
 
-    // ANTI-PATTERN NOTE: awaiting the loop here blocks this RPC for the
-    // entire multi-minute run. Durable Objects serialize their request
-    // queue, so while runLoopWrapped is in-flight, /api/status and every
-    // other harness RPC are queued behind it (you'll see 30s
-    // blockConcurrencyWhile errors under load). Scheduling it via
-    // this.schedule(0, ...) makes it WORSE — the scheduled task still runs
-    // on the same DO and still blocks the queue, plus the alarm dispatcher
-    // doesn't have a request lifecycle to attach to, so it can fatal-reset
-    // the DO.
+    // ACTOR-LOOP PATTERN (v1 gap fix): instead of awaiting a multi-minute
+    // runLoop synchronously (which blocked the entire DO request queue and
+    // made pause/stop dead-letter — see the v0 ANTI-PATTERN note in git
+    // history), we arm ONE immediate alarm tick. Each tick runs a single
+    // LLM turn, persists state, and re-arms itself with schedule(0, …).
+    // Between ticks the DO is free to service /api/status, pause(), stop(),
+    // etc. — pause now actually works because the next tick observes the
+    // status change and exits.
     //
-    // The proper fix is to move the loop OFF the DO entirely — either by
-    // delegating to a Cloudflare Workflow (each step is a Workflow step
-    // with built-in retries, the DO only owns state), or by reshaping the
-    // loop as one-iteration-per-alarm-tick (each alarm runs ONE LLM turn,
-    // persists state, re-arms itself with schedule(0, …); requests can
-    // interleave between ticks). Neither is a one-line fix; tracked as a
-    // P1 architectural follow-up. For now we await so the loop at least
-    // completes, knowing the UI will lag.
+    // We do NOT await the run here; start() returns immediately after
+    // arming. The dashboard's existing poller picks up state transitions.
     try {
-      await this.runLoopWrapped(runId, effectiveGoal)
+      await this.schedule(0, "runLoopTick", { runId, goal: effectiveGoal })
     } catch (error: any) {
       this.setState({
         ...this.state,
@@ -769,15 +823,15 @@ export class Harness extends Agent<Env, HarnessState> {
       this.pushTraceEvent({
         runId,
         eventType: "error",
-        payload: `Run failed: ${error.message ?? String(error)} — checkpoint preserved for resume.`,
+        payload: `Run failed to arm: ${error.message ?? String(error)}`,
       })
       return `Run failed: ${error.message}`
     }
 
-    return `Run ${runId} completed. Steps: ${this.state.currentStep}`
+    return `Run ${runId} started (actor-loop, one turn per alarm tick).`
   }
 
-  @unstable_callable()
+  @callable()
   async pause(): Promise<string> {
     if (this.state.status === "running") {
       this.setState({ ...this.state, status: "paused" })
@@ -786,27 +840,43 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Cannot pause: status is "${this.state.status}"`
   }
 
-  @unstable_callable()
+  @callable()
   async resume(): Promise<string> {
-    if (this.state.status === "paused") {
-      this.setState({ ...this.state, status: "running" })
-      return "Resumed."
+    // ACTOR-LOOP: resume() no longer just flips status — it re-arms the
+    // next tick from the checkpoint the paused tick persisted. Without this,
+    // "paused → running" would have no consumer and the run would stall.
+    if (this.state.status !== "paused") {
+      return `Cannot resume: status is "${this.state.status}"`
     }
-    return `Cannot resume: status is "${this.state.status}"`
+    this.setState({ ...this.state, status: "running" })
+
+    const cp = this.findResumableCheckpoint()
+    if (!cp || !this.state.runId) {
+      // No checkpoint (e.g. paused before the first tick fired). Start fresh.
+      const runId = this.state.runId ?? generateRunId()
+      const goal = this.state.goal
+      await this.schedule(0, "runLoopTick", { runId, goal })
+      return "Resumed (fresh, no checkpoint)."
+    }
+    await this.schedule(0, "runLoopTick", {
+      runId: cp.runId,
+      goal: cp.goal,
+    })
+    return "Resumed."
   }
 
-  @unstable_callable()
+  @callable()
   async stop(): Promise<string> {
     this.setState({ ...this.state, status: "idle", currentStep: 0 })
     return "Stopped."
   }
 
-  @unstable_callable()
+  @callable()
   async getStatus(): Promise<HarnessState["status"]> {
     return this.state.status
   }
 
-  @unstable_callable()
+  @callable()
   async getFullStatus(): Promise<
     HarnessState & { model: { provider: string; model: string } }
   > {
@@ -822,7 +892,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // restores the Managed Agents property: the harness is the decision-maker,
   // the Worker is a thin router. Early-returns if already running (race guard)
   // or if no schedule window is due.
-  @unstable_callable()
+  @callable()
   async wake(): Promise<{ ran: boolean; reason: string }> {
     this.ensureDb()
 
@@ -860,8 +930,14 @@ export class Harness extends Agent<Env, HarnessState> {
       lastError: null,
     })
 
+    // ACTOR-LOOP: arm the first tick (same pattern as start()). The watchdog
+    // gets an immediate "ran=true" for its log line; the run itself proceeds
+    // across alarm ticks without blocking the DO queue.
     try {
-      await this.runLoopWrapped(runId, wakeGoal ?? this.state.goal)
+      await this.schedule(0, "runLoopTick", {
+        runId,
+        goal: wakeGoal ?? this.state.goal,
+      })
     } catch (error: any) {
       this.setState({
         ...this.state,
@@ -875,11 +951,11 @@ export class Harness extends Agent<Env, HarnessState> {
       }
     }
 
-    return { ran: true, reason: "completed" }
+    return { ran: true, reason: "started" }
   }
 
   // Internal schedule check — same logic as the public checkSchedulesDue(),
-  // but does NOT need the @unstable_callable wrapper because it is only ever
+  // but does NOT need the @callable wrapper because it is only ever
   // called from inside the DO (by wake()). Keeping the two separate lets us
   // eventually drop the public callable without touching the wake contract.
   private checkSchedulesDueInternal(): boolean {
@@ -911,7 +987,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // Schedule management (stored in SQLite, checked by watchdog)
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async checkSchedulesDue(): Promise<boolean> {
     this.ensureDb()
 
@@ -949,7 +1025,7 @@ export class Harness extends Agent<Env, HarnessState> {
     return false
   }
 
-  @unstable_callable()
+  @callable()
   async addSchedule(cron: string, focus: string = "all"): Promise<string> {
     this.ensureDb()
 
@@ -967,18 +1043,22 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Schedule added: "${normalized}" (focus: ${focus}) — ${describeCron(normalized)}`
   }
 
-  @unstable_callable()
+  @callable()
   async removeSchedule(id: number): Promise<string> {
     this.ensureDb()
     execSql(this, `DELETE FROM schedules WHERE id = ?`, [id])
     return `Schedule ${id} removed.`
   }
 
-  // NOTE: renamed from getSchedules() — that name is reserved by the base
-  // Agent class (it returns its internal task schedules), so reusing it caused
-  // a TS2416 incompatible-override error.
-  @unstable_callable()
-  async listSchedules(): Promise<ScheduleEntry[]> {
+  // NOTE: renamed from getSchedules() → listSchedules() → listAppSchedules().
+  // `getSchedules` was reserved by the base Agent class on agents@0.0.74, and
+  // `listSchedules` is now ALSO reserved on agents@0.17 (returns the DO's
+  // internal alarm schedule list, with a different signature). Our app
+  // schedules (cron + focus rows in the `schedules` SQLite table) are a
+  // separate concept, so we use `listAppSchedules` to avoid the override
+  // conflict entirely.
+  @callable()
+  async listAppSchedules(): Promise<ScheduleEntry[]> {
     this.ensureDb()
 
     const rows = execSql(this, `SELECT * FROM schedules ORDER BY id`)
@@ -999,7 +1079,7 @@ export class Harness extends Agent<Env, HarnessState> {
     })
   }
 
-  @unstable_callable()
+  @callable()
   async toggleSchedule(id: number, enabled: boolean): Promise<string> {
     this.ensureDb()
     execSql(this, `UPDATE schedules SET enabled = ? WHERE id = ?`, [
@@ -1013,9 +1093,13 @@ export class Harness extends Agent<Env, HarnessState> {
   // Config management
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async updateConfig(config: Record<string, string>): Promise<string> {
     this.ensureDb()
+
+    // Apply the model override eagerly so the next getModel() call inside the
+    // loop picks it up — no need for an ensureDb() cycle.
+    const modelOverride: Record<string, string> = {}
 
     for (const [key, value] of Object.entries(config)) {
       execSql(
@@ -1031,13 +1115,25 @@ export class Harness extends Agent<Env, HarnessState> {
         this.setState({ ...this.state, maxSteps: parseInt(value, 10) || 100 })
       } else if (key === "tokenBudget") {
         this.setState({ ...this.state, tokenBudget: parseInt(value, 10) || 0 })
+      } else if (
+        key === "llmProvider" ||
+        key === "llmModel" ||
+        key === "customProviderUrl"
+      ) {
+        // Map API keys → ModelConfig keys for setModelOverride.
+        const mk = key === "llmModel" ? "modelId" : key
+        modelOverride[mk] = value
       }
+    }
+
+    if (Object.keys(modelOverride).length > 0) {
+      setModelOverride(modelOverride)
     }
 
     return `Config updated: ${Object.keys(config).join(", ")}`
   }
 
-  @unstable_callable()
+  @callable()
   async getConfig(): Promise<Record<string, string>> {
     this.ensureDb()
 
@@ -1064,7 +1160,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // Log retrieval
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async getLog(limit: number = 50): Promise<StepLogEntry[]> {
     this.ensureDb()
 
@@ -1098,7 +1194,7 @@ export class Harness extends Agent<Env, HarnessState> {
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async getDailySummaries(limit: number = 10): Promise<DailySummary[]> {
     this.ensureDb()
 
@@ -1131,7 +1227,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // as null/empty gracefully rather than crashing the dashboard.
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async listRuns(limit: number = 20): Promise<
     Array<{
       runId: string
@@ -1162,7 +1258,7 @@ export class Harness extends Agent<Env, HarnessState> {
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async getTrace(runId: string): Promise<StepLogEntry[]> {
     this.ensureDb()
     const rows = execSql(
@@ -1201,7 +1297,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // hit the same schema.
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async getAllMemory(): Promise<
     Array<{ key: string; value: string; updatedAt: string }>
   > {
@@ -1217,7 +1313,7 @@ export class Harness extends Agent<Env, HarnessState> {
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async setMemory(key: string, value: string): Promise<string> {
     this.ensureDb()
     execSql(
@@ -1230,7 +1326,7 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Remembered ${key}.`
   }
 
-  @unstable_callable()
+  @callable()
   async forgetMemory(key: string): Promise<string> {
     this.ensureDb()
     execSql(this, `DELETE FROM context WHERE key = ?`, [key])
@@ -1246,103 +1342,80 @@ export class Harness extends Agent<Env, HarnessState> {
   // tokenBudget, and the agent calling `finish`.
   // ---------------------------------------------------------------------------
 
-  // runLoopWrapped — the eviction-proof entry to runLoop.
+  // -------------------------------------------------------------------------
+  // ACTOR-LOOP PATTERN (v1 gap fix)
+  // -------------------------------------------------------------------------
+  // Replaces the synchronous while(true) with one-iteration-per-alarm-tick.
+  // Each alarm invocation runs runLoopTick(), which executes exactly ONE LLM
+  // turn, then either finishes the run (stop condition / done) or re-arms
+  // itself via schedule(0, "runLoopTick", …). Between ticks the DO is free
+  // to service /api/status, pause(), stop(), etc. — so pause/stop now work
+  // in real time rather than being queued behind the running loop.
   //
-  // Durable Objects are evicted after ~70-140s of inactivity. A multi-step
-  // autonomous run can take far longer than that, especially with
-  // `reasoningEffort: "xhigh"` and tool calls that fan out to slow HTTP
-  // endpoints. keepAliveWhile holds a reference-counted, alarm-backed
-  // heartbeat for the duration of the run, guaranteeing the DO stays resident
-  // until the loop finishes (whether by finish, budget, or error).
+  // Per-iteration state that used to live in local vars (stuck-detection
+  // counters, last tool call) is persisted in run_checkpoints.loop_state_json
+  // and restored at the top of each tick. The messages array + plan are
+  // restored from the same row.
   //
-  // This is the Cloudflare-recommended primitive for "multi-step tool
-  // execution" (see schedule-tasks docs), and it composes with the SDK's own
-  // alarm multiplexing — it will not fight our schedule()/scheduleEvery() use.
-  //
-  // TYPE NOTE: keepAliveWhile landed on the Agent base class AFTER 0.0.74
-  // (this repo's pinned agents SDK version). It is therefore NOT on the
-  // declared Agent<Env,State> type yet. The narrowing cast below is the
-  // minimum needed to satisfy tsc against the current SDK; if you bump the
-  // agents package, drop the cast and call this.keepAliveWhile(...) directly.
-  private async runLoopWrapped(runId: string, goal: string): Promise<void> {
-    const self = this as unknown as {
-      keepAliveWhile?: <T>(fn: () => Promise<T>) => Promise<T>
-    }
-    if (typeof self.keepAliveWhile === "function") {
-      await self.keepAliveWhile(() => this.runLoop(runId, goal))
-    } else {
-      // Defensive: older Agent base class lacks keepAliveWhile → fall back to
-      // the raw loop. Logged so the operator notices the DO is unprotected.
-      this.logStep(
-        runId,
-        0,
-        "warn",
-        null,
-        "keepAliveWhile unavailable on base Agent; running unprotected",
-      )
-      await this.runLoop(runId, goal)
-    }
-  }
+  // Crash recovery: an interrupted run (eviction, crash, redeploy) leaves a
+  // checkpoint with status='running'. On the next wake()/start(), that
+  // checkpoint is detected and the next tick resumes from it rather than
+  // starting fresh.
+  // -------------------------------------------------------------------------
+  @callable()
+  async runLoopTick(payload: { runId: string; goal: string }): Promise<void> {
+    this.ensureDb()
+    const { runId, goal } = payload
 
-  private async runLoop(runId: string, goal: string): Promise<void> {
+    // NOTE: we deliberately do NOT early-return on status !== "running" here.
+    // Pause/stop checks must happen AFTER state restoration (below), so the
+    // checkpoint reflects the current messages. Reading status through a
+    // local avoids TypeScript narrowing the post-guard union away.
+    const status = this.state.status as HarnessStatus
+
+    if (status === "done" || status === "error") {
+      // Run already finished — nothing for this tick to do.
+      return
+    }
+
     const model = getModel(this.env)
     const maxSteps = this.state.maxSteps
     const tokenBudget = this.state.tokenBudget
 
-    // ── Crash recovery: probe for a resumable checkpoint ────────────────
-    // If THIS runId has a checkpoint with status='running', the previous
-    // invocation was evicted / crashed mid-run. Resume it instead of starting
-    // fresh — restore messages + plan, mark with a trace event so the
-    // operator can see recovery happened.
-    let resumedFromCheckpoint = false
-    let resumedStepNumber = this.state.currentStep
-    let resumedMessages: any[] | null = null
-    let resumedPlan: Plan | null = null
-    try {
-      const rows = execSql(
-        this,
-        `SELECT step_number, messages_json, plan_json FROM run_checkpoints
-          WHERE run_id = ? AND status = 'running'`,
-        [runId],
-      )
-      if (rows.length > 0) {
-        const r = rows[0] as any
-        const parsed = JSON.parse(r.messages_json as string)
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          resumedMessages = parsed
-          resumedStepNumber = r.step_number as number
-          try {
-            if (r.plan_json) resumedPlan = JSON.parse(r.plan_json as string)
-          } catch {
-            // plan optional
-          }
-          resumedFromCheckpoint = true
-        }
-      }
-    } catch {
-      // checkpoints table may not exist yet — treat as no checkpoint
+    // ── Restore per-run state from the checkpoint ───────────────────────
+    // On the FIRST tick there's no checkpoint yet for this runId — we
+    // synthesize a fresh kickoff. On later ticks we restore messages, plan,
+    // and the stuck-detection state left by the previous tick.
+    let messages: any[]
+    let plan: Plan | null
+    let loopState: LoopState
+    let planNeedsFresh: boolean
+
+    const existing = this.findResumableCheckpoint()
+    const ours = existing && existing.runId === runId ? existing : null
+    if (ours) {
+      messages = ours.messages
+      plan = ours.plan
+      loopState = ours.loopState
+      planNeedsFresh = false // already generated on a prior tick
+    } else {
+      // Fresh run — emit run_start + system events, then synthesize a plan.
+      messages = [{ role: "user", content: buildKickoffMessage(goal, runId) }]
+      plan = this.state.plan
+      planNeedsFresh = !plan || (plan as any)._runId !== runId
+      loopState = emptyLoopState()
+
+      this.traceSeq = 0
+      this.pushTraceEvent({
+        runId,
+        eventType: "run_start",
+        payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
+      })
     }
 
-    // ── Generate (or reuse) a structured plan ────────────────────────────
-    // Per Cloudflare's long-running-agents doc, a plan persisted in state is
-    // the canonical durability + orientation primitive: it lets a recovered
-    // invocation know where it was, and "are we stuck?" reduces to "is
-    // plan.currentStep advancing?". One extra LLM round trip at run start,
-    // paid back many times over in context-efficiency across the run.
-    //
-    // We regenerate the plan every fresh run (runId changes) so the agent
-    // starts each session with a plan that reflects the current pipeline
-    // state + memory. The previous run's plan survives in trace_events for
-    // audit; only the current plan lives in state. On a RESUMED run we reuse
-    // the checkpointed plan without another round trip.
-    let plan = resumedPlan ?? this.state.plan
-    const planNeedsFresh =
-      !resumedFromCheckpoint && (!plan || (plan as any)._runId !== runId)
     if (planNeedsFresh) {
       try {
         plan = await this.generatePlan(goal)
-        // Stamp the plan with the run it belongs to so recovery logic can tell
-        // whether a stored plan is for THIS run or a previous one.
         ;(plan as any)._runId = runId
         this.setState({ ...this.state, plan })
         this.pushTraceEvent({
@@ -1353,7 +1426,7 @@ export class Harness extends Agent<Env, HarnessState> {
           payload: JSON.stringify(plan),
         })
       } catch {
-        plan = null // plan generation is best-effort; loop still works without it
+        plan = null
       }
     }
 
@@ -1367,335 +1440,293 @@ export class Harness extends Agent<Env, HarnessState> {
       plan,
     )
 
-    // On a resumed run, reuse the checkpointed messages array so the model
-    // picks up the conversation where it left off. Otherwise begin fresh.
-    const messages: any[] = resumedMessages ?? [
-      { role: "user", content: buildKickoffMessage(goal, runId) },
-    ]
-
-    if (resumedFromCheckpoint) {
-      // Restore the step counter to where we were + emit a recovery trace
-      // event so the dashboard can surface "this run was resumed after crash".
-      this.setState({ ...this.state, currentStep: resumedStepNumber })
+    // On a fresh run, snapshot the system prompt for traceability. (On a
+    // resumed run it's identical — don't write it twice.)
+    if (!ours) {
       this.pushTraceEvent({
         runId,
-        stepNumber: resumedStepNumber,
-        eventType: "run_start",
-        label: "resumed",
-        payload: JSON.stringify({
-          reason: "checkpoint recovery",
-          step: resumedStepNumber,
-          messages: messages.length,
-        }),
+        eventType: "system",
+        role: "system",
+        payload: systemPrompt,
       })
     }
 
-    // ---- Stuck-detection state ----
-    // Instead of "called the same tool twice in a row = loop" (which kills
-    // legitimate patterns like "discover_jobs on Monday then again on Tuesday"),
-    // we track the last FEW tool calls and only flag repetition when:
-    //   (a) the same tool is called with identical args N times in a row
-    //       (default N=3), AND
-    //   (b) the wall-clock between calls is short (likely an actual loop).
-    // A search the operator wants to run twice in two different plan steps
-    // will be separated by other tool calls (pipeline_status, remember, …) so
-    // the consecutive-identical count resets naturally.
-    let consecutiveIdenticalToolCalls = 0
-    let lastToolName = ""
-    let lastToolArgs = ""
-    let lastToolCallAtMs = 0
-    const IDENTICAL_TOOL_LIMIT = 3
-    const IDENTICAL_TOOL_WINDOW_MS = 60_000 // <60s between identical calls = suspicious
-    let consecutiveNoToolTurns = 0
-
-    // ---- Context-retention policy ----
-    // Tool results from `discover_jobs` carry large JSON payloads (5–10KB each).
-    // Without pruning, the prompt grows ~5KB per search and gets re-sent every
-    // turn — prompt token cost grows quadratically. We keep the most recent
-    // tool results intact and REPLACE older tool_result content with a short
-    // placeholder pointing the model at the tools it can use to re-fetch.
-    const RETAIN_RECENT_TOOL_RESULTS = 4
-
-    // ── Run bookkeeping for trace_events ───────────────────────────────────
-    // Reset the monotonic seq counter + write a run_start and a system event
-    // capturing the FULL composed prompt. Then snapshot the kickoff prompt
-    // as one event so the dashboard can show "messages sent".
-    this.traceSeq = 0
-    this.pushTraceEvent({
-      runId,
-      eventType: "run_start",
-      payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
-    })
-    this.pushTraceEvent({
-      runId,
-      eventType: "system",
-      role: "system",
-      payload: systemPrompt,
-    })
-
-    while (true) {
-      // ---- Stop condition: exceeded step ceiling ----
-      if (this.state.currentStep >= maxSteps) {
-        await this.finishRunAuto(
-          runId,
-          goal,
-          `Stopped after reaching maxSteps (${maxSteps}). The agent was still working; consider raising the limit or narrowing the goal.`,
-          "max_steps_reached",
-        )
-        return
-      }
-
-      // ---- Stop condition: token budget exhausted ----
-      if (tokenBudget > 0 && this.state.tokensUsed >= tokenBudget) {
-        await this.finishRunAuto(
-          runId,
-          goal,
-          `Stopped after token budget (${tokenBudget}) was spent. Spent ${this.state.tokensUsed}.`,
-          "token_budget_reached",
-        )
-        return
-      }
-
-      // ---- Stop condition: external pause/stop ----
-      if (this.state.status === "paused" || this.state.status === "idle") {
-        await this.finishRunAuto(
-          runId,
-          goal,
-          `Run interrupted by external ${this.state.status}() call.`,
-          "interrupted",
-        )
-        return
-      }
-
-      // ---- Snapshot the prompt as a trace event for this turn ----
+    // ── Stop conditions — checked at the TOP of each tick ───────────────
+    if (this.state.currentStep >= maxSteps) {
+      await this.finishRunAuto(
+        runId,
+        goal,
+        `Stopped after reaching maxSteps (${maxSteps}). The agent was still working; consider raising the limit or narrowing the goal.`,
+        "max_steps_reached",
+      )
+      return
+    }
+    if (tokenBudget > 0 && this.state.tokensUsed >= tokenBudget) {
+      await this.finishRunAuto(
+        runId,
+        goal,
+        `Stopped after token budget (${tokenBudget}) was spent. Spent ${this.state.tokensUsed}.`,
+        "token_budget_reached",
+      )
+      return
+    }
+    // Pause/stop arrived via a concurrent RPC between ticks. Read through the
+    // broad-typed local so these comparisons aren't narrowed away by TS.
+    const statusNow = this.state.status as HarnessStatus
+    if (statusNow === "paused") {
+      // Pause holds the checkpoint so resume() can continue. Write the
+      // current loop state so we don't reset stuck detection on resume.
+      this.writeCheckpoint(
+        runId,
+        goal,
+        this.state.currentStep,
+        messages,
+        plan,
+        loopState,
+      )
       this.pushTraceEvent({
         runId,
-        stepNumber: this.state.currentStep,
-        eventType: "prompt",
-        role: "user",
-        payload: JSON.stringify(messages).slice(0, 16000),
+        eventType: "system",
+        label: "paused",
+        payload: "Tick observed status=paused; checkpoint saved for resume.",
       })
+      return
+    }
+    if (statusNow !== "running") {
+      // stop() set status to idle — treat as interrupted.
+      await this.finishRunAuto(
+        runId,
+        goal,
+        `Run interrupted by external ${statusNow}() call.`,
+        "interrupted",
+      )
+      return
+    }
 
-      // ---- Reset per-step delta buffers before streaming ----
-      this.reasoningBuf = ""
-      this.textBuf = ""
+    // ── Snapshot the prompt for this turn ───────────────────────────────
+    this.pushTraceEvent({
+      runId,
+      stepNumber: this.state.currentStep,
+      eventType: "prompt",
+      role: "user",
+      payload: JSON.stringify(messages).slice(0, 16000),
+    })
 
-      // ---- One LLM turn, STREAMED so the dashboard can see live progress ----
-      // streamText fires onChunk for reasoning-delta / text-delta / tool-call /
-      // tool-result. We map those into trace_events live. In AI SDK v4, the
-      // streamText result's metadata (usage, response, finishReason, steps,
-      // text) are PROMISES that resolve once the stream completes — we consume
-      // the stream first, then await each.
-      const turnStart = Date.now()
-      const currentStepNumber = this.state.currentStep
-      let result
-      try {
-        result = streamText({
-          model,
-          tools,
-          system: systemPrompt,
-          messages,
-          maxSteps: 1,
-          ...getParams(this.env),
-          onError: ({ error }: any) => {
-            this.pushTraceEvent({
-              runId,
-              stepNumber: currentStepNumber,
-              eventType: "error",
-              payload: String(error?.message ?? error),
-            })
-          },
-          onChunk: ({ chunk }: any) => {
-            this.onChunk(runId, currentStepNumber, chunk)
-          },
-        })
-        // Drain the stream so all chunks fire and metadata promises resolve.
-        for await (const _ of result.fullStream) {
-          // consumed via onChunk above; do nothing here
-        }
-      } catch (err: any) {
-        this.pushTraceEvent({
-          runId,
-          stepNumber: currentStepNumber,
-          eventType: "error",
-          payload: err?.message ?? String(err),
-        })
-        this.logStep(
-          runId,
-          currentStepNumber,
-          "llm_error",
-          null,
-          err?.message ?? String(err),
-        )
-        throw err
+    this.reasoningBuf = ""
+    this.textBuf = ""
+
+    const turnStart = Date.now()
+    const currentStepNumber = this.state.currentStep
+
+    // ── One LLM turn, streamed so the dashboard can see progress live ───
+    let result
+    try {
+      result = streamText({
+        model,
+        tools,
+        system: systemPrompt,
+        messages,
+        stopWhen: isStepCount(1),
+        ...getParams(this.env),
+        onError: ({ error }: any) => {
+          this.pushTraceEvent({
+            runId,
+            stepNumber: currentStepNumber,
+            eventType: "error",
+            payload: String(error?.message ?? error),
+          })
+        },
+        onChunk: ({ chunk }: any) => {
+          this.onChunk(runId, currentStepNumber, chunk)
+        },
+      })
+      for await (const _ of result.fullStream) {
+        // consumed via onChunk above
       }
-
-      // ---- Await the resolved metadata (Promises in v4) ----
-      const resolvedText = await result.text
-      const resolvedUsage = await result.usage
-      const resolvedWarnings = await result.warnings
-      const resolvedResponse = await result.response
-      const resolvedFinishReason = await result.finishReason
-      const resolvedSteps = await result.steps
-
-      // ---- Flush captured reasoning/text deltas for this step ----
-      if (this.reasoningBuf.trim()) {
-        this.pushTraceEvent({
-          runId,
-          stepNumber: currentStepNumber,
-          eventType: "reasoning",
-          role: "assistant",
-          payload: this.reasoningBuf,
-        })
-      }
-      if (this.textBuf.trim()) {
-        this.pushTraceEvent({
-          runId,
-          stepNumber: currentStepNumber,
-          eventType: "text",
-          role: "assistant",
-          payload: this.textBuf,
-        })
-      }
-
-      // ---- step_end event: usage, duration, model, finishReason ----
+    } catch (err: any) {
       this.pushTraceEvent({
         runId,
         stepNumber: currentStepNumber,
-        eventType: "step_end",
-        label: resolvedFinishReason ?? null,
-        payload: JSON.stringify({
-          finishReason: resolvedFinishReason,
-          warnings: resolvedWarnings ?? [],
-        }),
-        tokensIn: resolvedUsage?.promptTokens ?? null,
-        tokensOut: resolvedUsage?.completionTokens ?? null,
-        tokensReasoning:
-          (resolvedUsage as any)?.reasoningTokens ??
-          (resolvedSteps?.[resolvedSteps.length - 1]?.usage as any)
-            ?.reasoningTokens ??
-          null,
-        durationMs: Date.now() - turnStart,
-        model: resolvedResponse?.modelId ?? null,
+        eventType: "error",
+        payload: err?.message ?? String(err),
       })
+      this.logStep(
+        runId,
+        currentStepNumber,
+        "llm_error",
+        null,
+        err?.message ?? String(err),
+      )
+      this.setState({
+        ...this.state,
+        status: "error",
+        lastError: err?.message ?? String(err),
+      })
+      return
+    }
 
-      // ---- Observe usage (drives token-budget stop condition) ----
-      const used = resolvedUsage?.totalTokens ?? 0
-      if (used > 0) {
-        this.setState({
-          ...this.state,
-          tokensUsed: this.state.tokensUsed + used,
-        })
-      }
+    const resolvedText = await result.text
+    const resolvedUsage = await result.usage
+    const resolvedWarnings = await result.warnings
+    const resolvedResponse = await result.response
+    const resolvedFinishReason = await result.finishReason
+    const resolvedSteps = await result.steps
 
-      // ---- Did the agent call finish() and end the run itself? ----
-      if (this.state.status === "done") {
+    if (this.reasoningBuf.trim()) {
+      this.pushTraceEvent({
+        runId,
+        stepNumber: currentStepNumber,
+        eventType: "reasoning",
+        role: "assistant",
+        payload: this.reasoningBuf,
+      })
+    }
+    if (this.textBuf.trim()) {
+      this.pushTraceEvent({
+        runId,
+        stepNumber: currentStepNumber,
+        eventType: "text",
+        role: "assistant",
+        payload: this.textBuf,
+      })
+    }
+
+    this.pushTraceEvent({
+      runId,
+      stepNumber: currentStepNumber,
+      eventType: "step_end",
+      label: resolvedFinishReason ?? null,
+      payload: JSON.stringify({
+        finishReason: resolvedFinishReason,
+        warnings: resolvedWarnings ?? [],
+      }),
+      tokensIn: resolvedUsage?.inputTokens ?? null,
+      tokensOut: resolvedUsage?.outputTokens ?? null,
+      tokensReasoning:
+        (resolvedUsage as any)?.outputTokenDetails?.reasoningTokens ??
+        (resolvedSteps?.[resolvedSteps.length - 1]?.usage as any)
+          ?.outputTokenDetails?.reasoningTokens ??
+        null,
+      durationMs: Date.now() - turnStart,
+      model: resolvedResponse?.modelId ?? null,
+    })
+
+    const used = resolvedUsage?.totalTokens ?? 0
+    if (used > 0) {
+      this.setState({
+        ...this.state,
+        tokensUsed: this.state.tokensUsed + used,
+      })
+    }
+
+    // ---- finish() tool ended the run ----
+    if ((this.state.status as HarnessStatus) === "done") {
+      return
+    }
+
+    // ---- Stuck detection (stateful across ticks via loopState) ----
+    const resultLike = {
+      steps: resolvedSteps,
+      text: resolvedText,
+      usage: resolvedUsage,
+      response: resolvedResponse,
+      warnings: resolvedWarnings,
+      finishReason: resolvedFinishReason,
+    }
+    const stepSummary = summarizeStep(resultLike)
+    const toolName = stepSummary.toolName
+    const toolArgs = stepSummary.toolArgs
+
+    if (!toolName) {
+      loopState.consecutiveNoToolTurns++
+      if (loopState.consecutiveNoToolTurns >= 3) {
+        await this.finishRunAuto(
+          runId,
+          goal,
+          "Stopped: the agent produced no tool calls for three turns in a row (idle/stuck). " +
+            (resolvedText || ""),
+          "idle_detected",
+        )
         return
       }
+    } else {
+      loopState.consecutiveNoToolTurns = 0
+    }
 
-      // ---- Inspect what the model did this turn for guard purposes ----
-      // Reconstruct a generateText-like result shape for summarizeStep() and
-      // extractTrace() which expect { steps, text, usage, response }.
-      const resultLike = {
-        steps: resolvedSteps,
-        text: resolvedText,
-        usage: resolvedUsage,
-        response: resolvedResponse,
-        warnings: resolvedWarnings,
-        finishReason: resolvedFinishReason,
-      }
-      const stepSummary = summarizeStep(resultLike)
-      const toolName = stepSummary.toolName
-      const toolArgs = stepSummary.toolArgs
-
-      // ---- Smarter stuck detection ----
-      // Behavior we WANT to allow:
-      //   • Model pauses to plan or reports progress in text before next tool
-      //   • The same search runs daily ("discover_jobs(senior AI, remote)")
-      //   • A → B → A is always fine
-      // Behavior we want to BLOCK:
-      //   • N identical tool calls back-to-back within a short wall-clock
-      //     window (the model is genuinely looping with no new input).
-      // We bump the no-tool-turns limit to 3 so the model can reason twice
-      // between actions — it's a job agent, planning is part of the job.
-      if (!toolName) {
-        consecutiveNoToolTurns++
-        if (consecutiveNoToolTurns >= 3) {
+    if (toolName) {
+      const now = Date.now()
+      const argsMatch =
+        toolName === loopState.lastToolName &&
+        toolArgs === loopState.lastToolArgs
+      if (argsMatch) {
+        const elapsed = now - loopState.lastToolCallAtMs
+        if (elapsed < IDENTICAL_TOOL_WINDOW_MS) {
+          loopState.consecutiveIdenticalToolCalls++
+        } else {
+          loopState.consecutiveIdenticalToolCalls = 1
+        }
+        if (loopState.consecutiveIdenticalToolCalls >= IDENTICAL_TOOL_LIMIT) {
           await this.finishRunAuto(
             runId,
             goal,
-            "Stopped: the agent produced no tool calls for three turns in a row (idle/stuck). " +
-              (resolvedText || ""),
-            "idle_detected",
+            `Stopped: ${IDENTICAL_TOOL_LIMIT} identical calls to ${toolName} within ${IDENTICAL_TOOL_WINDOW_MS / 1000}s — likely a tight loop.`,
+            "repeated_loop_detected",
           )
           return
         }
       } else {
-        consecutiveNoToolTurns = 0
+        loopState.consecutiveIdenticalToolCalls = 0
       }
+      loopState.lastToolName = toolName
+      loopState.lastToolArgs = toolArgs
+      loopState.lastToolCallAtMs = now
+    }
 
-      if (toolName) {
-        const now = Date.now()
-        const argsMatch = toolName === lastToolName && toolArgs === lastToolArgs
-        if (argsMatch) {
-          // Same tool, same args. Only count toward the limit if the previous
-          // call was recent (likely a tight loop). If a meaningful amount of
-          // time has passed, treat this as a fresh, deliberate re-search.
-          const elapsed = now - lastToolCallAtMs
-          if (elapsed < IDENTICAL_TOOL_WINDOW_MS) {
-            consecutiveIdenticalToolCalls++
-          } else {
-            // Stale: this is a legitimate re-run after a long pause (e.g. a
-            // scheduled re-search). Reset the counter.
-            consecutiveIdenticalToolCalls = 1
-          }
-          if (consecutiveIdenticalToolCalls >= IDENTICAL_TOOL_LIMIT) {
-            await this.finishRunAuto(
-              runId,
-              goal,
-              `Stopped: ${IDENTICAL_TOOL_LIMIT} identical calls to ${toolName} within ${IDENTICAL_TOOL_WINDOW_MS / 1000}s — likely a tight loop.`,
-              "repeated_loop_detected",
-            )
-            return
-          }
-        } else {
-          consecutiveIdenticalToolCalls = 0
-        }
-        lastToolName = toolName
-        lastToolArgs = toolArgs
-        lastToolCallAtMs = now
-      }
+    const trace = extractTrace(resultLike, currentStepNumber)
+    trace.durationMs = Date.now() - turnStart
+    this.logStepTrace(runId, trace)
 
-      // ---- Record the turn in step_log too (back-compat with Log tab) ----
-      // The full trace lives in trace_events; step_log remains the legacy log.
-      const trace = extractTrace(resultLike, currentStepNumber)
-      trace.durationMs = Date.now() - turnStart
-      this.logStepTrace(runId, trace)
+    // ---- Append the model's turn + prune stale tool results ----
+    messages.push(...(resolvedResponse.messages as any[]))
+    // ADAPTIVE retention: a fixed window of 4 starves the model of earlier
+    // context on long runs (e.g. a 100-step discovery → cover-letter run
+    // forgets everything from steps 1–96). Scale the window with run length
+    // so longer runs keep more history. Policy: retain 4 baseline + 1 extra
+    // per 10 steps elapsed, capped at 16 so prompt cost doesn't blow up.
+    const adaptiveRetain = Math.min(
+      16,
+      4 + Math.floor(this.state.currentStep / 10),
+    )
+    compactToolResults(messages, adaptiveRetain)
 
-      // ---- Append the model's turn to the running conversation ----
-      messages.push(...(resolvedResponse.messages as any[]))
+    // ---- Advance step counter + checkpoint ----
+    const nextStep = this.state.currentStep + 1
+    this.setState({ ...this.state, currentStep: nextStep })
 
-      // ---- Selective retention: prune old tool_result content ----
-      // Tool results from `discover_jobs` carry large JSON payloads (~5–10KB).
-      // Without pruning, every turn re-sends the entire history back to the
-      // model, so prompt-token cost grows quadratically. We keep the most
-      // recent few tool results intact and REPLACE older ones with a short
-      // placeholder that tells the model which tool to call to re-fetch.
-      // The model has `pipeline_status` and `recall` for exactly this purpose.
-      compactToolResults(messages, RETAIN_RECENT_TOOL_RESULTS)
+    // Persist everything the next tick needs. If the DO is evicted before the
+    // next alarm fires, the run resumes from this point on the next wake().
+    this.writeCheckpoint(runId, goal, nextStep, messages, plan, loopState)
 
-      // ---- Advance step counter ----
-      const nextStep = this.state.currentStep + 1
+    // ---- Re-arm the next tick ----
+    // schedule(0, …) defers to the next alarm dispatch, returning control of
+    // the DO to the request queue in between. That's the whole point: RPCs
+    // arriving between this return and the next alarm are serviced promptly.
+    try {
+      await this.schedule(0, "runLoopTick", { runId, goal })
+    } catch (err: any) {
+      // Re-arm failed (alarm throttled, DO being torn down). Surface it so
+      // the operator notices the run stalled; leave the checkpoint intact
+      // so wake() resumes on the next cron tick.
       this.setState({
         ...this.state,
-        currentStep: nextStep,
+        status: "error",
+        lastError: `re-arm failed: ${err?.message ?? String(err)}`,
       })
-
-      // ---- Crash recovery checkpoint (P1b) ----
-      // Persist the in-memory loop state after every turn so an eviction or
-      // crash mid-run can be resumed from this exact point. Slips one INSERT
-      // per turn — cheap relative to the LLM call that just finished.
-      this.writeCheckpoint(runId, goal, nextStep, messages, plan)
+      this.pushTraceEvent({
+        runId,
+        eventType: "error",
+        payload: `Failed to re-arm next tick: ${err?.message ?? String(err)}`,
+      })
     }
   }
 
@@ -1718,7 +1749,7 @@ export class Harness extends Agent<Env, HarnessState> {
   // v3 trace_events + user_memory RPCs
   // ---------------------------------------------------------------------------
 
-  @unstable_callable()
+  @callable()
   async getTraceEvents(
     runId: string,
     sinceSeq: number = 0,
@@ -1749,7 +1780,7 @@ export class Harness extends Agent<Env, HarnessState> {
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async getRecentTraceEvents(limit: number = 200): Promise<TraceEvent[]> {
     this.ensureDb()
     const rows = execSql(
@@ -1779,7 +1810,7 @@ export class Harness extends Agent<Env, HarnessState> {
 
   // ----- user_memory (human-authored notes; high-authority prompt layer) -----
 
-  @unstable_callable()
+  @callable()
   async getAllUserMemory(): Promise<UserMemory[]> {
     this.ensureDb()
     const rows = execSql(
@@ -1793,7 +1824,7 @@ export class Harness extends Agent<Env, HarnessState> {
     }))
   }
 
-  @unstable_callable()
+  @callable()
   async setUserMemory(key: string, value: string): Promise<string> {
     this.ensureDb()
     execSql(
@@ -1806,7 +1837,7 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Saved user note ${key}.`
   }
 
-  @unstable_callable()
+  @callable()
   async forgetUserMemory(key: string): Promise<string> {
     this.ensureDb()
     execSql(this, `DELETE FROM user_memory WHERE key = ?`, [key])
@@ -1822,7 +1853,7 @@ export class Harness extends Agent<Env, HarnessState> {
    * run") is the unit because the operator wants to see spend trend over TIME,
    * which is what a bar chart is for.
    */
-  @unstable_callable()
+  @callable()
   async getTokensByDay(days: number = 14): Promise<
     Array<{
       day: string
@@ -1863,7 +1894,7 @@ export class Harness extends Agent<Env, HarnessState> {
    * wall. This is the early-warning signal for the P0a "selective retention"
    * fix's effectiveness.
    */
-  @unstable_callable()
+  @callable()
   async getTurnTokenStats(): Promise<{
     lastTurn: number | null
     maxTurn: number | null
@@ -1921,7 +1952,7 @@ export class Harness extends Agent<Env, HarnessState> {
    *   cover letter drafted (tool_call of write_cover_letter)
    *   error during a run
    */
-  @unstable_callable()
+  @callable()
   async getRecentNotifications(limit: number = 12): Promise<
     Array<{
       id: number
@@ -2017,7 +2048,7 @@ export class Harness extends Agent<Env, HarnessState> {
 
   // ----- goal RPCs (configuration shortcuts) ---------------------------------
 
-  @unstable_callable()
+  @callable()
   async setGoal(goal: string): Promise<string> {
     this.ensureDb()
     this.setState({ ...this.state, goal })
@@ -2062,9 +2093,27 @@ export class Harness extends Agent<Env, HarnessState> {
 
     try {
       const model = getModel(this.env)
-      const toolNames = Object.keys(
-        buildAgentTools(this, this.env, "_plan-synth", goal),
-      ).join(", ")
+      // Pass the FULL tool catalog (description + input schema) to the planner,
+      // not just tool names. Without schemas the model can't tell whether a
+      // tool takes `{topic}` vs `{criteria}` and plans against the wrong shape,
+      // which degrades plan quality on the first run of a fresh deploy.
+      const tools = buildAgentTools(this, this.env, "_plan-synth", goal)
+      const toolCatalog = Object.entries(tools).map(
+        ([name, t]: [string, any]) => ({
+          name,
+          description:
+            typeof t?.description === "string"
+              ? t.description
+              : typeof t?.description === "function"
+                ? "(context-dependent)"
+                : "",
+          inputSchema: t?.inputSchema
+            ? // Best-effort: emit the schema's shape description if it's a zod
+              // schema with .shape; otherwise just note it exists.
+              "yes"
+            : "none",
+        }),
+      )
 
       const { text } = await generateText({
         model,
@@ -2073,7 +2122,10 @@ export class Harness extends Agent<Env, HarnessState> {
           "Each step must be actionable in one or two tool calls. Output STRICT JSON: " +
           '{"steps":[{"id":"step-1","description":"..."},{"id":"step-2","description":"..."}]}. ' +
           "No prose, no markdown fences.",
-        prompt: `Goal: ${goal}\nAvailable tools: ${toolNames}\n\nReturn the JSON plan now.`,
+        prompt:
+          `Goal: ${goal}\n\n` +
+          `Available tools (JSON):\n${JSON.stringify(toolCatalog, null, 2)}\n\n` +
+          `Return the JSON plan now.`,
         ...getParams(this.env),
       })
 
@@ -2105,7 +2157,7 @@ export class Harness extends Agent<Env, HarnessState> {
     return fallback
   }
 
-  @unstable_callable()
+  @callable()
   async getPlan(): Promise<Plan | null> {
     return this.state.plan
   }
@@ -2119,7 +2171,7 @@ export class Harness extends Agent<Env, HarnessState> {
    *
    * Cheap: pure setState + sqlite touch on the trace_events log.
    */
-  @unstable_callable()
+  @callable()
   async advancePlan(
     stepId: string | null,
     status: "complete" | "failed" | "skipped",

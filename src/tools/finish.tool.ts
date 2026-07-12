@@ -9,7 +9,7 @@ export function makeFinishTool(harness: Harness, runId: string, goal: string) {
   return tool({
     description:
       "End this run and write a summary. Call when the goal is met or you've done all useful work. Summarize concretely: what you found, what you did, what's outstanding.",
-    parameters: z.object({
+    inputSchema: z.object({
       summary: z.string().describe("A concrete, specific summary of this run"),
       decisions: z
         .array(z.string())
