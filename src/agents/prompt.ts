@@ -146,8 +146,39 @@ export function buildSystemPrompt(
   goal: string,
   maxSteps: number,
   tokenBudget: number,
+  plan: import("../types").Plan | null,
 ): string {
   const today = new Date().toISOString().slice(0, 10)
+
+  // Render the plan into a compact block the model can orient on. The plan
+  // is a durability + orientation primitive (Cloudflare "planning as a
+  // durability strategy"): it tells a recovered invocation where it was
+  // without having to replay every prior turn.
+  const planBlock = plan
+    ? [
+        "# Your plan for this run",
+        `Current step: ${plan.currentStep + 1} of ${plan.steps.length}`,
+        "",
+        ...plan.steps.map((s, i) => {
+          const n = i + 1
+          const marker =
+            s.status === "complete"
+              ? "[x]"
+              : s.status === "in_progress"
+                ? "[>]"
+                : s.status === "failed"
+                  ? "[!]"
+                  : s.status === "skipped"
+                    ? "[-]"
+                    : "[ ]"
+          return `${marker} ${n}. ${s.description}${
+            s.result ? ` — ${String(s.result).slice(0, 200)}` : ""
+          }`
+        }),
+        "",
+        "Work through the steps in order. When a step is done, move on to the next. If a step becomes impossible, skip it and note why. The plan is yours to revise if you discover the goal needs a different breakdown.",
+      ].join("\n")
+    : "# Your plan for this run\n(No structured plan — work toward the goal directly.)"
 
   return [
     // ── Layer 1: soul (identity + values) ────────────────────────────────
@@ -163,6 +194,8 @@ export function buildSystemPrompt(
     // ── Layer 4: live context ────────────────────────────────────────────
     "# Goal",
     goal,
+    "",
+    planBlock,
     "",
     "# Today",
     `${today} (UTC)`,
