@@ -482,6 +482,66 @@ Generate a tailored, compelling cover letter.`,
   // ---------------------------------------------------------------------------
 
   @unstable_callable()
+  async getJob(jobId: number): Promise<{
+    listing: JobListing | null
+    coverLetters: CoverLetter[]
+    followUps: FollowUp[]
+  }> {
+    this.ensureDb()
+    const jobRows = execSql(this, `SELECT * FROM job_listings WHERE id = ?`, [
+      jobId,
+    ])
+    const listing: JobListing | null =
+      jobRows.length > 0
+        ? (() => {
+            const r = jobRows[0] as any
+            return {
+              id: r.id,
+              company: r.company,
+              title: r.title,
+              description: r.description,
+              url: r.url,
+              matchScore: r.match_score,
+              status: r.status,
+              priority: r.priority,
+              notes: r.notes,
+              source: r.source,
+              createdAt: r.created_at,
+              updatedAt: r.updated_at,
+            } as JobListing
+          })()
+        : null
+
+    const clRows = execSql(
+      this,
+      `SELECT * FROM cover_letters WHERE job_id = ? ORDER BY version DESC`,
+      [jobId],
+    )
+    const coverLetters: CoverLetter[] = clRows.map((r: any) => ({
+      id: r.id,
+      jobId: r.job_id,
+      version: r.version,
+      content: r.content,
+      createdAt: r.created_at,
+    }))
+
+    const fuRows = execSql(
+      this,
+      `SELECT * FROM follow_ups WHERE job_id = ? ORDER BY due_date ASC`,
+      [jobId],
+    )
+    const followUps: FollowUp[] = fuRows.map((r: any) => ({
+      id: r.id,
+      jobId: r.job_id,
+      dueDate: r.due_date,
+      note: r.note,
+      completed: r.completed === 1,
+    }))
+
+    return { listing, coverLetters, followUps }
+  }
+
+  @unstable_callable()
   async updateStatus(params: {
     jobId: number
     status: JobStatus
