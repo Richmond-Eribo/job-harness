@@ -57,6 +57,14 @@ export const ICONS = {
     `<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>`,
   ),
   plus: lucide(`<path d="M5 12h14"/><path d="M12 5v14"/>`),
+  // Used by the Jobs kanban: hover-delete on a card + "Start discovery run".
+  trash: lucide(
+    `<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>`,
+  ),
+  sparkles: lucide(
+    `<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>`,
+  ),
+  x: lucide(`<path d="M18 6 6 18"/><path d="M6 6l12 12"/>`),
 }
 
 const NAV: Array<{ id: string; label: string; href: string; icon: string }> = [

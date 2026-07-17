@@ -28,6 +28,19 @@ let currentLiveRunId = null
 let notifOpen = false
 let lastNotifId = 0
 
+// Inline SVG icons used by client-side rendering in this file (e.g. the
+// Kanban card delete button rebuilt by loadPipeline()). Kept as raw strings
+// so they can be concatenated into HTML — mirrors the lucide icons in
+// Layout.tsx without needing to round-trip through the server.
+const ICONS_SVG = {
+  trash:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>',
+  sparkles:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>',
+  plus:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>',
+}
+
 // =========================================================================
 // Auth
 // =========================================================================
@@ -841,14 +854,52 @@ async function loadSummaries() {
 // =========================================================================
 // Pipeline (Kanban — horizontal-scroll board)
 // =========================================================================
+// Same five columns as the server-rendered JobsPage. Kept in sync here so the
+// periodic reload after a drag/delete rebuilds the same board shape.
 const PIPELINE_COLUMNS = [
-  { key: "discovered", label: "Discovered", color: "var(--ink-3)" },
-  { key: "draft", label: "Draft", color: "var(--warn)" },
-  { key: "applied", label: "Applied", color: "var(--accent)" },
-  { key: "interview", label: "Interview", color: "#a78bfa" },
-  { key: "offer", label: "Offer", color: "var(--ok)" },
-  { key: "rejected", label: "Rejected", color: "var(--danger)" },
+  { key: "discovered", label: "Discovered", accent: "var(--text-3)" },
+  { key: "draft", label: "Draft", accent: "var(--warn)" },
+  { key: "applied", label: "Applied", accent: "var(--amber)" },
+  { key: "interview", label: "Interview", accent: "#a78bfa" },
+  { key: "offer", label: "Offer", accent: "var(--ok)" },
 ]
+
+// Card markup mirror of Jobs.tsx, so the hovery delete button and the drag
+// handle keep working after a periodic refresh.
+function kanbanCardHtml(j) {
+  const autoPct = j.matchScore != null ? Math.round(j.matchScore * 100) : null
+  const match = autoPct != null
+    ? '<span class="kanban-auto">' + autoPct + "% AUTO</span>"
+    : '<span class="kanban-auto kanban-auto-manual">MANUAL</span>'
+  return (
+    '<article class="kanban-card" draggable="true" data-job-id="' +
+    j.id +
+    '">' +
+    '<a class="kanban-card-link" href="/jobs/' +
+    j.id +
+    '" onclick="event.preventDefault();openJobSheet(' +
+    j.id +
+    ')">' +
+    '<span class="kanban-company">' +
+    md.escapeHtml(j.company) +
+    "</span>" +
+    '<span class="kanban-role">' +
+    md.escapeHtml(j.title) +
+    "</span>" +
+    '<span class="kanban-match">' +
+    match +
+    "</span>" +
+    "</a>" +
+    '<button type="button" class="kanban-delete" aria-label="Delete ' +
+    md.escapeHtml(j.company + " " + j.title) +
+    '" onclick="event.preventDefault();event.stopPropagation();removeJob(' +
+    j.id +
+    ')">' +
+    ICONS_SVG.trash +
+    "</button>" +
+    "</article>"
+  )
+}
 
 async function loadPipeline() {
   try {
@@ -860,13 +911,13 @@ async function loadPipeline() {
     for (const col of PIPELINE_COLUMNS) {
       const jobs = data.listings.filter(j => j.status === col.key)
       html +=
-        '<div class="kanban-column" data-status="' +
+        '<section class="kanban-column" data-status="' +
         col.key +
         '">' +
-        '<div class="kanban-header" style="color:' +
-        col.color +
+        '<div class="kanban-header">' +
+        '<span class="kanban-title" style="color:' +
+        col.accent +
         '">' +
-        "<span>" +
         col.label.toUpperCase() +
         "</span>" +
         '<span class="kanban-count">' +
@@ -875,47 +926,32 @@ async function loadPipeline() {
         "</div>" +
         '<div class="kanban-cards">'
       if (jobs.length === 0) {
-        html += '<div class="kanban-empty">Empty</div>'
+        html += '<p class="kanban-empty">Empty</p>'
       } else {
-        for (const j of jobs) {
-          const safe = JSON.stringify(j)
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#39;")
-          const score =
-            j.matchScore != null
-              ? '<span class="badge-score">' +
-                Math.round(j.matchScore * 100) +
-                "%</span>"
-              : ""
-          const src =
-            '<span class="badge-src">' +
-            (j.source === "auto-discovered" ? "AUTO" : "MANUAL") +
-            "</span>"
-          html +=
-            '<div class="kanban-card" draggable="true" data-job-id="' +
-            j.id +
-            '" onclick="openJobSheet(' +
-            j.id +
-            ')">' +
-            '<div class="company">' +
-            md.escapeHtml(j.company) +
-            "</div>" +
-            '<div class="title">' +
-            md.escapeHtml(j.title) +
-            "</div>" +
-            '<div class="match">' +
-            score +
-            src +
-            "</div></div>"
-        }
+        for (const j of jobs) html += kanbanCardHtml(j)
       }
-      html += "</div></div>"
+      html += "</div></section>"
     }
     const board = document.getElementById("kanban-board")
-    board.innerHTML = html
-    wireKanbanDnD(board)
+    if (board) {
+      board.innerHTML = html
+      wireKanbanDnD(board)
+    }
   } catch (e) {
     console.error("Pipeline load failed:", e)
+  }
+}
+
+// Delete a job from the board. Fires the DELETE endpoint then reloads the
+// board so counts and ordering stay correct server-side.
+async function removeJob(jobId) {
+  try {
+    await api("/jobs/" + jobId, "DELETE")
+    toast("Removed job #" + jobId)
+    loadPipeline()
+  } catch (e) {
+    toast("Remove failed: " + (e?.message || e), "error")
+    loadPipeline()
   }
 }
 

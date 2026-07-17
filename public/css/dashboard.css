@@ -930,61 +930,175 @@ button.small, .btn.sm, button.sm {
 .scroll-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 2px; }
 
 /* ============================ KANBAN ====================================== */
+/* A lateral board: N fixed-width columns inside one horizontal scroller.
+   Each column is its own vertical scroll surface; cards are stacked with a
+   small gap. Mirrors a desktop kanban layout (Linear/Trello-style). */
 .logs-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 
-.kanban-scroll { overflow-x: auto; padding-bottom: 6px; }
-.kanban-board, .kanban {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(200px, 1fr));
-  gap: 12px;
+.kanban-scroll {
+  /* the board scrolls sideways; columns themselves scroll vertically */
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
 }
-.kanban-empty { padding: 20px; font-size: 12px; color: var(--text-3); }
+.kanban-board {
+  display: flex;            /* horizontal flex, not grid — columns keep width */
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 4px;
+}
 
-.kanban-column, .kcol {
-  background: var(--bg-2);
+/* fixed-width column, full height of the board viewport */
+.kanban-column {
+  width: 288px;
+  flex: 0 0 288px;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg-2) 40%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px;
-  min-height: 120px;
-}
-.kanban-header, .kcol-head {
-  display: flex; justify-content: space-between; align-items: center;
-  padding-bottom: 10px; margin-bottom: 10px;
-  border-bottom: 1px solid var(--border-soft);
-  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-3);
-}
-.kanban-count, .kcol-count {
-  background: var(--bg-4); color: var(--text-2);
-  border-radius: var(--radius-pill); padding: 1px 8px;
-  font-size: 10.5px; font-weight: 700;
+  transition: border-color 120ms ease, background 120ms ease;
 }
 
-.kanban-card, .kjob {
+.kanban-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px 8px;
+  /* no bottom border — the tinted title carries the column identity */
+}
+.kanban-title {
+  font-family: var(--font-mono);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+/* count pill — small, dim, sits at the right of the header */
+.kanban-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
   background: var(--bg-3);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* per-column vertical scroll surface */
+.kanban-cards {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 4px 12px 14px;
+  overflow-y: auto;
+  /* match the app's thin scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.kanban-cards::-webkit-scrollbar { width: 8px; }
+.kanban-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+
+.kanban-empty { padding: 4px 6px; font-size: 13px; color: var(--text-3); margin: 0; }
+
+/* a card is a positioned article so the hover-delete button can anchor to it.
+   The clickable surface is an inner <a class="kanban-card-link"> so the delete
+   button doesn't have to fight an <a> for the whole card area. */
+.kanban-card {
+  position: relative;
+  background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  padding: 12px;
+  cursor: grab;
+  transition: border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
+}
+.kanban-card:hover { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.kanban-card:active { cursor: grabbing; }
+
+.kanban-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  /* undo the generic <a> underline from the reset */
+  border-bottom: none;
+}
+
+.kanban-company {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 13px; font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+  letter-spacing: 0.01em;
+}
+.kanban-role {
+  display: block;
+  font-size: 13px; line-height: 1.4;
+  color: var(--text-2);
+  /* role strings can be long — keep wrapping tidy */
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.kanban-match { margin-top: 8px; }
+.kanban-auto {
+  font-family: var(--font-mono);
+  font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.kanban-auto-manual { color: var(--text-4); }
+
+/* hover-revealed delete button, top-right of the card */
+.kanban-delete {
+  position: absolute;
+  top: 6px; right: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  border-radius: var(--radius-sm);
+  opacity: 0;
   cursor: pointer;
-  transition: border-color 120ms ease, transform 120ms ease;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
 }
-.kanban-card:hover, .kjob:hover { border-color: var(--amber); transform: translateX(2px); }
-.kanban-card .company, .kjob .kj-company {
-  font-family: var(--font-mono); font-size: 11px; color: var(--amber); font-weight: 600; letter-spacing: 0.02em;
+.kanban-delete svg { width: 14px; height: 14px; }
+.kanban-card:hover .kanban-delete { opacity: 1; }
+.kanban-delete:hover {
+  background: var(--bg-3);
+  color: var(--danger);
+  /* override thedefault <button> amber-on-hover treatment */
+  filter: none;
 }
-.kanban-card .title, .kjob .kj-title { font-size: 12.5px; color: var(--text); margin-top: 4px; line-height: 1.4; }
-.kanban-card .match, .kjob .kj-score, .match-score { font-size: 10.5px; color: var(--text-3); margin-top: 6px; font-variant-numeric: tabular-nums; }
-.match-bar { height: 2px; background: var(--border); margin-top: 6px; border-radius: 999px; overflow: hidden; }
-.match-bar-fill { height: 100%; background: var(--amber); }
 
 /* Kanban drag-and-drop states (see dashboard.js wireKanbanDnD) */
 .kanban-card.dragging { opacity: 0.4; cursor: grabbing; }
 .kanban-column.drop-target {
-  outline: 2px dashed var(--amber);
-  outline-offset: -4px;
-  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 70%, var(--border));
+  background: color-mix(in srgb, var(--amber) 8%, var(--bg-2));
 }
+
+/* legacy class aliases kept so older markup (.kanban / .kjob / .match-bar)
+   doesn't go entirely unstyled if anything still references them */
+.kanban { display: flex; gap: 16px; }
+.kjob {
+  position: relative; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px; margin-bottom: 8px; cursor: pointer;
+}
+.kjob:hover { border-color: var(--amber); }
+.kjob .kj-company { font-family: var(--font-mono); font-size: 13px; color: var(--text); font-weight: 600; }
+.kjob .kj-title { font-size: 13px; color: var(--text-2); margin-top: 4px; line-height: 1.4; }
+.kjob .kj-score { font-size: 11px; color: var(--text-3); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.match-score { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.match-bar { height: 2px; background: var(--border); margin-top: 6px; border-radius: 999px; overflow: hidden; }
+.match-bar-fill { height: 100%; background: var(--amber); }
+.kcol { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 120px; }
+.kcol-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border-soft);
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3);
+}
+.kcol-count { background: var(--bg-4); color: var(--text-2); border-radius: var(--radius-pill); padding: 1px 8px; font-size: 10.5px; font-weight: 700; }
 
 /* ============================ DATA TABLES ================================= */
 .data-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12.5px; }
@@ -1300,7 +1414,7 @@ button.small, .btn.sm, button.sm {
 }
 
 @media (max-width: 960px) {
-  .kanban-board, .kanban { grid-template-columns: repeat(3, minmax(180px, 1fr)); }
+  .kanban-column { width: 260px; flex-basis: 260px; }
 }
 
 @media (max-width: 860px) {
@@ -1320,12 +1434,12 @@ button.small, .btn.sm, button.sm {
 @media (max-width: 720px) {
   .memory-row, .memory-form, .settings-grid { grid-template-columns: 1fr; }
   .detail-grid { grid-template-columns: 1fr; }
-  .kanban-board, .kanban { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+  .kanban-column { width: 240px; flex-basis: 240px; }
   .search input { width: 120px; }
 }
 
 @media (max-width: 560px) {
   .stat-row { grid-template-columns: 1fr; }
   .sheet { width: 100%; }
-  .kanban-board, .kanban { grid-template-columns: minmax(160px, 1fr); }
+  .kanban-column { width: 220px; flex-basis: 220px; }
 }
