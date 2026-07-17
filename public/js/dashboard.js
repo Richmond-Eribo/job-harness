@@ -2219,8 +2219,18 @@ async function loadTranscript(runId) {
   transcriptRunId = runId
   const root = document.getElementById("transcript")
   if (!root) return
-  root.innerHTML =
-    '<div class="empty">Loading transcript…</div>'
+  // Only show the "Loading…" placeholder on the FIRST load of this run, when
+  // the root has no rendered step cards yet. On later calls (the 8s hydrate
+  // loop re-enters here while the page is mounted) we keep the existing DOM
+  // so renderTranscript can reconcile in place — otherwise wiping innerHTML
+  // here would destroy the banner + step-card cache every cycle, rebuilding
+  // the transcript and throwing the user's scroll back to the top.
+  const isFirstLoad =
+    !root.querySelector("#ts-live-banner") &&
+    !root.querySelector("[data-step-key]")
+  if (isFirstLoad) {
+    root.innerHTML = '<div class="empty">Loading transcript…</div>'
+  }
   try {
     const data = await api("/runs/" + encodeURIComponent(runId))
     const events = Array.isArray(data?.events) ? data.events : []
@@ -2368,6 +2378,9 @@ function renderTranscript(root, events, runId) {
     const tmp = document.createElement("div")
     tmp.innerHTML = html
     const card = tmp.firstElementChild
+    // Tag the card with its step key so loadTranscript can tell a populated
+    // root from a first-load empty one without depending on the banner.
+    if (card) card.setAttribute("data-step-key", stepKey)
     if (cached) {
       // Replace the existing card in place (preserves step ordering).
       cached.el.replaceWith(card)
