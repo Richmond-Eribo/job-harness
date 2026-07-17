@@ -1270,6 +1270,243 @@ async function addJob() {
 }
 
 // =========================================================================
+// Overview — inline "add a job" form. Posts to the same /api/jobs endpoint as
+// the modal, then refreshes the headline counts + stage breakdown in place so
+// the operator sees their new job land without a full page reload.
+// =========================================================================
+async function submitOverviewJob() {
+  const company = (document.getElementById("ov-company") || {}).value
+  const title = (document.getElementById("ov-title") || {}).value
+  const url = (document.getElementById("ov-url") || {}).value
+  const description = (document.getElementById("ov-desc") || {}).value
+  const msg = document.getElementById("ov-add-msg")
+  const btn = document.querySelector("#ov-add-form .ov-add-btn")
+  if (!company || !title) {
+    if (msg) {
+      msg.textContent = "Company and title are required."
+      msg.className = "ov-add-msg err"
+    }
+    return
+  }
+  if (btn) {
+    btn.disabled = true
+    btn.classList.add("loading")
+  }
+  if (msg) {
+    msg.textContent = ""
+    msg.className = "ov-add-msg"
+  }
+  try {
+    await api("/jobs", "POST", { company, title, url, description })
+    // Clear the form.
+    ;["ov-company", "ov-title", "ov-url", "ov-desc"].forEach(id => {
+      const el = document.getElementById(id)
+      if (el) el.value = ""
+    })
+    if (msg) {
+      msg.textContent = "Added — refresh counts…"
+      msg.className = "ov-add-msg ok"
+    }
+    await refreshOverviewCounts()
+    if (msg) {
+      msg.textContent = "Added to pipeline ✓"
+      setTimeout(() => {
+        if (msg) {
+          msg.textContent = ""
+          msg.className = "ov-add-msg"
+        }
+      }, 2500)
+    }
+  } catch (e) {
+    if (msg) {
+      msg.textContent = "Failed: " + (e?.message || String(e))
+      msg.className = "ov-add-msg err"
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false
+      btn.classList.remove("loading")
+    }
+  }
+}
+
+// Re-fetch pipeline stats and update the overview cards in place. Cheaper than
+// a full reload — only touches the metric cards + stage bars + total.
+async function refreshOverviewCounts() {
+  try {
+    const pipe = await api("/pipeline")
+    const stats = pipe?.stats || {}
+    const total = stats.total ?? 0
+    const byStatus = stats.byStatus || {}
+    const totalEl = document.getElementById("ov-total")
+    if (totalEl) totalEl.textContent = String(total)
+    const active = ["discovered", "draft", "applied", "interview", "offer"]
+      .reduce((s, k) => s + (Number(byStatus[k]) || 0), 0)
+    const totalCard = totalEl?.closest(".stat-card")
+    if (totalCard) {
+      const sub = totalCard.querySelector(".stat-sub")
+      if (sub)
+        sub.textContent =
+          active + " active · " + (Number(byStatus.rejected) || 0) + " rejected"
+    }
+    const fuEl = document.getElementById("ov-followups")
+    if (fuEl) {
+      fuEl.textContent = String(stats.dueFollowUps ?? 0)
+      fuEl.style.color = stats.dueFollowUps ? "var(--danger)" : ""
+      const fuCard = fuEl.closest(".stat-card")
+      const fuSub = fuCard?.querySelector(".stat-sub")
+      if (fuSub)
+        fuSub.textContent = stats.dueFollowUps ? "needs attention" : "nothing due"
+    }
+    // Re-render stage bars from the fresh byStatus counts.
+    const stagesEl = document.getElementById("ov-stages")
+    if (stagesEl) {
+      const stages = [
+        ["discovered", "Discovered", "var(--text-3)"],
+        ["draft", "Draft", "var(--warn)"],
+        ["applied", "Applied", "var(--amber)"],
+        ["interview", "Interview", "#a78bfa"],
+        ["offer", "Offer", "var(--ok)"],
+      ]
+      stagesEl.innerHTML = stages
+        .map(([key, label, color]) => {
+          const count = Number(byStatus[key]) || 0
+          const pct = total > 0 ? (count / total) * 100 : 0
+          return (
+            '<a class="ov-stage" href="/jobs#' +
+            key +
+            '" style="--stage:' +
+            color +
+            '">' +
+            '<div class="ov-stage-bar"><div class="ov-stage-fill" style="width:' +
+            pct +
+            '%"></div></div>' +
+            '<div class="ov-stage-label"><span class="ov-stage-name">' +
+            label +
+            '</span><span class="ov-stage-count">' +
+            count +
+            "</span></div>" +
+            "</a>"
+          )
+        })
+        .join("")
+    }
+  } catch (_) {
+    // non-fatal — counts will refresh on next poll
+  }
+}
+
+// =========================================================================
+// Job sources — operator-configured job websites the agent may browse.
+// CRUD backing the "Job sources" modal in the dashboard. The agent's
+// search_site / fetch_page tools refuse any URL not on a source here.
+// =========================================================================
+async function loadJobSources() {
+  const list = document.getElementById("sources-list")
+  if (!list) return
+  try {
+    const sources = await api("/job-sources")
+    if (!Array.isArray(sources) || sources.length === 0) {
+      list.innerHTML =
+        '<div class="empty">No sources yet. Add one below — the agent cannot search without at least one.</div>'
+      return
+    }
+    list.innerHTML = sources
+      .map(s => {
+        const pill = s.enabled
+          ? '<span class="pill pill-on">ON</span>'
+          : '<span class="pill pill-off">OFF</span>'
+        const toggle = s.enabled ? "Disable" : "Enable"
+        const esc = md.escapeHtml
+        return (
+          '<div class="row-flex">' +
+          '<div class="row-main">' +
+          '<div style="font-weight:600; color:var(--text);">' +
+          esc(s.name) +
+          " " +
+          pill +
+          "</div>" +
+          '<div style="font-size:11px; color:var(--text-3); margin-top:2px;">' +
+          esc(s.baseUrl) +
+          "</div>" +
+          '<div style="font-size:10.5px; color:var(--text-3); margin-top:2px; font-family:var(--font-mono); word-break: break-all;">' +
+          esc(s.searchUrlTemplate) +
+          "</div>" +
+          "</div>" +
+          '<div class="row-actions">' +
+          '<button class="small secondary" onclick="toggleJobSource(' +
+          s.id +
+          ", " +
+          !s.enabled +
+          ')">' +
+          toggle +
+          "</button>" +
+          '<button class="small danger" onclick="removeJobSource(' +
+          s.id +
+          ')">✕</button>' +
+          "</div></div>"
+        )
+      })
+      .join("")
+  } catch (e) {
+    list.innerHTML =
+      '<div class="empty">Failed to load: ' +
+      md.escapeHtml(e?.message || String(e)) +
+      "</div>"
+  }
+}
+
+async function addJobSource() {
+  const source = {
+    name: document.getElementById("source-name-input").value.trim(),
+    baseUrl: document.getElementById("source-base-url-input").value.trim(),
+    searchUrlTemplate: document
+      .getElementById("source-template-input")
+      .value.trim(),
+    notes:
+      document.getElementById("source-notes-input").value.trim() || undefined,
+  }
+  if (!source.name || !source.baseUrl || !source.searchUrlTemplate) {
+    toast("Name, base URL, and template are required")
+    return
+  }
+  if (!source.searchUrlTemplate.includes("{query}")) {
+    toast("Template must contain a {query} placeholder")
+    return
+  }
+  try {
+    const res = await api("/job-sources", "POST", source)
+    toast(res.message)
+    document.getElementById("source-name-input").value = ""
+    document.getElementById("source-base-url-input").value = ""
+    document.getElementById("source-template-input").value = ""
+    document.getElementById("source-notes-input").value = ""
+    loadJobSources()
+  } catch (e) {
+    toast("Add failed: " + (e?.message || e))
+  }
+}
+
+async function toggleJobSource(id, enable) {
+  try {
+    await api("/job-sources/" + id, "PUT", { enabled: enable })
+    loadJobSources()
+  } catch (e) {
+    toast("Toggle failed: " + (e?.message || e))
+  }
+}
+
+async function removeJobSource(id) {
+  try {
+    const res = await api("/job-sources/" + id, "DELETE")
+    toast(res.message)
+    loadJobSources()
+  } catch (e) {
+    toast("Delete failed: " + (e?.message || e))
+  }
+}
+
+// =========================================================================
 // Profile
 // =========================================================================
 async function loadProfile() {

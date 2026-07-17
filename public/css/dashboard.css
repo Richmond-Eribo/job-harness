@@ -681,6 +681,137 @@ button.small, .btn.sm, button.sm {
 .stat-value-sm { font-size: 14px; }
 .stat-sub { font-size: 11px; color: var(--text-3); margin-top: 6px; }
 
+/* ============================ OVERVIEW (job-first) ===================== */
+/* The overview leads with the job pipeline. These components are overview-
+   specific (prefixed ov-) so they don't collide with the Jobs Kanban styles. */
+
+/* When there are only 3 headline cards (total / follow-ups / status) the
+   default 4-col grid leaves an awkward gap — stretch to fill evenly. */
+#page-overview .stat-row {
+  grid-template-columns: repeat(3, 1fr);
+}
+@media (max-width: 720px) {
+  #page-overview .stat-row { grid-template-columns: 1fr; }
+}
+
+/* ── Stage breakdown bar ──────────────────────────────────────────────── */
+.ov-stages-card { margin-bottom: 16px; }
+.ov-stages {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.ov-stage {
+  display: flex; flex-direction: column; gap: 6px;
+  text-decoration: none; color: inherit;
+  padding: 4px 0;
+}
+.ov-stage-bar {
+  height: 10px; border-radius: var(--radius-pill);
+  background: var(--bg-3); overflow: hidden;
+}
+.ov-stage-fill {
+  height: 100%; border-radius: var(--radius-pill);
+  background: var(--stage, var(--amber));
+  transition: width 0.4s ease;
+  min-width: 2px; /* so a nonzero count still shows a sliver */
+}
+.ov-stage-label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px;
+}
+.ov-stage-name { color: var(--text-2); font-weight: 500; }
+.ov-stage-count {
+  font-family: var(--font-mono); font-weight: 600; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.ov-stage:hover .ov-stage-name { color: var(--stage, var(--amber)); }
+
+/* ── Inline add-job form ──────────────────────────────────────────────── */
+.ov-add-card { display: flex; flex-direction: column; }
+.ov-add-form {
+  display: flex; flex-direction: column; gap: 12px; margin-top: 4px;
+}
+.ov-field { display: flex; flex-direction: column; gap: 5px; }
+.ov-field-grow { flex: 1; }
+.ov-field label {
+  font-size: 10.5px; color: var(--text-3); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.ov-field input, .ov-field textarea {
+  background: var(--bg-3); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 9px 11px;
+  color: var(--text); font-size: 13px; font-family: var(--font-sans);
+  resize: vertical;
+}
+.ov-field input::placeholder, .ov-field textarea::placeholder { color: var(--text-4); }
+.ov-field input:focus, .ov-field textarea:focus {
+  outline: none; border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-dim);
+}
+.ov-add-btn {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+}
+.ov-add-btn.loading { opacity: 0.6; pointer-events: none; }
+.ov-add-btn svg { width: 14px; height: 14px; }
+.ov-add-msg {
+  font-size: 12px; min-height: 16px; font-family: var(--font-mono);
+}
+.ov-add-msg.ok { color: var(--ok); }
+.ov-add-msg.err { color: var(--danger); }
+
+/* ── Top matches ──────────────────────────────────────────────────────── */
+.ov-matches-card { display: flex; flex-direction: column; }
+.ov-matches {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 4px;
+}
+.ov-match {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 12px; border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); text-decoration: none;
+  background: var(--bg-3); transition: border-color 0.12s ease, background 0.12s ease;
+}
+.ov-match:hover {
+  border-color: color-mix(in srgb, var(--amber) 50%, var(--border));
+  background: color-mix(in srgb, var(--amber) 6%, var(--bg-3));
+}
+.ov-match-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+}
+.ov-match-company { font-weight: 600; color: var(--text); font-size: 13px; }
+.ov-match-title { font-size: 12px; color: var(--text-2); }
+.ov-match-score {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  padding: 1px 7px; border-radius: var(--radius-pill);
+  /* color tiers by fit: high = green, mid = amber, low = dim */
+  background: var(--bg-4); color: var(--text-2);
+}
+.ov-match-score[data-pct="100"], .ov-match-score[data-pct^="9"], .ov-match-score[data-pct^="8"] {
+  background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok);
+}
+.ov-match-score[data-pct^="7"], .ov-match-score[data-pct^="6"] {
+  background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber);
+}
+
+/* ── Due follow-ups ───────────────────────────────────────────────────── */
+.ov-followups-card { margin-top: 16px; }
+.ov-followups {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 4px;
+}
+.ov-followup {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 9px 12px; border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm); text-decoration: none; background: var(--bg-3);
+}
+.ov-followup:hover { background: color-mix(in srgb, var(--danger) 6%, var(--bg-3)); }
+.ov-fu-date {
+  font-family: var(--font-mono); font-size: 11px; color: var(--danger);
+  white-space: nowrap; flex-shrink: 0;
+}
+.ov-fu-note { font-size: 12.5px; color: var(--text-2); }
+
+/* ── Demoted bottom sections ──────────────────────────────────────────── */
+.ov-bottom { margin-top: 24px; }
+
 /* ============================ KPI GRID (alt stat treatment) ============= */
 .kpi-grid {
   display: grid;
