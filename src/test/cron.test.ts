@@ -1,57 +1,14 @@
 import { describe, it, expect } from "vitest"
-import { CronExpressionParser } from "cron-parser"
 
-/**
- * These mirror the pure cron helpers in src/harness.ts.
- * We test the underlying logic since the harness functions are private.
- */
-
-function validateCron(expr: string): string | null {
-  try {
-    CronExpressionParser.parse(expr, { currentDate: new Date(), tz: "UTC" })
-    return null
-  } catch (e: any) {
-    return e?.message ?? "Invalid cron expression"
-  }
-}
-
-function previousFire(expr: string, now: Date = new Date()): Date | null {
-  try {
-    const it = CronExpressionParser.parse(expr, { currentDate: now, tz: "UTC" })
-    return it.prev().toDate()
-  } catch {
-    return null
-  }
-}
-
-function nextFire(expr: string, now: Date = new Date()): Date | null {
-  try {
-    const it = CronExpressionParser.parse(expr, { currentDate: now, tz: "UTC" })
-    return it.next().toDate()
-  } catch {
-    return null
-  }
-}
-
-function describeCron(expr: string): string {
-  const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return expr
-  const [minP, hourP, , , dowP] = parts
-  const at =
-    hourP !== "*" && minP !== "*"
-      ? `${hourP.padStart(2, "0")}:${minP.padStart(2, "0")}`
-      : ""
-  const days =
-    dowP === "*"
-      ? ""
-      : dowP === "1-5"
-        ? " Mon-Fri"
-        : dowP === "0,6"
-          ? " Sat-Sun"
-          : ` ${dowP}`
-  if (at) return `Every ${at} UTC${days}`
-  return expr
-}
+// Test the REAL cron helpers, not a local copy. Previously this file
+// re-declared validateCron/previousFire/nextFire/describeCron inline, which
+// meant the suite would keep passing even if src/utils/cron.ts diverged.
+import {
+  validateCron,
+  previousFire,
+  nextFire,
+  describeCron,
+} from "../utils/cron"
 
 describe("validateCron", () => {
   it("accepts standard 5-field cron expressions", () => {
