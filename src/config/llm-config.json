@@ -18,5 +18,12 @@
     "anthropic": {
       "thinking": { "type": "enabled", "budgetTokens": 2048 }
     }
+  },
+
+  "browser": {
+    "$doc": "Browser capability config. The browser tools (browser_observe/act/extract) work structure-based by default so text-only models can drive a page. Set vision:true ONLY if the model above is vision-capable — then observe also returns a base64 screenshot and act accepts coordinate clicks.",
+    "vision": false,
+    "maxActionsPerRun": 20,
+    "navigationTimeoutMs": 30000
   }
 }
