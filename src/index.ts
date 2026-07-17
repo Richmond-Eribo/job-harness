@@ -24,13 +24,20 @@ import { renderPage } from "./views/renderDashboard"
 import OverviewPage from "./views/pages/Overview"
 import JobsPage from "./views/pages/Jobs"
 import TracesPage from "./views/pages/Traces"
+import TracePage from "./views/pages/Trace"
 import LogsPage from "./views/pages/Logs"
 import MemoryPage from "./views/pages/Memory"
 import SettingsPage from "./views/pages/Settings"
 import { getAgents, HARNESS_ID } from "./utils/get-agents"
 
 // Re-export all Durable Object classes (required by Cloudflare)
-export { Harness, ResearchAgent, JobApplicationAgent } from "./agents"
+export {
+  Harness,
+  ResearchAgent,
+  JobApplicationAgent,
+  BrowserRelay,
+  BrowserAgent,
+} from "./agents"
 // =============================================================================
 // Hono app
 // =============================================================================
@@ -77,17 +84,29 @@ app.use(
 
 app.get("/", renderer, async c => {
   const { harness, jobAgent } = await getAgents(c.env)
-  const [status, turns, tokensByDay, summaries] = await Promise.all([
-    harness.getFullStatus().catch(() => null),
-    harness.getTurnTokenStats().catch(() => null),
-    harness.getTokensByDay(14).catch(() => []),
-    harness.getDailySummaries(5).catch(() => []),
-  ])
+  // The overview is job-first: pipeline stats + listings + follow-ups are the
+  // primary data; agent status + token trend are demoted to the bottom. Each
+  // fetch is independently guarded so one slow/failing DO call doesn't blank
+  // the whole page.
+  const [status, turns, tokensByDay, summaries, pipeline, followUps] =
+    await Promise.all([
+      harness.getFullStatus().catch(() => null),
+      harness.getTurnTokenStats().catch(() => null),
+      harness.getTokensByDay(14).catch(() => []),
+      harness.getDailySummaries(5).catch(() => []),
+      jobAgent.getPipeline().catch(() => ({
+        listings: [],
+        stats: { total: 0, byStatus: {}, dueFollowUps: 0 },
+      })),
+      jobAgent.getDueFollowUps().catch(() => []),
+    ])
   return renderPage(c, "overview", OverviewPage, {
     status,
     turns,
     tokensByDay,
     summaries,
+    pipeline,
+    followUps,
   })
 })
 
@@ -113,6 +132,20 @@ app.get("/traces", renderer, async c => {
     runs = await harness.listRuns(30)
   } catch (_) {}
   return renderPage(c, "traces", TracesPage, { runs })
+})
+
+// Deep-linkable single-run transcript. A real route (not a JS-only sheet) so
+// Cmd-click opens a new tab and the back button returns to the run list. The
+// page server-renders the run header; the heavy event stream is hydrated
+// client-side from /api/runs/:runId (which returns run + events in one call).
+app.get("/traces/:runId", renderer, async c => {
+  const runId = c.req.param("runId")
+  const { harness } = await getAgents(c.env)
+  let run: any = null
+  try {
+    run = await harness.getRun(runId)
+  } catch (_) {}
+  return renderPage(c, "traces", TracePage, { runId, run })
 })
 
 app.get("/logs", renderer, async c => {
@@ -144,6 +177,42 @@ app.get("/settings", renderer, async c => {
 
 // =============================================================================
 // Status & Control
+// =============================================================================
+// Browser capability — relay WebSocket upgrade + status/control API.
+// =============================================================================
+// The Chrome extension connects its OUTBOUND WebSocket to /browser/relay
+// (the Worker can't reach a browser behind NAT; the browser reaches us). That
+// WS is what lets the agent drive the user's real, logged-in Chrome for
+// login-walled job sites. See docs/browser-cdp-guide.md.
+
+app.all("/browser/relay", async c => {
+  // Forward the WS upgrade straight to the relay DO. The relay accepts +
+  // hibernates the socket and tags it for its webSocketMessage handler.
+  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, "main")
+  return relay.fetch(c.req.raw)
+})
+
+app.get("/api/browser/status", async c => {
+  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, "main")
+  return c.json(await relay.statusSnapshot())
+})
+
+app.post("/api/browser/disconnect", async c => {
+  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, "main")
+  return c.json({ disconnected: relay.disconnectLive() })
+})
+
+// Manual test harness — navigate + observe a URL through the connected browser
+// and return the raw result. Backs the Browser Test panel on Settings. Lets the
+// operator verify the whole chain (relay → extension → Chrome → CDP) without a
+// full agent run. No LLM call, so it's free to run repeatedly.
+app.post("/api/browser/probe", async c => {
+  const body = await c.req.json().catch(() => ({}))
+  if (!body?.url) return c.json({ error: "url required" }, 400)
+  const agent: any = await getAgentByName(c.env.BROWSER_AGENT, "main")
+  return c.json(await agent.probe(body.url))
+})
+
 // =============================================================================
 
 app.get("/api/status", async c => {
@@ -393,6 +462,40 @@ app.get("/api/runs/:runId/events", async c => {
   }
 })
 
+// Single run: metadata + ordered events in ONE payload. The transcript page
+// hydrates from this (one round trip) instead of two separate calls. Events
+// already carry the v2 columns (agent, toolCallId, parentId, parentLabel,
+// cacheRead/Write, truncated) the transcript renderer needs.
+app.get("/api/runs/:runId", async c => {
+  const runId = c.req.param("runId")
+  const { harness } = await getAgents(c.env)
+  try {
+    const [run, events] = await Promise.all([
+      harness.getRun(runId),
+      harness.getTraceEvents(runId, 0, 2000),
+    ])
+    return c.json({ run, events })
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
+// Model probe — sends a canned tiny request to the configured model and
+// returns the RAW shapes (response.messages, full usage incl. cache +
+// reasoning details, response.headers, providerMetadata, finishReason). The
+// "learn what each model returns" lever: run this after switching providers
+// to see exactly what the trace renderer will be working with.
+app.get("/api/debug/model-probe", async c => {
+  const { harness } = await getAgents(c.env)
+  try {
+    // Cast to any: probeModel's return type (with the model-info union) can
+    // push Hono's c.json() type instantiation past its depth limit.
+    return c.json((await harness.probeModel()) as any)
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
 app.get("/api/trace-events", async c => {
   const limit = Number(c.req.query("limit") ?? "200")
   const { harness } = await getAgents(c.env)
@@ -486,6 +589,39 @@ app.get("/api/pipeline", async c => {
   return c.json(await jobAgent.getPipeline())
 })
 
+// =============================================================================
+// Job sources — operator-configured job websites the agent is allowed to browse.
+// CRUD routes backing the dashboard's "Sources" management UI. The agent's
+// search tools read the same `job_sources` table at runtime to scope every
+// fetch_page / search_site to an enabled source's origin.
+// =============================================================================
+
+app.get("/api/job-sources", async c => {
+  const { jobAgent } = await getAgents(c.env)
+  return c.json(await jobAgent.listJobSources())
+})
+
+app.post("/api/job-sources", async c => {
+  const body = await c.req.json()
+  const { jobAgent } = await getAgents(c.env)
+  return c.json(await jobAgent.addJobSource(body))
+})
+
+app.put("/api/job-sources/:id", async c => {
+  const id = Number(c.req.param("id"))
+  const body = await c.req.json()
+  const { jobAgent } = await getAgents(c.env)
+  return c.json({
+    message: await jobAgent.updateJobSource(id, body),
+  })
+})
+
+app.delete("/api/job-sources/:id", async c => {
+  const id = Number(c.req.param("id"))
+  const { jobAgent } = await getAgents(c.env)
+  return c.json({ message: await jobAgent.removeJobSource(id) })
+})
+
 app.post("/api/jobs", async c => {
   const body = await c.req.json()
   const { jobAgent } = await getAgents(c.env)
@@ -515,6 +651,12 @@ app.put("/api/jobs/:id/status", async c => {
       notes: body.notes,
     }),
   })
+})
+
+app.delete("/api/jobs/:id", async c => {
+  const jobId = Number(c.req.param("id"))
+  const { jobAgent } = await getAgents(c.env)
+  return c.json({ message: await jobAgent.deleteJob({ jobId }) })
 })
 
 app.post("/api/jobs/:id/follow-up", async c => {
