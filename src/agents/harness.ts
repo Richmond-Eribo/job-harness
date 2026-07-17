@@ -667,55 +667,14 @@ export class Harness extends Agent<Env, HarnessState> {
     }
   }
 
-  /**
-   * Stream-chunk handler. Maps AI SDK v4 onChunk types → trace_events rows.
-   * Accumulates reasoning/text deltas into per-step buffers so we write one
-   * reasoning event and one text event per step (not one per token).
-   */
-  private reasoningBuf = ""
-  private textBuf = ""
-  private onChunk(runId: string, stepNumber: number, chunk: any): void {
-    try {
-      switch (chunk?.type) {
-        case "tool-call":
-        case "tool-call-streaming-start":
-          this.pushTraceEvent({
-            runId,
-            stepNumber,
-            eventType: "tool_call",
-            label: chunk.toolName ?? null,
-            payload: chunk.args
-              ? JSON.stringify(chunk.args).slice(0, 4000)
-              : chunk.input
-                ? JSON.stringify(chunk.input).slice(0, 4000)
-                : null,
-          })
-          break
-        case "tool-result":
-          this.pushTraceEvent({
-            runId,
-            stepNumber,
-            eventType: "tool_result",
-            label: chunk.toolName ?? null,
-            payload:
-              chunk.result != null
-                ? JSON.stringify(chunk.result).slice(0, 4000)
-                : null,
-          })
-          break
-        case "reasoning-delta":
-          if (typeof chunk.textDelta === "string")
-            this.reasoningBuf += chunk.textDelta
-          break
-        case "text-delta":
-          if (typeof chunk.textDelta === "string")
-            this.textBuf += chunk.textDelta
-          break
-      }
-    } catch {
-      // swallow
-    }
-  }
+  // NOTE: stream-chunk handling (reasoning/text/tool deltas → trace_events) and
+  // the per-step reasoning/text buffers used to live here as onChunk +
+  // reasoningBuf/textBuf. They moved into the shared TraceRecorder
+  // (src/utils/trace-recorder.ts) so the SAME capture path serves the harness
+  // streamText loop AND the sub-agent generateText loops. Two v7 bugs the old
+  // onChunk had are fixed in the recorder: it reads chunk.text (not the v4
+  // chunk.textDelta, which was undefined in v7 and silently dropped reasoning/
+  // text capture), and it pairs tool_call ↔ tool_result via toolCallId.
 
   /** Exposed so tool factories (in tools/) can log + advance the step counter. */
   advanceForTool(runId: string, toolName: string, input: string | null) {
@@ -1382,11 +1341,10 @@ export class Harness extends Agent<Env, HarnessState> {
   // ---------------------------------------------------------------------------
   // Trace retrieval — back the dashboard's Trace tab.
   // ---------------------------------------------------------------------------
-  // listRuns() groups step_log rows by run_id to populate the run-picker.
-  // getTrace(runId) returns the ordered step list for a single run, including
-  // the reasoning chain-of-thought and per-component token usage. Legacy rows
-  // written before the v2 migration have NULL trace fields — they surface
-  // as null/empty gracefully rather than crashing the dashboard.
+  // listRuns() derives the run list from trace_events (the canonical store
+  // since v3) with a UNION against step_log so legacy runs written before the
+  // trace_events table existed still appear. Each row carries enough for the
+  // run-list table: start time, step count, and token totals.
   // ---------------------------------------------------------------------------
 
   @callable()
@@ -1396,28 +1354,142 @@ export class Harness extends Agent<Env, HarnessState> {
       createdAt: string
       steps: number
       tokens: number | null
+      status: string | null
+      goal: string | null
     }>
   > {
     this.ensureDb()
+    // trace_events is the source of truth for new runs. We derive steps from
+    // the max step_number on a step_end event (one per turn), tokens from the
+    // sum of tokens_in + tokens_out on step_end events, and status/goal from
+    // the run_start / run_end events.
     const rows = execSql(
+      this,
+      `SELECT run_id,
+              MIN(created_at) AS started_at,
+              COALESCE(MAX(CASE WHEN event_type='step_end' THEN step_number END), 0) AS steps,
+              COALESCE(SUM(CASE WHEN event_type='step_end'
+                                THEN COALESCE(tokens_in,0) + COALESCE(tokens_out,0)
+                                ELSE 0 END), 0) AS tokens
+         FROM trace_events
+        WHERE run_id IS NOT NULL AND run_id <> ''
+        GROUP BY run_id
+        ORDER BY started_at DESC
+        LIMIT ?`,
+      [limit],
+    )
+    if (rows.length > 0) {
+      // Pull status + goal per run from the run_start / run_end rows in one pass.
+      const runIds = rows.map((r: any) => r.run_id)
+      const placeholders = runIds.map(() => "?").join(",")
+      let statusGoal: Record<string, { status: string | null; goal: string | null }> = {}
+      try {
+        const sgRows = execSql(
+          this,
+          `SELECT run_id,
+                  MAX(CASE WHEN event_type='run_end' THEN label END) AS status,
+                  MAX(CASE WHEN event_type='run_start' THEN json_extract(payload,'$.goal') END) AS goal
+             FROM trace_events
+            WHERE run_id IN (${placeholders}) AND event_type IN ('run_start','run_end')
+            GROUP BY run_id`,
+          runIds,
+        )
+        for (const r of sgRows) {
+          statusGoal[r.run_id as string] = {
+            status: (r.status as string) ?? null,
+            goal: (r.goal as string) ?? null,
+          }
+        }
+      } catch {
+        // json_extract may be unavailable on very old SQLite; status/goal stay null
+      }
+      return rows.map((r: any) => ({
+        runId: r.run_id as string,
+        createdAt: r.started_at as string,
+        steps: (r.steps as number) ?? 0,
+        tokens: (r.tokens as number) ?? null,
+        status: statusGoal[r.run_id as string]?.status ?? null,
+        goal: statusGoal[r.run_id as string]?.goal ?? null,
+      }))
+    }
+    // Fallback for runs that pre-date the trace_events table entirely.
+    const legacy = execSql(
       this,
       `SELECT run_id,
               MIN(created_at) AS started_at,
               MAX(step_number) AS steps,
               MAX(tokens_used) AS tokens
-       FROM step_log
-       WHERE run_id IS NOT NULL
-       GROUP BY run_id
-       ORDER BY started_at DESC
-       LIMIT ?`,
+         FROM step_log
+        WHERE run_id IS NOT NULL
+        GROUP BY run_id
+        ORDER BY started_at DESC
+        LIMIT ?`,
       [limit],
     )
-    return rows.map((r: any) => ({
+    return legacy.map((r: any) => ({
       runId: r.run_id as string,
       createdAt: r.started_at as string,
       steps: (r.steps as number) ?? 0,
       tokens: (r.tokens as number) ?? null,
+      status: null,
+      goal: null,
     }))
+  }
+
+  /**
+   * Metadata for one run: goal, status, startedAt, endedAt, and rolled-up
+   * token totals. Backs the single-run transcript header. Derived from
+   * trace_events so it reflects exactly what the dashboard will render.
+   */
+  @callable()
+  async getRun(runId: string): Promise<{
+    runId: string
+    goal: string | null
+    status: string | null
+    startedAt: string | null
+    endedAt: string | null
+    steps: number
+    tokensIn: number
+    tokensOut: number
+    tokensReasoning: number
+    cacheRead: number
+    cacheWrite: number
+    finishReason: string | null
+  }> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT
+          MIN(created_at) AS started_at,
+          MAX(created_at) AS ended_at,
+          MAX(CASE WHEN event_type='run_end' THEN label END) AS status,
+          MAX(CASE WHEN event_type='run_start' THEN json_extract(payload,'$.goal') END) AS goal,
+          COALESCE(MAX(CASE WHEN event_type='step_end' THEN step_number END), 0) AS steps,
+          COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(tokens_in,0) END),0) AS tokens_in,
+          COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(tokens_out,0) END),0) AS tokens_out,
+          COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(tokens_reasoning,0) END),0) AS tokens_reasoning,
+          COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(cache_read,0) END),0) AS cache_read,
+          COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(cache_write,0) END),0) AS cache_write,
+          MAX(CASE WHEN event_type='step_end' THEN label END) AS finish_reason
+         FROM trace_events
+        WHERE run_id = ?`,
+      [runId],
+    )
+    const r = (rows[0] ?? {}) as any
+    return {
+      runId,
+      goal: (r.goal as string) ?? null,
+      status: (r.status as string) ?? null,
+      startedAt: (r.started_at as string) ?? null,
+      endedAt: (r.ended_at as string) ?? null,
+      steps: (r.steps as number) ?? 0,
+      tokensIn: Number(r.tokens_in) || 0,
+      tokensOut: Number(r.tokens_out) || 0,
+      tokensReasoning: Number(r.tokens_reasoning) || 0,
+      cacheRead: Number(r.cache_read) || 0,
+      cacheWrite: Number(r.cache_write) || 0,
+      finishReason: (r.finish_reason as string) ?? null,
+    }
   }
 
   @callable()
@@ -1567,7 +1639,10 @@ export class Harness extends Agent<Env, HarnessState> {
       planNeedsFresh = !plan || (plan as any)._runId !== runId
       loopState = emptyLoopState()
 
-      this.traceSeq = 0
+      // Reseed the per-run seq from the DB high-water mark (covers the rare
+      // case where a run_id collides with stale rows). For a genuinely fresh
+      // run this sets traceSeq to 0.
+      this.reseedTraceSeq(runId)
       this.pushTraceEvent({
         runId,
         eventType: "run_start",
@@ -1612,6 +1687,18 @@ export class Harness extends Agent<Env, HarnessState> {
         payload: systemPrompt,
       })
     }
+
+    // ── Trace recorder for this tick ────────────────────────────────────
+    // One recorder per LLM turn. Its sink writes straight to trace_events via
+    // pushTraceEvent, so events appear live on the dashboard as they stream.
+    // The redactKeys list (from observability-config.json → logging) masks
+    // secret-ish values in tool args/results.
+    const recorder = new TraceRecorder({
+      agent: "harness",
+      runId,
+      redactKeys: obsConfig.logging?.redactToolArgs ?? [],
+      sink: ev => this.pushTraceEvent(ev),
+    })
 
     // ── Stop conditions — checked at the TOP of each tick ───────────────
     if (this.state.currentStep >= maxSteps) {
@@ -1666,22 +1753,29 @@ export class Harness extends Agent<Env, HarnessState> {
     }
 
     // ── Snapshot the prompt for this turn ───────────────────────────────
-    this.pushTraceEvent({
-      runId,
-      stepNumber: this.state.currentStep,
-      eventType: "prompt",
-      role: "user",
-      payload: JSON.stringify(messages).slice(0, 16000),
-    })
-
-    this.reasoningBuf = ""
-    this.textBuf = ""
+    // The recorder captures the FULL messages array (capped + truncation-flagged
+    // at the sink via maxPromptChars) — not the old hardcoded 16k mid-JSON slice.
+    recorder.recordPrompt(this.state.currentStep, messages)
 
     const turnStart = Date.now()
     const currentStepNumber = this.state.currentStep
 
     // ── One LLM turn, streamed so the dashboard can see progress live ───
+    // The recorder's attach() spreads onChunk / onStepEnd /
+    // onToolExecutionStart / onToolExecutionEnd into streamText. Each event
+    // flows straight to trace_events via the recorder's sink (pushTraceEvent),
+    // so reasoning / text / tool_call / tool_result / step_end are all
+    // captured with the correct agent label + toolCallId pairing — no longer
+    // the ad-hoc onChunk-only path that dropped reasoning/text silently
+    // (v7 field name is chunk.text, not chunk.textDelta).
     let result
+    // streamText surfaces provider errors as a stream part { type:"error",
+    // errorText } (NOT a throw), and via the onError callback. We capture both:
+    // onError logs it to the trace, and streamErrorText lets us stop the run
+    // after the loop instead of silently re-arming forever. Without this, a
+    // persistent provider failure (bad endpoint, 404, auth) leaves status stuck
+    // at "running" with zero progress — the bug where "running" never errors.
+    let streamErrorText: string | null = null
     try {
       result = streamText({
         model,
@@ -1690,87 +1784,77 @@ export class Harness extends Agent<Env, HarnessState> {
         messages,
         stopWhen: isStepCount(1),
         ...getParams(this.env),
+        ...recorder.attach(currentStepNumber),
         onError: ({ error }: any) => {
-          this.pushTraceEvent({
-            runId,
-            stepNumber: currentStepNumber,
-            eventType: "error",
-            payload: String(error?.message ?? error),
-          })
-        },
-        onChunk: ({ chunk }: any) => {
-          this.onChunk(runId, currentStepNumber, chunk)
+          const msg = String(error?.message ?? error)
+          recorder.recordError(currentStepNumber, msg)
+          if (!streamErrorText) streamErrorText = msg
         },
       })
-      for await (const _ of result.fullStream) {
-        // consumed via onChunk above
+      for await (const part of result.fullStream) {
+        // Watch for the error stream part — the canonical signal that the
+        // model call failed. (onError is the secondary signal.)
+        if (part?.type === "error" && !streamErrorText) {
+          streamErrorText =
+            (part as any).errorText ?? "stream error (no detail)"
+        }
       }
     } catch (err: any) {
-      this.pushTraceEvent({
+      // Thrown errors (e.g. a non-OK fetch before streaming starts) take the
+      // same hard-stop path as stream errors below.
+      streamErrorText = err?.message ?? String(err)
+    }
+
+    // ── Hard stop on any model-call failure ─────────────────────────────
+    // A persistent provider error (404, auth, network) must flip the run to
+    // "error" and NOT re-arm the next tick. Otherwise the actor-loop spins
+    // forever: status="running", step=0, tokensUsed=0, no tool calls, re-arming
+    // every tick into the same failing call. We resolve finishReason too, since
+    // the SDK sets it to "error" on failure — either signal is sufficient.
+    let resolvedFinishReason: any = undefined
+    try {
+      resolvedFinishReason = await result!.finishReason
+    } catch {
+      resolvedFinishReason = "error"
+    }
+    if (streamErrorText || resolvedFinishReason === "error") {
+      const msg =
+        streamErrorText ?? "model call failed (finishReason=error, no detail)"
+      recorder.recordError(currentStepNumber, msg)
+      this.logStep(runId, currentStepNumber, "llm_error", null, msg)
+      // finishRunAuto emits run_end + marks the checkpoint done, so the run
+      // won't try to resume from a failed tick.
+      await this.finishRunAuto(
         runId,
-        stepNumber: currentStepNumber,
-        eventType: "error",
-        payload: err?.message ?? String(err),
-      })
-      this.logStep(
-        runId,
-        currentStepNumber,
-        "llm_error",
-        null,
-        err?.message ?? String(err),
+        goal,
+        `Run stopped: model call failed — ${msg}`,
+        "model_call_failed",
       )
       this.setState({
         ...this.state,
         status: "error",
-        lastError: err?.message ?? String(err),
+        lastError: msg,
       })
       return
     }
 
-    const resolvedText = await result.text
-    const resolvedUsage = await result.usage
-    const resolvedWarnings = await result.warnings
-    const resolvedResponse = await result.response
-    const resolvedFinishReason = await result.finishReason
-    const resolvedSteps = await result.steps
+    const resolvedText = await result!.text
+    const resolvedUsage = await result!.usage
+    const resolvedWarnings = await result!.warnings
+    const resolvedResponse = await result!.response
+    const resolvedSteps = await result!.steps
 
-    if (this.reasoningBuf.trim()) {
-      this.pushTraceEvent({
-        runId,
-        stepNumber: currentStepNumber,
-        eventType: "reasoning",
-        role: "assistant",
-        payload: this.reasoningBuf,
-      })
-    }
-    if (this.textBuf.trim()) {
-      this.pushTraceEvent({
-        runId,
-        stepNumber: currentStepNumber,
-        eventType: "text",
-        role: "assistant",
-        payload: this.textBuf,
-      })
-    }
-
-    this.pushTraceEvent({
-      runId,
-      stepNumber: currentStepNumber,
-      eventType: "step_end",
-      label: resolvedFinishReason ?? null,
-      payload: JSON.stringify({
-        finishReason: resolvedFinishReason,
-        warnings: resolvedWarnings ?? [],
-      }),
-      tokensIn: resolvedUsage?.inputTokens ?? null,
-      tokensOut: resolvedUsage?.outputTokens ?? null,
-      tokensReasoning:
-        (resolvedUsage as any)?.outputTokenDetails?.reasoningTokens ??
-        (resolvedSteps?.[resolvedSteps.length - 1]?.usage as any)
-          ?.outputTokenDetails?.reasoningTokens ??
-        null,
-      durationMs: Date.now() - turnStart,
-      model: resolvedResponse?.modelId ?? null,
+    // The recorder already emitted reasoning / text / step_end events from its
+    // onStepEnd handler. We keep awaiting the result fields below ONLY for the
+    // loop's own bookkeeping (stuck detection, token accumulation, step_log).
+    // If onStepEnd didn't fire (e.g. an early stream error left buffers full),
+    // flush them as a fallback so nothing is lost.
+    recorder.flushFallback(currentStepNumber, turnStart, {
+      usage: resolvedUsage,
+      steps: resolvedSteps,
+      response: resolvedResponse,
+      finishReason: resolvedFinishReason,
+      warnings: resolvedWarnings,
     })
 
     const used = resolvedUsage?.totalTokens ?? 0
