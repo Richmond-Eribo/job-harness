@@ -11,10 +11,11 @@ import { getAgentByName } from "agents"
 import type { Env } from "../types"
 import type { ResearchAgent } from "../agents"
 import { withRpcRetry } from "../utils/rpc-retry"
+import type { RunIdRef } from "./jobs.tool"
 
 type Advance = (toolName: string, input: string | null) => void
 
-export function makeResearchTool(env: Env, advance: Advance) {
+export function makeResearchTool(env: Env, advance: Advance, runIdRef: RunIdRef) {
   return tool({
     description:
       "Delegate a research task to the ResearchAgent. It searches arXiv and Hacker News and returns real findings with sources. " +
@@ -38,10 +39,10 @@ export function makeResearchTool(env: Env, advance: Advance) {
         env.RESEARCH_AGENT,
         "main",
       )
-      // Retry transient RPC failures (DO eviction, network blip) so the run
-      // doesn't lose this research turn permanently. See utils/rpc-retry.ts.
+      // Pass the harness runId so the research-agent's inner-loop trace can be
+      // attributed and nested under this research call.
       const result = await withRpcRetry(() =>
-        agent.research({ topic, depth: depth ?? "standard" }),
+        agent.research({ topic, depth: depth ?? "standard", runId: runIdRef.value }),
       )
       return JSON.stringify(result)
     },

@@ -16,14 +16,19 @@ import { withRpcRetry } from "../utils/rpc-retry"
 
 type Advance = (toolName: string, input: string | null) => void
 
+/** Shared holder for the active harness run id, so delegating tools can pass
+ *  it to sub-agents for trace attribution. */
+export type RunIdRef = { value: string }
+
 const JOB_AGENT = (env: Env) =>
   getAgentByName<Env, JobApplicationAgent>(env.JOB_AGENT, "main")
 
-export function makeDiscoverJobsTool(env: Env, advance: Advance) {
+export function makeDiscoverJobsTool(env: Env, advance: Advance, runIdRef: RunIdRef) {
   return tool({
     description:
-      "Ask the JobAgent to find REAL job listings matching criteria. Returns listings that now exist in your pipeline. " +
-      "Do not reference any job that did not come from this tool or the API. If nothing matched, it returns an empty list.",
+      "Delegate a job search to the JobAgent. It runs an LLM loop that browses the real job websites the operator has configured " +
+      "(dashboard → Job sources) — opens search pages, reads postings, and saves only listings it actually visited. " +
+      "Returns listings that now exist in your pipeline. Do not reference any job that did not come from this tool.",
     inputSchema: z.object({
       criteria: z
         .string()
@@ -44,10 +49,13 @@ export function makeDiscoverJobsTool(env: Env, advance: Advance) {
         JSON.stringify({ criteria, maxResults }).slice(0, 2000),
       )
       const agent = await JOB_AGENT(env)
+      // Pass the harness runId so the job-agent's inner-loop trace can be
+      // attributed and later nested under this discover_jobs call.
       const result = await withRpcRetry(() =>
         agent.searchJobs({
           criteria,
           maxResults: maxResults ?? 5,
+          runId: runIdRef.value,
         }),
       )
       return JSON.stringify(result)
@@ -55,7 +63,7 @@ export function makeDiscoverJobsTool(env: Env, advance: Advance) {
   })
 }
 
-export function makeWriteCoverLetterTool(env: Env, advance: Advance) {
+export function makeWriteCoverLetterTool(env: Env, advance: Advance, runIdRef: RunIdRef) {
   return tool({
     description:
       "Generate a tailored cover letter for a job ALREADY in your pipeline. Requires a valid jobId (from discover_jobs or pipeline_status). Errors if the id doesn't exist.",
@@ -67,7 +75,7 @@ export function makeWriteCoverLetterTool(env: Env, advance: Advance) {
       const agent = await JOB_AGENT(env)
       try {
         const result = await withRpcRetry(() =>
-          agent.generateCoverLetter({ jobId }),
+          agent.generateCoverLetter({ jobId, runId: runIdRef.value }),
         )
         return JSON.stringify(result)
       } catch (e: any) {

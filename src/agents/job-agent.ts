@@ -13,6 +13,8 @@ import type {
   CoverLetterRequest,
   CoverLetterResponse,
 } from "../types"
+import { TraceRecorder } from "../utils/trace-recorder"
+import obsConfig from "../config/observability-config.json"
 
 // =============================================================================
 // Database initialization
@@ -427,10 +429,21 @@ ${raw
 
     const nextVersion = ((existingLetters[0] as any)?.max_version ?? 0) + 1
 
+    // ── Trace recorder (buffer + return) ────────────────────────────────
+    const runId = request.runId ?? "cover-letter-standalone"
+    const recorder = new TraceRecorder({
+      agent: "job-agent",
+      runId,
+      redactKeys: obsConfig.logging?.redactToolArgs ?? [],
+    })
+    recorder.recordRunStart(
+      `cover letter: ${job.company} / ${job.title}`,
+      1,
+      0,
+    )
+
     // Generate cover letter
-    const result = await generateText({
-      model,
-      system: `You are an expert cover letter writer. Generate a compelling, tailored cover letter.
+    const systemPrompt = `You are an expert cover letter writer. Generate a compelling, tailored cover letter.
 
 User Profile:
 ${profileStr}
@@ -441,16 +454,32 @@ Rules:
 - Be professional but personable — avoid generic templates
 - Keep it concise (3-4 paragraphs)
 - Address specific requirements from the job description
-- Show genuine interest in the company and role`,
-      prompt: `Write a cover letter for this position:
+- Show genuine interest in the company and role`
+    const userPrompt = `Write a cover letter for this position:
 
 Company: ${job.company}
 Title: ${job.title}
 Description: ${job.description ?? "Not provided"}
 URL: ${job.url ?? "Not provided"}
 
-Generate a tailored, compelling cover letter.`,
+Generate a tailored, compelling cover letter.`
+
+    recorder.recordSystem("system-prompt", systemPrompt)
+    recorder.recordPrompt(0, [{ role: "user", content: userPrompt }])
+
+    const result = await generateText({
+      model,
+      system: systemPrompt,
+      prompt: userPrompt,
       ...getParams(this.env),
+      ...recorder.attach(),
+    })
+    recorder.flushFallback(null, Date.now(), {
+      usage: result.usage,
+      steps: result.steps,
+      response: result.response,
+      finishReason: result.finishReason,
+      warnings: result.warnings,
     })
 
     // Save cover letter
@@ -474,6 +503,8 @@ Generate a tailored, compelling cover letter.`,
       title: job.title,
       coverLetter: result.text,
       version: nextVersion,
+      // Sub-agent inner-loop trace — nested under the write_cover_letter call.
+      __trace: recorder.toSubAgentTrace(),
     }
   }
 

@@ -9,6 +9,8 @@ import type {
   ResearchResult,
   ResearchTopic,
 } from "../types"
+import { TraceRecorder } from "../utils/trace-recorder"
+import obsConfig from "../config/observability-config.json"
 
 // =============================================================================
 // Database initialization
@@ -174,6 +176,22 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
       [topic],
     )
 
+    // ── Trace recorder (buffer + return) ────────────────────────────────
+    // The research-agent runs its OWN multi-step LLM loop below. We capture
+    // every step's prompt / reasoning / text / tool calls / results / tokens
+    // into an in-memory buffer and return it on the response as `__trace`.
+    // The harness ingests those events (nested under the `research` tool call)
+    // so the dashboard shows what happened inside this sub-agent — previously
+    // a complete black box. The agent has no sink because it does NOT write to
+    // its own SQLite (each DO has a separate DB); the harness owns the store.
+    const runId = request.runId ?? "research-standalone"
+    const recorder = new TraceRecorder({
+      agent: "research-agent",
+      runId,
+      redactKeys: obsConfig.logging?.redactToolArgs ?? [],
+    })
+    recorder.recordRunStart(topic, depth === "deep" ? 10 : depth === "quick" ? 3 : 5, 0)
+
     // Define research tools
     const researchTools = {
       search_arxiv: tool({
@@ -228,11 +246,7 @@ export class ResearchAgent extends Agent<Env, ResearchState> {
     // Run LLM with tools
     const maxSteps = depth === "quick" ? 3 : depth === "deep" ? 10 : 5
 
-    const result = await generateText({
-      model,
-      stopWhen: isStepCount(maxSteps),
-      tools: researchTools,
-      system: `You are a research assistant. Your job is to research the given topic thoroughly.
+    const systemPrompt = `You are a research assistant. Your job is to research the given topic thoroughly.
 
 Instructions:
 - Use search_arxiv for recent academic papers on the topic.
@@ -243,11 +257,32 @@ Instructions:
 - Only report findings you actually retrieved from a tool — never fabricate sources or URLs.
 - Note any new related topics worth investigating in the future.
 
-${context ? `Additional context from previous research:\n${context}` : ""}`,
-      prompt: `Research this topic: "${topic}" (depth: ${depth})
+${context ? `Additional context from previous research:\n${context}` : ""}`
+    const userPrompt = `Research this topic: "${topic}" (depth: ${depth})
 
-Find recent developments, key papers, and practical insights. Save your findings.`,
+Find recent developments, key papers, and practical insights. Save your findings.`
+
+    // Snapshot the system prompt + the first user prompt for the trace.
+    recorder.recordSystem("system-prompt", systemPrompt)
+    recorder.recordPrompt(0, [{ role: "user", content: userPrompt }])
+
+    const result = await generateText({
+      model,
+      stopWhen: isStepCount(maxSteps),
+      tools: researchTools,
+      system: systemPrompt,
+      prompt: userPrompt,
       ...getParams(this.env),
+      ...recorder.attach(),
+    })
+
+    // Flush any leftovers (safety net if onStepEnd didn't fire on the last step)
+    recorder.flushFallback(null, Date.now(), {
+      usage: result.usage,
+      steps: result.steps,
+      response: result.response,
+      finishReason: result.finishReason,
+      warnings: result.warnings,
     })
 
     // Parse saved findings from this run
@@ -269,6 +304,9 @@ Find recent developments, key papers, and practical insights. Save your findings
       summary: result.text,
       findings,
       newTopicsDiscovered: [], // LLM can suggest these in the text
+      // Sub-agent inner-loop trace — ingested by the harness recorder and
+      // nested under the `research` tool call in the transcript.
+      __trace: recorder.toSubAgentTrace(),
     }
   }
 
