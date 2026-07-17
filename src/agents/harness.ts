@@ -15,6 +15,9 @@ import type {
   ScheduleEntry,
   TraceEvent,
   TraceEventInput,
+  TraceEventType,
+  TraceAgent,
+  SubAgentTrace,
   UserMemory,
 } from "../types"
 import { execSql } from "../db/db"
@@ -28,6 +31,10 @@ import {
 import { generateRunId, summarizeStep } from "../utils/run"
 import { extractTrace } from "../utils/trace"
 import type { TraceEntry } from "../utils/trace"
+import {
+  TraceRecorder,
+  ingestSubAgentTrace,
+} from "../utils/trace-recorder"
 import { buildSystemPrompt, buildKickoffMessage } from "./prompt"
 import { buildAgentTools } from "../tools"
 
@@ -135,6 +142,37 @@ export function initDb(agent: SqlAgent) {
     `CREATE INDEX IF NOT EXISTS idx_trace_type ON trace_events (event_type, created_at DESC)`,
   )
 
+  // ── v2 observability columns: attribution + nesting + cache + truncation ─
+  // All additive (ensureColumn is idempotent), so existing deploys migrate in
+  // place without losing rows. See src/types/trace.ts for field docs.
+  //   agent        — who emitted this (harness | job-agent | research-agent)
+  //   tool_call_id — pairs a tool_call to its tool_result (AI SDK toolCallId)
+  //   parent_id    — toolCallId of the delegating call → sub-agent nesting key
+  //   parent_label — delegating tool name (display without a join)
+  //   cache_read / cache_write — prompt-cache tokens (inputTokenDetails)
+  //   truncated    — 1 when the payload was sliced (UI shows a marker)
+  ensureColumn(agent, "trace_events", "agent", "TEXT DEFAULT 'harness'")
+  ensureColumn(agent, "trace_events", "tool_call_id", "TEXT")
+  ensureColumn(agent, "trace_events", "parent_id", "TEXT")
+  ensureColumn(agent, "trace_events", "parent_label", "TEXT")
+  ensureColumn(agent, "trace_events", "cache_read", "INTEGER")
+  ensureColumn(agent, "trace_events", "cache_write", "INTEGER")
+  ensureColumn(agent, "trace_events", "truncated", "INTEGER DEFAULT 0")
+
+  // Index for step grouping + parent nesting lookups. Dropped first to keep
+  // idempotent re-runs clean (CREATE INDEX IF NOT EXISTS would also work, but
+  // an explicit DROP makes the column-index intent clear in the schema).
+  execSql(
+    agent,
+    `CREATE INDEX IF NOT EXISTS idx_trace_run_step
+       ON trace_events (run_id, step_number, seq)`,
+  )
+  execSql(
+    agent,
+    `CREATE INDEX IF NOT EXISTS idx_trace_parent
+       ON trace_events (run_id, parent_id, seq)`,
+  )
+
   // user_memory: human-authored notes injected into every system prompt as a
   // high-authority layer above the agent's own context table.
   execSql(
@@ -196,6 +234,38 @@ function ensureColumn(
 }
 
 /**
+ * Resolve the payload cap (in chars) for an event type, or null for "no cap".
+ * Wires the previously-dead observability toggles: reasoning/text caps come
+ * from `trace.*`, tool_call/tool_result from `logging.maxToolOutputChars`, and
+ * prompt/system from `logging.maxPromptChars` (default 200k — big enough that a
+ * full prompt survives intact in practice, but bounded so a runaway buffer
+ * can't blow up the row). Other event types (run_start, step_end, …) are small
+ * JSON and left uncapped.
+ */
+function capForType(
+  type: TraceEventType,
+  maxReasoning: number,
+  maxText: number,
+  maxTool: number,
+  maxPrompt: number,
+): number | null {
+  switch (type) {
+    case "reasoning":
+      return maxReasoning
+    case "text":
+      return maxText
+    case "tool_call":
+    case "tool_result":
+      return maxTool
+    case "prompt":
+    case "system":
+      return maxPrompt
+    default:
+      return null
+  }
+}
+
+/**
  * Parse a JSON tool-args payload and return one field, defensively.
  * Used by notification summarizers that read LLM tool-call args.
  */
@@ -207,6 +277,43 @@ function safePick(jsonStr: string, key: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Turn a run's machine stop-code into a single readable sentence for the
+ * notifications dropdown. Falls back to the raw payload's `reason` field if
+ * the code isn't recognized, so a new stop reason still reads sensibly.
+ *
+ * `code`   — the run_end event's label (the stop code)
+ * `payload`— the run_end JSON, which may carry `{ reason: "..." }`
+ */
+function humanizeStopReason(code: string, payload: string | null): string | null {
+  const map: Record<string, string> = {
+    done: "Goal complete — the agent called finish.",
+    max_steps_reached:
+      "Hit the step ceiling before finishing. Consider raising maxSteps or narrowing the goal.",
+    token_budget_reached:
+      "Stopped after the token budget was spent.",
+    idle_detected:
+      "Stopped — no tool calls for three turns in a row.",
+    repeated_loop_detected:
+      "Stopped — the agent repeated the same tool call in a tight loop.",
+    interrupted: "Run was interrupted by an external stop/pause call.",
+    model_call_failed:
+      "Model call failed — check the provider config + API key.",
+    error: "Run errored out.",
+  }
+  if (map[code]) return map[code]
+  // Fall back to the human reason embedded in the payload, if present.
+  if (payload) {
+    try {
+      const parsed = JSON.parse(payload)
+      if (typeof parsed?.reason === "string") return parsed.reason
+    } catch {
+      // ignore
+    }
+  }
+  return code || null
 }
 
 /**
@@ -291,17 +398,25 @@ function compactToolResults(messages: any[], retain: number): void {
 
     // Tool content is one of:
     //   string                        (older AI SDK e.g. OpenAI raw)
-    //   array of tool-result parts    (AI SDK v4 typed shape)
-    // Handle both, and preserve whichever shape we received.
+    //   array of tool-result parts    (AI SDK v7 typed shape)
+    // Handle both, and preserve whichever shape we received. NOTE: the v7
+    // ToolResultPart field is `output` (v4 was `result`); read both so this
+    // works across SDK versions.
     const content = msg.content
     if (Array.isArray(content)) {
       msg.content = content.map((part: any) => {
         if (part && part.type === "tool-result") {
-          const orig = previewOf(part.result).replace(/\s+/g, " ").trim()
+          const orig = previewOf(part.output ?? part.result)
+            .replace(/\s+/g, " ")
+            .trim()
           const placeholder =
             `[pruned to save context — call pipeline_status, list_jobs, or recall to re-fetch. ` +
             `was: ${orig.slice(0, 60)}${orig.length > 60 ? "…" : ""}]`
-          return { ...part, result: placeholder }
+          return {
+            ...part,
+            output: placeholder,
+            result: placeholder,
+          }
         }
         // Non-result parts (rare on tool messages) left alone
         return part
@@ -325,31 +440,69 @@ export class Harness extends Agent<Env, HarnessState> {
 
   private dbInitialized = false
 
-  // Monotonic per-run event sequence. Reset on each runLoop start.
+  // Monotonic per-run event sequence. In-memory cache of the high-water seq
+  // for the active run; reseeded from the DB on run start / resume so an
+  // evicted DO (which would reset this field to 0) cannot produce duplicate
+  // seq values within one logical run.
   private traceSeq = 0
+  private traceSeqRunId: string | null = null
+
+  /**
+   * Compute the next seq for a run from the DB's high-water mark. Used to
+   * reseed `traceSeq` on run start / resume so eviction can't reset it to 0
+   * (which would collide with seqs already written before the eviction).
+   */
+  private reseedTraceSeq(runId: string): void {
+    try {
+      const rows = execSql(
+        this,
+        `SELECT MAX(seq) AS max_seq FROM trace_events WHERE run_id = ?`,
+        [runId],
+      )
+      const max = (rows[0] as any)?.max_seq
+      this.traceSeq = typeof max === "number" ? max : 0
+      this.traceSeqRunId = runId
+    } catch {
+      this.traceSeq = 0
+      this.traceSeqRunId = runId
+    }
+  }
 
   /**
    * Append one row to trace_events. Caps payload length via observability
-   * config. Never throws — logging must never crash the loop.
+   * config (wiring the previously-dead maxToolOutputChars + maxPromptChars
+   * toggles), sets `truncated` when a cap bites, and never throws — logging
+   * must never crash the loop.
+   *
+   * If `ev.runId` differs from the cached seq-run, we reseed first so the seq
+   * stays monotonic even across DO eviction + resume.
    */
   private pushTraceEvent(ev: TraceEventInput): void {
     const cap = obsConfig.trace ?? {}
+    const loggingCap = obsConfig.logging ?? {}
     const maxReasoning = cap.maxReasoningChars ?? 8000
     const maxText = cap.maxTextChars ?? 16000
+    const maxTool = loggingCap.maxToolOutputChars ?? 4000
+    const maxPrompt = loggingCap.maxPromptChars ?? 200000
+
+    // Reseed seq if the run changed (covers eviction → resume on a different
+    // run, and the first event of a fresh run).
+    if (this.traceSeqRunId !== ev.runId) this.reseedTraceSeq(ev.runId)
     const seq = ++this.traceSeq
 
     let payload = ev.payload ?? null
+    let truncated = ev.truncated ?? 0
     if (payload != null) {
-      // Heuristic cap: reasoning/text-heavy events are clipped; others left
-      // alone (small JSON like tool args).
-      if (
-        (ev.eventType === "reasoning" || ev.eventType === "text") &&
-        payload.length > (ev.eventType === "reasoning" ? maxReasoning : maxText)
-      ) {
-        payload = payload.slice(
-          0,
-          ev.eventType === "reasoning" ? maxReasoning : maxText,
-        )
+      const limit = capForType(
+        ev.eventType,
+        maxReasoning,
+        maxText,
+        maxTool,
+        maxPrompt,
+      )
+      if (limit != null && payload.length > limit) {
+        payload = payload.slice(0, limit)
+        truncated = 1
       }
     }
 
@@ -358,8 +511,10 @@ export class Harness extends Agent<Env, HarnessState> {
         this,
         `INSERT INTO trace_events
           (run_id, step_number, seq, event_type, role, label, payload,
-           tokens_in, tokens_out, tokens_reasoning, duration_ms, model)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           tokens_in, tokens_out, tokens_reasoning, duration_ms, model,
+           agent, tool_call_id, parent_id, parent_label,
+           cache_read, cache_write, truncated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           ev.runId,
           ev.stepNumber ?? null,
@@ -373,6 +528,13 @@ export class Harness extends Agent<Env, HarnessState> {
           ev.tokensReasoning ?? null,
           ev.durationMs ?? null,
           ev.model ?? null,
+          ev.agent ?? "harness",
+          ev.toolCallId ?? null,
+          ev.parentId ?? null,
+          ev.parentLabel ?? null,
+          ev.cacheRead ?? null,
+          ev.cacheWrite ?? null,
+          truncated,
         ],
       )
     } catch {
