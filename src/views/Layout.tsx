@@ -515,6 +515,73 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
     </div>
 
     <div
+      id="sources-modal"
+      class="modal-overlay"
+      style="display: none;"
+      onclick="if(event.target===this)hideModal('sources-modal')"
+    >
+      <div class="modal" style="max-width: 720px;">
+        <h3>Job sources</h3>
+        <div style="font-size:12px; color:var(--muted-2); margin-bottom:12px;">
+          The agent only browses sites you add here. Each source needs a
+          <strong> base URL</strong> and a <strong>search URL template</strong>{" "}
+          with
+          <code>{"{query}"}</code>, <code>{"{location}"}</code>, and
+          <code>{"{page}"}</code> placeholders. Example:{" "}
+          <code>
+            https://www.reed.co.uk/jobs/{"{query}"}-jobs?location={"{location}"}
+            &amp;pageno={"{page}"}
+          </code>
+          .
+        </div>
+        <div
+          id="sources-list"
+          class="scroll-list"
+          style="max-height: 260px; overflow-y: auto; margin-bottom: 16px;"
+        >
+          <div class="empty">Loading sources…</div>
+        </div>
+        <hr class="modal-sep" />
+        <h4 style="margin-bottom:12px;">Add source</h4>
+        <div class="form-group">
+          <label class="form-label">Name</label>
+          <input type="text" id="source-name-input" placeholder="e.g. Reed" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL</label>
+          <input
+            type="url"
+            id="source-base-url-input"
+            placeholder="https://www.reed.co.uk"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Search URL template</label>
+          <input
+            type="text"
+            id="source-template-input"
+            placeholder="https://www.reed.co.uk/jobs/{query}-jobs?location={location}&pageno={page}"
+            style="font-family:var(--font-mono); font-size:11px;"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notes (optional)</label>
+          <input
+            type="text"
+            id="source-notes-input"
+            placeholder="e.g. UK-focused"
+          />
+        </div>
+        <div class="form-row">
+          <button onclick="addJobSource()">Add Source</button>
+          <button class="secondary" onclick="hideModal('sources-modal')">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
       id="cover-letter-modal"
       class="modal-overlay"
       style="display: none;"

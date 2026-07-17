@@ -1379,6 +1379,70 @@ details[open] > .ts-block-title::before { content: "▾"; }
 .goal-line { display: flex; align-items: baseline; gap: 12px; padding: 12px 0 16px; border-bottom: 1px solid var(--border-soft); margin-bottom: 16px; flex-wrap: wrap; }
 .goal-kicker { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); flex-shrink: 0; }
 
+/* ============================ BROWSER PANEL ============================= */
+/* Settings → Browser card. Shows the relay connection state + connect steps. */
+.browser-panel { display: flex; flex-direction: column; gap: 10px; }
+.browser-panel .kv {
+  background: var(--bg-3); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 10px 14px;
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+}
+.browser-panel .kv .k {
+  font-size: 10.5px; color: var(--text-3); text-transform: uppercase;
+  letter-spacing: 0.06em; flex-shrink: 0;
+}
+.browser-panel .kv .v {
+  font-size: 12.5px; color: var(--text); font-family: var(--font-mono);
+  text-align: right; word-break: break-all;
+}
+.browser-actions { margin-top: 6px; }
+
+/* Browser test harness */
+.browser-test { margin-top: 10px; border-top: 1px solid var(--border-soft); padding-top: 12px; }
+.browser-test-row { display: flex; gap: 8px; }
+.browser-test-row input {
+  flex: 1; background: var(--bg-3); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 9px 11px; color: var(--text);
+  font-size: 12.5px; font-family: var(--font-mono);
+}
+.browser-test-row input:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-dim); }
+.browser-test-result { margin-top: 12px; font-size: 12px; }
+.bt-pending { color: var(--text-3); font-family: var(--font-mono); }
+.bt-ok { color: var(--ok); display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.bt-err { color: var(--danger); margin-bottom: 6px; }
+.bt-target {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  text-transform: uppercase; padding: 1px 7px; border-radius: var(--radius-pill);
+}
+.bt-target-live { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+.bt-target-managed { background: color-mix(in srgb, var(--steel) 16%, transparent); color: var(--steel); }
+.bt-target-none { background: var(--bg-4); color: var(--text-3); }
+.bt-meta { font-size: 11.5px; color: var(--text-2); margin-bottom: 8px; word-break: break-all; }
+.bt-body {
+  background: var(--bg-3); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 10px 12px; font-size: 11px;
+  color: var(--text-3); white-space: pre-wrap; word-break: break-word;
+  max-height: 160px; overflow-y: auto; font-family: var(--font-mono);
+}
+
+.browser-disconnect-state { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+.browser-disconnect-state p { margin-bottom: 8px; }
+.browser-disconnect-state code {
+  background: var(--bg-3); border: 1px solid var(--border-soft);
+  padding: 1px 6px; border-radius: var(--radius-sm); font-size: 11.5px;
+  color: var(--amber);
+}
+.browser-steps {
+  background: var(--bg-3); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 12px 14px; margin: 10px 0;
+}
+.browser-step-title { font-weight: 600; color: var(--text); margin-bottom: 8px !important; }
+.browser-steps ol { margin: 0 0 8px 18px; }
+.browser-steps li { margin-bottom: 6px; }
+.browser-step-note { font-size: 11px; color: var(--text-3); margin-top: 8px !important; }
+.browser-hr { border: none; border-top: 1px solid var(--border-soft); margin: 12px 0; }
+.browser-alt { font-size: 11.5px; color: var(--text-3); }
+
 .row-flex { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border-soft); gap: 12px; }
 .row-flex:last-child { border-bottom: none; }
 .row-main { min-width: 0; flex: 1 1 auto; }

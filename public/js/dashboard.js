@@ -113,6 +113,7 @@ function showModal(id) {
 const MODAL_LOADERS = {
   "goal-modal": loadGoalModal,
   "profile-modal": loadProfile,
+  "sources-modal": loadJobSources,
 }
 function hideModal(id) {
   document.getElementById(id).style.display = "none"
@@ -451,6 +452,179 @@ function toggleNotifications(ev) {
 function markNotificationsRead() {
   const dot = document.getElementById("bell-dot")
   if (dot) dot.style.display = "none"
+}
+
+// =========================================================================
+// Browser capability — the relay panel on Settings. Shows which target is
+// connected (live = your Chrome via the extension, managed = headless), and
+// the connect instructions when nothing is attached. Polled while on Settings.
+// =========================================================================
+let browserPollTimer = null
+
+async function loadBrowserStatus() {
+  stopBrowserPoll()
+  await renderBrowserStatus()
+  // Poll every ~5s so the panel reflects the extension connecting/disconnecting.
+  browserPollTimer = setInterval(renderBrowserStatus, 5000)
+}
+
+function stopBrowserPoll() {
+  if (browserPollTimer) {
+    clearInterval(browserPollTimer)
+    browserPollTimer = null
+  }
+}
+
+async function renderBrowserStatus() {
+  const panel = document.getElementById("browser-panel")
+  const pill = document.getElementById("browser-target-pill")
+  if (!panel || !pill) return
+  let st
+  try {
+    st = await api("/browser/status")
+  } catch (e) {
+    panel.innerHTML =
+      '<div class="empty">Failed to load browser status: ' +
+      md.escapeHtml(e?.message || String(e)) +
+      "</div>"
+    return
+  }
+  const target = st.target || "none"
+  // Target pill reflects the active target.
+  if (target === "live") {
+    pill.textContent = "● LIVE (your Chrome)"
+    pill.className = "pill pill-on"
+  } else if (target === "managed") {
+    pill.textContent = "● MANAGED (headless)"
+    pill.className = "pill pill-on"
+  } else {
+    pill.textContent = "○ none"
+    pill.className = "pill pill-off"
+  }
+
+  if (target === "none") {
+    // No browser connected — show the connect instructions.
+    const origin = location.origin
+    panel.innerHTML =
+      '<div class="browser-disconnect-state">' +
+      "<p><b>No browser connected.</b> The agent can only browse open sites via " +
+      "<code>fetch_page</code> until you connect a target.</p>" +
+      '<div class="browser-steps">' +
+      "<p class='browser-step-title'>Connect your real Chrome (free-tier, reaches login-walled sites):</p>" +
+      "<ol>" +
+      "<li>Load the <code>extension/</code> folder at <code>chrome://extensions</code> (Developer mode → Load unpacked).</li>" +
+      "<li>Click the extension icon, enter this worker URL: <code>" +
+      md.escapeHtml(origin) +
+      "</code></li>" +
+      "<li>Keep a tab open + focused. The agent uses your logged-in sessions — it never sees or types passwords.</li>" +
+      "</ol>" +
+      "<p class='browser-step-note'>The extension connects to <code>" +
+      md.escapeHtml(origin) +
+      "/browser/relay</code>. See <code>docs/browser-cdp-guide.md</code>.</p>" +
+      "</div>" +
+      "<hr class='browser-hr'/>" +
+      "<p class='browser-alt'>Alternatively, enable the managed headless browser (paid Workers plan) by uncommenting the <code>browser</code> binding in <code>wrangler.jsonc</code>.</p>" +
+      "</div>"
+    return
+  }
+
+  // Connected — show details + disconnect (live only).
+  const live = st.live || {}
+  const rows = []
+  if (target === "live") {
+    rows.push(["Target", "Your real Chrome (via extension relay)"])
+    rows.push([
+      "Connected",
+      live.connectedAt
+        ? new Date(live.connectedAt + "Z").toLocaleString()
+        : "—",
+    ])
+    rows.push(["User agent", live.userAgent || "—"])
+  } else {
+    rows.push(["Target", "Managed headless Chromium (paid plan)"])
+  }
+  rows.push(["Pending CDP calls", String(st.pendingCalls ?? 0)])
+  if (st.sessionId) rows.push(["Session", String(st.sessionId)])
+
+  panel.innerHTML =
+    rows
+      .map(
+        ([k, v]) =>
+          '<div class="kv"><div class="k">' +
+          md.escapeHtml(k) +
+          '</div><div class="v">' +
+          md.escapeHtml(String(v)) +
+          "</div></div>",
+      )
+      .join("") +
+    (target === "live"
+      ? '<div class="browser-actions"><button class="btn sm danger" onclick="disconnectBrowser()">Disconnect</button></div>'
+      : "")
+}
+
+async function disconnectBrowser() {
+  try {
+    await api("/browser/disconnect", "POST")
+    toast("Browser disconnected")
+    renderBrowserStatus()
+  } catch (e) {
+    toast("Failed to disconnect: " + (e?.message || String(e)), "error")
+  }
+}
+
+// Manual test: navigate + observe a URL through the connected browser. This is
+// the fastest way to verify the whole chain (relay → extension → Chrome → CDP)
+// without a full agent run. No LLM call — free to repeat.
+async function probeBrowser() {
+  const input = document.getElementById("browser-test-url")
+  const btn = document.getElementById("browser-test-btn")
+  const out = document.getElementById("browser-test-result")
+  if (!input || !out) return
+  const url = input.value.trim()
+  if (!url) {
+    out.innerHTML = '<div class="bt-err">Enter a URL to test.</div>'
+    return
+  }
+  btn.disabled = true
+  btn.textContent = "Testing…"
+  out.innerHTML = '<div class="bt-pending">Navigating + observing…</div>'
+  try {
+    const r = await api("/browser/probe", "POST", { url })
+    if (r.error && !r.navigated) {
+      out.innerHTML =
+        '<div class="bt-err">✗ ' + md.escapeHtml(r.error) + "</div>"
+      return
+    }
+    const targetBadge =
+      '<span class="bt-target bt-target-' + md.escapeHtml(r.target) + '">' +
+      md.escapeHtml(r.target) + "</span>"
+    if (r.loginRequired) {
+      out.innerHTML =
+        '<div class="bt-ok">' + targetBadge + " loaded, but login required</div>" +
+        '<div class="bt-detail">' + md.escapeHtml(r.error || "") + "</div>"
+      return
+    }
+    const ok = r.navigated
+    out.innerHTML =
+      '<div class="' + (ok ? "bt-ok" : "bt-err") + '">' +
+      targetBadge +
+      (ok ? " ✓ navigated" : " ✗ failed") +
+      "</div>" +
+      '<div class="bt-meta">' +
+      "<b>" + md.escapeHtml(r.title || "(no title)") + "</b> · " +
+      md.escapeHtml(r.url) + " · " + (r.elementCount || 0) + " elements" +
+      "</div>" +
+      (r.error ? '<div class="bt-err">' + md.escapeHtml(r.error) + "</div>" : "") +
+      (r.bodyPreview
+        ? '<pre class="bt-body">' + md.escapeHtml(r.bodyPreview) + "</pre>"
+        : "")
+  } catch (e) {
+    out.innerHTML =
+      '<div class="bt-err">✗ ' + md.escapeHtml(e?.message || String(e)) + "</div>"
+  } finally {
+    btn.disabled = false
+    btn.textContent = "Test"
+  }
 }
 
 // Mobile off-canvas nav drawer toggle (hamburger). Closes on backdrop click
