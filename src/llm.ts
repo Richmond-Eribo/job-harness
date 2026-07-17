@@ -123,12 +123,18 @@ export function getModel(env: Env) {
     case "openai-compatible": {
       const baseURL = requireCustomUrl(provider, customProviderUrl)
       // `compatibility: "compatible"` was removed in @ai-sdk/openai v4. The
-      // provider now auto-detects strict vs compatible mode from the baseURL.
+      // default openai(modelId) routes to OpenAI's Responses API (/responses),
+      // which official OpenAI supports but most compatible gateways (z.ai,
+      // OpenRouter, Groq, vLLM…) do NOT — they only implement the classic
+      // Chat Completions API (/chat/completions) and 404 on /responses. So for
+      // a compatible provider we MUST explicitly use .chat(modelId), which
+      // targets /chat/completions. (For the official "openai" case above we
+      // keep the default Responses API.)
       const openai = createOpenAI({
         apiKey,
         baseURL,
       })
-      return openai(modelId)
+      return openai.chat(modelId)
     }
     case "anthropic-compatible": {
       const baseURL = requireCustomUrl(provider, customProviderUrl)
