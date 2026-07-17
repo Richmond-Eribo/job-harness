@@ -190,6 +190,9 @@ const Topbar: FC<{ activePage: string }> = ({ activePage }) => {
             <div class="notif-list" id="notif-list">
               <div class="notif-empty">No notifications yet.</div>
             </div>
+            <a class="notif-foot" href="/traces">
+              View all runs →
+            </a>
           </div>
         </span>
         <span class="avatar">A</span>

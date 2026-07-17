@@ -316,6 +316,16 @@ async function loadNotificationsIntoDropdown() {
   renderNotifications(notes)
 }
 
+// Inline SVG icons per notification kind. Kept tiny + stroke-based so they
+// inherit the row's color. Each maps to a severity/kind color in CSS.
+const NOTIF_ICONS = {
+  run: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+  job: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+  cover_letter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  memory: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.7 1 6.3 2.7"/><path d="M21 3v6h-6"/></svg>',
+  error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+}
+
 function renderNotifications(notes) {
   const listEl = document.getElementById("notif-list")
   if (!listEl) return
@@ -323,25 +333,40 @@ function renderNotifications(notes) {
     listEl.innerHTML = '<div class="notif-empty">No notifications yet.</div>'
     return
   }
-  const whenFmt = iso => {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return ""
-    return d.toLocaleString([], {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-  }
   listEl.innerHTML = notes
-    .map(
-      n =>
-        '<div class="notif-row" onclick="onNotifClick(' +
-        JSON.stringify(n).replace(/"/g, "&quot;").replace(/'/g, "&#39;") +
+    .map(n => {
+      const icon = NOTIF_ICONS[n.kind] || NOTIF_ICONS.run
+      const sev = n.severity || "normal"
+      const isNew = n.id > lastNotifId
+      const dataAttr = JSON.stringify(n)
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+      // Run badge: short run id + step, when present.
+      const runBadge =
+        n.runId || n.step != null
+          ? '<div class="notif-meta">' +
+            (n.runId
+              ? '<span class="notif-run">' +
+                md.escapeHtml(String(n.runId).slice(0, 14)) +
+                "</span>"
+              : "") +
+            (n.step != null
+              ? '<span class="notif-step">step ' + n.step + "</span>"
+              : "") +
+            "</div>"
+          : ""
+      return (
+        '<div class="notif-row sev-' +
+        sev +
+        (isNew ? " notif-unread" : "") +
+        '" onclick="onNotifClick(' +
+        dataAttr +
         ')">' +
-        '<span class="notif-dot kind-' +
+        '<span class="notif-icon kind-' +
         n.kind +
-        '"></span>' +
+        '">' +
+        icon +
+        "</span>" +
         '<div class="notif-body">' +
         '<div class="notif-title-line">' +
         md.escapeHtml(n.title) +
@@ -349,14 +374,41 @@ function renderNotifications(notes) {
         (n.detail
           ? '<div class="notif-detail">' + md.escapeHtml(n.detail) + "</div>"
           : "") +
+        runBadge +
         '<div class="notif-when">' +
-        whenFmt(n.createdAt) +
+        relTime(n.createdAt) +
         "</div>" +
-        "</div></div>",
-    )
+        "</div></div>"
+      )
+    })
     .join("")
   // remember the newest id so we don't re-flag-read items
   lastNotifId = Math.max(lastNotifId, notes[0].id)
+}
+
+// Relative time ("2m ago", "just now") with an absolute tooltip. Falls back to
+// a formatted date for older items.
+function relTime(iso) {
+  if (!iso) return ""
+  const d = new Date(iso.replace(" ", "T") + "Z")
+  const t = d.getTime()
+  if (isNaN(t)) return ""
+  const s = (Date.now() - t) / 1000
+  const abs = d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+  let rel
+  if (s < 45) rel = "just now"
+  else if (s < 90) rel = "1m ago"
+  else if (s < 3600) rel = Math.round(s / 60) + "m ago"
+  else if (s < 7200) rel = "1h ago"
+  else if (s < 86400) rel = Math.round(s / 3600) + "h ago"
+  else if (s < 172800) rel = "1d ago"
+  else rel = Math.round(s / 86400) + "d ago"
+  return '<span title="' + md.escapeHtml(abs) + '">' + rel + "</span>"
 }
 
 function toggleNotifications(ev) {
@@ -400,12 +452,21 @@ function closeNav() {
 }
 
 function onNotifClick(n) {
-  // Close the dropdown and route to the right page
+  // Close the dropdown, then navigate. Prefer the deep-link to the exact run's
+  // transcript when a runId is present; otherwise land on the most relevant page.
   toggleNotifications(new Event("click"))
-  if (n.kind === "job" || n.kind === "cover_letter") goPage("jobs")
-  else if (n.kind === "error") goPage("logs")
-  else if (n.kind === "run") goPage("traces")
-  else goPage("overview")
+  if (!n) return
+  // Use window.navigate() (spa-nav.js) so we don't tear down the dashboard.
+  // Falls back to a hard navigation if spa-nav isn't loaded for any reason.
+  const nav = window.navigate || ((u) => (window.location.href = u))
+  if (n.runId) {
+    nav("/traces/" + encodeURIComponent(n.runId))
+    return
+  }
+  if (n.kind === "job" || n.kind === "cover_letter") nav("/jobs")
+  else if (n.kind === "error") nav("/logs")
+  else if (n.kind === "run") nav("/traces")
+  else nav("/")
 }
 
 // Click-away for the dropdown

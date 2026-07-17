@@ -524,12 +524,13 @@ button.small, .btn.sm, button.sm {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  width: 300px;
-  max-height: 360px;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: 70vh;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
   z-index: 60;
   overflow: hidden;
   flex-direction: column;
@@ -537,21 +538,91 @@ button.small, .btn.sm, button.sm {
 .notif.open { display: flex; }
 .notif-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 14px; border-bottom: 1px solid var(--border-soft);
+  padding: 13px 16px; border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-1);
 }
-.notif-title { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
+.notif-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-2);
+}
 .notif-clear {
   background: none; border: none; color: var(--steel);
   font-size: 11px; font-family: var(--font-mono); padding: 0; cursor: pointer;
 }
 .notif-clear:hover { filter: none; text-decoration: underline; }
-.notif-list { overflow-y: auto; max-height: 300px; }
-.notif-empty { padding: 20px 14px; font-size: 12px; color: var(--text-3); }
-.notif-item {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 10px 14px; border-bottom: 1px solid var(--border-soft); font-size: 12px;
+.notif-list { overflow-y: auto; flex: 1; min-height: 0; }
+.notif-empty {
+  padding: 28px 16px; font-size: 12.5px; color: var(--text-3); text-align: center;
 }
-.notif-item:last-child { border-bottom: none; }
+
+/* A notification row: icon + body (title / detail / meta / when). */
+.notif-row {
+  display: flex; gap: 12px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer; transition: background 0.12s ease;
+}
+.notif-row:last-child { border-bottom: none; }
+.notif-row:hover { background: var(--bg-3); }
+
+/* Unread — a left accent bar so the eye lands on fresh items. */
+.notif-unread {
+  box-shadow: inset 3px 0 0 var(--amber);
+  background: color-mix(in srgb, var(--amber) 4%, transparent);
+}
+.notif-unread:hover { background: color-mix(in srgb, var(--amber) 8%, var(--bg-3)); }
+
+/* Severity tints the title color. high = danger, low = dim. */
+.notif-row.sev-high .notif-title-line { color: var(--danger); }
+.notif-row.sev-low .notif-title-line { color: var(--text-2); }
+.notif-row.sev-normal .notif-title-line { color: var(--text); }
+
+/* Kind icon — colored circle, consistent with the dashboard's semantic palette. */
+.notif-icon {
+  flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-3); color: var(--text-3);
+}
+.notif-icon svg { width: 14px; height: 14px; }
+.notif-icon.kind-run { background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--amber); }
+.notif-icon.kind-job { background: color-mix(in srgb, var(--steel) 16%, transparent); color: var(--steel); }
+.notif-icon.kind-cover_letter { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.notif-icon.kind-memory { background: var(--bg-4); color: var(--text-3); }
+.notif-icon.kind-error { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+
+.notif-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.notif-title-line {
+  font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3;
+}
+.notif-detail {
+  font-size: 12px; color: var(--text-2); line-height: 1.4;
+  /* clamp long details to 2 lines so one verbose search doesn't dominate */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.notif-meta {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px;
+}
+.notif-run, .notif-step {
+  font-family: var(--font-mono); font-size: 10px;
+  padding: 1px 6px; border-radius: var(--radius-pill);
+  background: var(--bg-4); color: var(--text-3);
+}
+.notif-run { color: var(--text-2); }
+.notif-when {
+  font-size: 10.5px; color: var(--text-3); font-family: var(--font-mono); margin-top: 2px;
+}
+.notif-when span { cursor: default; }
+
+/* Footer link — "View all runs". */
+.notif-foot {
+  display: block; padding: 11px 16px; text-align: center;
+  font-size: 12px; color: var(--steel); text-decoration: none;
+  border-top: 1px solid var(--border-soft); background: var(--bg-1);
+}
+.notif-foot:hover { color: var(--amber); background: var(--bg-3); }
+
+/* Keep legacy .notif-item classes harmless (some may still be referenced). */
+.notif-item { display: flex; flex-direction: column; gap: 2px; }
 .notif-item .notif-text { color: var(--text-2); }
 .notif-item .notif-time { color: var(--text-3); font-size: 10.5px; font-family: var(--font-mono); }
 
