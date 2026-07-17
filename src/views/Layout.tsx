@@ -143,7 +143,15 @@ const Topbar: FC<{ activePage: string }> = ({ activePage }) => {
       </div>
       <div class="topbar-right">
         <span id="status-badge" class="status-badge status-idle">IDLE</span>
-        <form class="search" role="search" method="get" action="">
+        <form
+          class="search"
+          role="search"
+          method="get"
+          action=""
+          // Prevent Enter from submitting to ?q=… (which hard-reloads to top).
+          // Search already filters live via oninput on the field below.
+          onsubmit="event.preventDefault()"
+        >
           <label for="search-input" class="sr-only">Search</label>
           <span class="icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ICONS.search }} />
           <input
@@ -554,6 +562,9 @@ const HtmlShell: FC<PropsWithChildren> = ({ children }) => (
       {children}
       <script src="/js/markdown.js" defer></script>
       <script src="/js/json.js" defer></script>
+      {/* spa-nav must load before dashboard.js so window.navigate() exists
+          when dashboard.js boots and references it (notifications, trace rows). */}
+      <script src="/js/spa-nav.js" defer></script>
       <script src="/js/dashboard.js" defer></script>
     </body>
   </html>
