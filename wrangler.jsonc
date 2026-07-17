@@ -51,13 +51,31 @@
       { "name": "HARNESS", "class_name": "Harness" },
       { "name": "RESEARCH_AGENT", "class_name": "ResearchAgent" },
       { "name": "JOB_AGENT", "class_name": "JobApplicationAgent" },
+      // Browser capability — reaches login-walled job sites (Indeed/LinkedIn)
+      // via the user's real Chrome (extension relay, free-tier) or the managed
+      // headless Chromium (paid plan, see BROWSER binding below).
+      { "name": "BROWSER_RELAY", "class_name": "BrowserRelay" },
+      { "name": "BROWSER_AGENT", "class_name": "BrowserAgent" },
     ],
   },
+
+  // Managed headless browser (@cloudflare/playwright). OPTIONAL — uncomment on
+  // the paid Workers plan to enable the always-available sessionless target.
+  // When absent, the relay targets the extension (live) target only.
+  // "browser": { "binding": "BROWSER" },
 
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["Harness", "ResearchAgent", "JobApplicationAgent"],
+      "new_sqlite_classes": [
+        "Harness",
+        "ResearchAgent",
+        "JobApplicationAgent",
+      ],
+    },
+    {
+      "tag": "browser",
+      "new_sqlite_classes": ["BrowserRelay", "BrowserAgent"],
     },
   ],
 

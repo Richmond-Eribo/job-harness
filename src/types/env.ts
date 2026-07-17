@@ -3,7 +3,12 @@
 // =============================================================================
 // Type-only imports keep the namespace generics strongly typed without a
 // runtime circular dependency (the agent files import types from here).
-import type { Harness, ResearchAgent, JobApplicationAgent } from "../agents"
+import type {
+  Harness,
+  ResearchAgent,
+  JobApplicationAgent,
+} from "../agents"
+import type { BrowserAgent, BrowserRelay } from "../agents/browser-relay"
 
 /**
  * Cloudflare Worker environment bindings.
@@ -15,6 +20,19 @@ export interface Env {
   HARNESS: DurableObjectNamespace<Harness>
   RESEARCH_AGENT: DurableObjectNamespace<ResearchAgent>
   JOB_AGENT: DurableObjectNamespace<JobApplicationAgent>
+
+  // Browser capability (login-walled job sites). The relay DO bridges agent
+  // CDP commands to either the user's real Chrome (via the extension relay)
+  // or the managed headless Chromium (paid plan). The agent DO runs the
+  // observe/act/extract LLM loop.
+  BROWSER_RELAY: DurableObjectNamespace<BrowserRelay>
+  BROWSER_AGENT: DurableObjectNamespace<BrowserAgent>
+
+  // Managed headless browser binding (@cloudflare/playwright). Optional — only
+  // present on the paid Workers plan. When absent, the relay targets the
+  // extension (live) target only. Typed as a bare Fetcher so tsc doesn't choke
+  // when the binding is missing in local dev.
+  BROWSER?: Fetcher
 
   // Workers AI binding. Optional in v1 (the harness still calls the BYOK model
   // via the AI SDK); becomes the default for v2 when we drop the LLM_API_KEY
