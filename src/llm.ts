@@ -20,7 +20,8 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import type { Env } from "./types"
 // JSON imports are statically bundled; no runtime file read needed.
-import rawConfig from "./llm-config.json"
+// All non-secret JSON config lives under src/config/* (single convention).
+import rawConfig from "./config/llm-config.json"
 
 // -----------------------------------------------------------------------------
 // Types mirroring llm-config.json (kept loose where provider extensions vary).

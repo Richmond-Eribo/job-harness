@@ -11,10 +11,10 @@
   "compatibility_flags": ["nodejs_compat"],
 
   // Only MAX_STEPS is kept as a Worker var. Model identity (provider/model/url)
-  // and generation params live in src/llm-config.json — NOT here. The API key
+  // and generation params live in src/config/llm-config.json — NOT here. The API key
   // is a real secret set via `wrangler secret put LLM_API_KEY`.
   // CAPTURE_TRACE is the non-secret on/off for reasoning capture (detailed
-  // caps live in src/observability-config.json).
+  // caps live in src/config/observability-config.json).
   "vars": {
     "MAX_STEPS": "100",
     "CAPTURE_TRACE": "1",

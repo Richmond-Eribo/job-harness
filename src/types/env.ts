@@ -23,7 +23,7 @@ export interface Env {
   AI?: Ai
 
   // Secrets only — model identity + provider + generation params live in
-  // src/llm-config.json (tunable, version-controlled). Env keeps the API key
+  // src/config/llm-config.json (tunable, version-controlled). Env keeps the API key
   // plus runtime knobs that DON'T make sense in a static config (DO tokens).
   LLM_API_KEY: string
   MAX_STEPS: string
@@ -31,7 +31,7 @@ export interface Env {
 
   // v2 non-secret knobs (sourced from wrangler.jsonc vars). Trace capture
   // toggle — "1" = on (default); any other value = off. Detailed cap values
-  // (maxReasoningChars etc.) live in src/observability-config.json.
+  // (maxReasoningChars etc.) live in src/config/observability-config.json.
   CAPTURE_TRACE?: string
 
   // Forward-looking sendmail (Phase 2) — kept on Env so the sendmail tool can

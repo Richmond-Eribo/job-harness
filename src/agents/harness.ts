@@ -2,7 +2,7 @@ import { Agent, callable } from "agents"
 import { generateText, streamText, isStepCount } from "ai"
 import { getModel, getModelInfo, getParams, setModelOverride } from "../llm"
 // import type { TraceEntry } from "../utils/trace"
-import obsConfig from "../observability-config.json"
+import obsConfig from "../config/observability-config.json"
 import { DEFAULT_HARNESS_STATE } from "../types"
 import type {
   Env,
