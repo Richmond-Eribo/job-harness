@@ -1,8 +1,10 @@
 import { Agent, callable } from "agents"
-import { generateText } from "ai"
+import { generateText, tool, isStepCount } from "ai"
+import { z } from "zod"
 import { getModel, getParams } from "../llm"
 import type {
   Env,
+  JobSource,
   JobListing,
   JobStatus,
   CoverLetter,
@@ -75,6 +77,22 @@ function initDb(agent: SqlAgent) {
       completed INTEGER DEFAULT 0
     )`,
   )
+  // ── Operator-configured job websites ─────────────────────────────────
+  // The agent's search tools REFUSE any URL whose origin doesn't match an
+  // enabled row here. This is the runtime guardrail — the system prompt is
+  // a secondary safety net. Sources are managed from the dashboard, not code.
+  execSql(
+    agent,
+    `CREATE TABLE IF NOT EXISTS job_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      search_url_template TEXT NOT NULL,
+      notes TEXT,
+      enabled INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+  )
 }
 
 // =============================================================================
@@ -90,88 +108,127 @@ function getProfileString(agent: SqlAgent): string {
 }
 
 // =============================================================================
-// Real job-listing discovery (no API keys)
+// Live-website fetch + parse (replaces the old hardcoded job-board feed fetchers)
 // =============================================================================
-// These fetch from PUBLIC, key-less job board APIs over HTTPS and return
-// normalized raw listings. They are the ground truth the searchJobs() pipeline
-// draws from — the LLM is NEVER allowed to invent a listing; it only ranks and
-// scores the listings these functions actually returned. (Anthropic: agents
-// must "gain ground truth from the environment" — invented URLs are not truth.)
+// The agent NEVER hand-builds URLs or sees raw HTML. `fetchAndParse` does the
+// fetching and extracts a compact structure (title + truncated text + resolved
+// links) via Cloudflare's HTMLRewriter — not regex. Regex-scraping HTML breaks
+// the moment a site changes markup, and worse, leaks script/style noise into
+// the model's context. HTMLRewriter is a streaming SAX-like parser that runs
+// natively in the Workers runtime, so it's both correct and cheap.
 //
-// Multiple sources are fan-out'd in parallel; each is wrapped in try/catch so a
-// single failing provider degrades gracefully instead of failing the run.
+// The origin guard in `searchJobs`'s tools (search_site / fetch_page) refuses
+// any URL whose origin doesn't match an enabled `job_sources` row. That is the
+// actual security boundary — the prompt is advisory.
 // =============================================================================
 
-interface RawJobListing {
-  company: string
-  title: string
-  description: string
+interface ParsedPage {
   url: string
-  location: string
-  tags: string[]
-  source: string // which board it came from
+  title: string
+  // Truncated so a single bloated listing can't dominate the model's context.
+  text: string
+  links: Array<{ text: string; href: string }>
 }
 
-// --- Arbeitnow (https://www.arbeitnow.com/api/job-board-api) ---
-// Free, no key, CORS-friendly, JSON. Powers many open job boards.
-async function fetchArbeitnow(maxResults: number): Promise<RawJobListing[]> {
-  const res = await fetch("https://www.arbeitnow.com/api/job-board-api", {
-    headers: { Accept: "application/json" },
-  })
-  if (!res.ok) throw new Error(`Arbeitnow ${res.status}`)
-  const data: any = await res.json()
-  const jobs: any[] = Array.isArray(data?.data) ? data.data : []
-  return jobs.slice(0, maxResults).map(j => ({
-    company: j.company_name ?? j.company ?? "Unknown",
-    title: j.title ?? "Untitled role",
-    description: j.description ?? "",
-    url: j.url ?? j.slug ?? "",
-    location:
-      [j.location, j.remote ? "Remote" : null].filter(Boolean).join(", ") ||
-      "Unspecified",
-    tags: Array.isArray(j.tags) ? j.tags : [],
-    source: "arbeitnow",
-  }))
-}
-
-// --- Remotive (https://remotive.com/api/remote-jobs) ---
-// Free, no key, JSON. Remote-only roles, strong in tech.
-async function fetchRemotive(
-  query: string,
-  maxResults: number,
-): Promise<RawJobListing[]> {
-  const url = `https://remotive.com/api/remote-jobs?search=${encodeURIComponent(query)}&limit=${maxResults}`
-  const res = await fetch(url, { headers: { Accept: "application/json" } })
-  if (!res.ok) throw new Error(`Remotive ${res.status}`)
-  const data: any = await res.json()
-  const jobs: any[] = Array.isArray(data?.jobs) ? data.jobs : []
-  return jobs.slice(0, maxResults).map(j => ({
-    company: j.company_name ?? "Unknown",
-    title: j.title ?? "Untitled role",
-    description: j.description ?? "",
-    url: j.url ?? "",
-    location: j.candidate_required_location ?? "Remote",
-    tags: Array.isArray(j.tags) ? j.tags : [],
-    source: "remotive",
-  }))
-}
-
-// Fan out across all sources; never throw on a single failure.
-async function fetchJobListings(
-  query: string,
-  maxResults: number,
-): Promise<RawJobListing[]> {
-  const perSource = Math.min(maxResults * 4, 40) // over-fetch, filter down later
-  const settled = await Promise.allSettled([
-    fetchRemotive(query, perSource),
-    fetchArbeitnow(perSource),
-  ])
-
-  const all: RawJobListing[] = []
-  for (const r of settled) {
-    if (r.status === "fulfilled") all.push(...r.value)
+/** Resolve a possibly-relative href against the page's origin. */
+function resolveUrl(href: string, base: string): string | null {
+  try {
+    return new URL(href, base).href
+  } catch {
+    return null
   }
-  return all
+}
+
+/**
+ * Fetch a URL and parse it into a compact structure via HTMLRewriter.
+ * - `<title>` → ParsedPage.title
+ * - `<body>` text nodes → ParsedPage.text (truncated to ~2000 chars)
+ * - `<a href>` → ParsedPage.links (resolved to absolute, deduped, capped at 100)
+ *
+ * Script/style content is skipped entirely so the model doesn't see JS.
+ * Never throws — returns a best-effort object on any failure so a single bad
+ * page can't kill the agent's search.
+ */
+async function fetchAndParse(url: string, origin: string): Promise<ParsedPage> {
+  const out: ParsedPage = { url, title: "", text: "", links: [] }
+  const seenLinks = new Set<string>()
+  let textBuf = ""
+  let inSkip = 0 // depth inside <script>/<style>/<noscript>
+  const TEXT_CAP = 2000
+  const LINK_CAP = 100
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        // A honest UA — some sites 403 the default Workers fetcher UA.
+        "User-Agent": "Mozilla/5.0 (compatible; job-agent/1.0)",
+      },
+      redirect: "follow",
+    })
+    if (!res.ok || !res.body) {
+      out.title = `(fetch failed: HTTP ${res.status})`
+      return out
+    }
+
+    const rewriter = new HTMLRewriter()
+      .on("title", {
+        text(t) {
+          out.title += t.text
+          if (t.lastInTextNode) out.title = out.title.trim().slice(0, 300)
+        },
+      })
+      .on("script,style,noscript", {
+        element(el) {
+          inSkip++
+          el.onEndTag(() => {
+            // Only pop when actually inside, in case of malformed nesting.
+            if (inSkip > 0) inSkip--
+          })
+        },
+      })
+      .on("a[href]", {
+        element(el) {
+          if (out.links.length >= LINK_CAP) return
+          const href = el.getAttribute("href")
+          if (!href) return
+          const abs = resolveUrl(href, origin)
+          if (!abs || seenLinks.has(abs)) return
+          seenLinks.add(abs)
+          // Stash a placeholder; the text handler below fills `.text`.
+          out.links.push({ text: "", href: abs })
+        },
+        text(t) {
+          // Attach to the most recently pushed link (best-effort; HTMLRewriter
+          // emits child text after the element handler opened it).
+          const last = out.links[out.links.length - 1]
+          if (last) last.text += t.text
+          if (t.lastInTextNode && last) {
+            last.text = last.text.trim().slice(0, 160)
+          }
+        },
+      })
+      .on("*", {
+        // Body-text accumulator. Fires for every text node not consumed above.
+        text(t) {
+          if (inSkip > 0) return
+          if (textBuf.length >= TEXT_CAP) return
+          textBuf += t.text
+          if (textBuf.length > TEXT_CAP) {
+            textBuf = textBuf.slice(0, TEXT_CAP)
+          }
+        },
+      })
+
+    await rewriter.transform(res).text()
+    out.text = textBuf.trim()
+    // Drop links with no eligible text (often nav/asset hrefs).
+    out.links = out.links.filter(l => l.text.length > 0)
+    return out
+  } catch (err: any) {
+    out.title = `(fetch error: ${err?.message ?? String(err)})`
+    return out
+  }
 }
 
 // =============================================================================
@@ -186,8 +243,15 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
   initialState: JobAgentState = { initialized: false }
 
   private ensureDb() {
+    // Always run initDb() — every CREATE TABLE IF NOT EXISTS is idempotent, so
+    // re-running on every call is cheap and lets new tables (like job_sources,
+    // added in a later version than the rest) appear WITHOUT clearing the DO's
+    // persisted SQLite. The `initialized` flag is kept for state introspection
+    // but no longer gates schema creation. This is the same pattern the Harness
+    // uses; it's the cleanest way to ship additive migrations on the free-tier
+    // DO SQLite without a real migration framework.
+    initDb(this)
     if (!this.state.initialized) {
-      initDb(this)
       this.setState({ ...this.state, initialized: true })
     }
   }
@@ -238,7 +302,11 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
   }
 
   // ---------------------------------------------------------------------------
-  // Job search (autonomous discovery)
+  // Job search (autonomous, site-scoped discovery — replaced the hardcoded
+  // feed fetchers in v5). The agent uses the same loop shape as
+  // ResearchAgent.research: a generateText with tools that fetch+parse live
+  // pages. The runtime guard (origin must match an enabled job_sources row)
+  // is enforced in the tools themselves; the model never sees raw HTML.
   // ---------------------------------------------------------------------------
 
   @callable()
@@ -246,129 +314,405 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
     this.ensureDb()
 
     const profileStr = getProfileString(this)
-    const maxResults = request.maxResults ?? 5
     const criteria = request.criteria
+    const maxResults = request.maxResults ?? 5
+    // Page ceiling — bounds LLM cost. ~3 steps per page (search, open, save x N).
+    const maxPages = Math.max(1, Math.min(5, Math.ceil(maxResults / 2)))
 
-    // ---- Step 1: FETCH real listings (no LLM here, no fabrication possible) ----
-    const raw = await fetchJobListings(criteria, maxResults)
+    const agent = this
 
-    if (raw.length === 0) {
-      return {
-        newListings: [],
-        pipelineUpdate: this.getPipelineStats(),
+    // ── Trace recorder (buffer + return) ────────────────────────────────
+    // The job-agent runs its OWN multi-step LLM loop below (search_site →
+    // fetch_page → save_job). We buffer every step's prompt / reasoning /
+    // text / tool calls / results / tokens and return them as `__trace` on
+    // the response. The harness ingests them nested under the discover_jobs
+    // tool call, so the dashboard shows the real browsing the agent did —
+    // previously invisible. No sink: this DO doesn't write to trace_events.
+    const runId = request.runId ?? "job-search-standalone"
+    const recorder = new TraceRecorder({
+      agent: "job-agent",
+      runId,
+      redactKeys: obsConfig.logging?.redactToolArgs ?? [],
+    })
+    recorder.recordRunStart(
+      `job search: ${criteria}`,
+      maxPages * 6,
+      0,
+    )
+
+    // ── Origin guard helper ──────────────────────────────────────────────
+    // The actual security boundary. Returns the source row whose origin
+    // matches, or null if the URL isn't on an allowed site.
+    const sourceForUrl = (url: string): JobSource | null => {
+      let origin: string
+      try {
+        origin = new URL(url).origin
+      } catch {
+        return null
       }
+      const rows = execSql(agent, `SELECT * FROM job_sources WHERE enabled = 1`)
+      for (const r of rows as any[]) {
+        try {
+          if (new URL(r.base_url).origin === origin) {
+            return {
+              id: r.id,
+              name: r.name,
+              baseUrl: r.base_url,
+              searchUrlTemplate: r.search_url_template,
+              notes: r.notes,
+              enabled: true,
+              createdAt: r.created_at,
+            }
+          }
+        } catch {
+          // malformed base_url in DB — skip
+        }
+      }
+      return null
     }
 
-    // ---- Step 2: LLM ranks + scores the REAL listings (NO tools, no save_job) ----
-    // generateObject would be ideal, but to keep deps light we ask for strict
-    // JSON and parse defensively. The model only sees listings we already have;
-    // it CANNOT add new ones — every ranked item must reference an idx.
-    const prompt = `You are ranking real job listings against a candidate's profile.
+    const jobSearchTools = {
+      list_job_sources: tool({
+        description:
+          "List the job websites the user has configured for you to search. Each has an id, name, and base_url. Use the id to call search_site.",
+        inputSchema: z.object({}),
+        execute: async () => {
+          const rows = execSql(
+            agent,
+            `SELECT id, name, base_url, search_url_template, notes FROM job_sources WHERE enabled = 1 ORDER BY id`,
+          )
+          return JSON.stringify(
+            rows.map((r: any) => ({
+              id: r.id,
+              name: r.name,
+              baseUrl: r.base_url,
+              searchUrlTemplate: r.search_url_template,
+              notes: r.notes,
+            })),
+          )
+        },
+      }),
+
+      search_site: tool({
+        description:
+          "Run a search on a configured job site. The site's URL template is filled safely server-side — pass the sourceId and the query/location, never a hand-built URL. Returns parsed page text and links, not raw HTML.",
+        inputSchema: z.object({
+          sourceId: z.number().int(),
+          query: z
+            .string()
+            .describe("role/keywords to search for, e.g. 'Senior TypeScript'"),
+          location: z
+            .string()
+            .optional()
+            .describe("location filter, e.g. 'London' or 'Remote'"),
+          page: z
+            .number()
+            .int()
+            .optional()
+            .describe("result page number, starting at 1. Default 1."),
+        }),
+        execute: async ({ sourceId, query, location, page }) => {
+          const src = execSql(
+            agent,
+            `SELECT * FROM job_sources WHERE id = ? AND enabled = 1`,
+            [sourceId],
+          )[0] as any
+          if (!src) {
+            return JSON.stringify({
+              error: `source id ${sourceId} not found or disabled`,
+            })
+          }
+          // Safe template fill — encodeURIComponent prevents injection into
+          // query params. The model can't override the base origin.
+          const url = (src.search_url_template as string)
+            .replaceAll("{query}", encodeURIComponent(query))
+            .replaceAll("{location}", encodeURIComponent(location ?? ""))
+            .replaceAll("{page}", String(page ?? 1))
+          return await fetchAndParse(url, src.base_url as string)
+        },
+      }),
+
+      fetch_page: tool({
+        description:
+          "Open a specific link you found (e.g. a job posting) and read its content. The URL MUST be on the same origin as one of the configured job_sources — otherwise this returns an error. Use after search_site to read the actual posting before deciding to save.",
+        inputSchema: z.object({
+          url: z.string().describe("Absolute URL on a configured job source"),
+        }),
+        execute: async ({ url }) => {
+          const src = sourceForUrl(url)
+          if (!src) {
+            return JSON.stringify({
+              error:
+                "URL is outside the configured job sources. Only open links on sites you found via list_job_sources / search_site.",
+            })
+          }
+          return await fetchAndParse(url, src.baseUrl)
+        },
+      }),
+
+      save_job: tool({
+        description:
+          "Save a real job listing you confirmed by visiting its page with fetch_page. Never invent a company, title, or URL — every field must come from a page you actually opened. Score matchScore 0.0–1.0 based on profile fit; only call this for listings scoring >= 0.4.",
+        inputSchema: z.object({
+          company: z.string(),
+          title: z.string(),
+          description: z
+            .string()
+            .describe("the relevant excerpt from the fetched posting"),
+          url: z.string().describe("the URL you fetched via fetch_page"),
+          sourceName: z
+            .string()
+            .describe("the name of the job source site, from list_job_sources"),
+          matchScore: z.number().min(0).max(1),
+        }),
+        execute: async job => {
+          // Re-verify the URL is on an allowed origin before persisting — the
+          // model could in theory pass a URL it never fetched.
+          if (!sourceForUrl(job.url)) {
+            return JSON.stringify({
+              error: `refused: url ${job.url} is not on a configured job source`,
+            })
+          }
+          // Dedupe by URL or company+title
+          const dup = execSql(
+            agent,
+            `SELECT id FROM job_listings
+               WHERE (url = ? AND url IS NOT NULL AND url <> '')
+                  OR (company = ? AND title = ?)
+             LIMIT 1`,
+            [job.url, job.company, job.title],
+          )
+          if (dup.length > 0) {
+            return JSON.stringify({
+              skipped: true,
+              reason: "duplicate (already in pipeline)",
+            })
+          }
+          execSql(
+            agent,
+            `INSERT INTO job_listings (company, title, description, url, match_score, source, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              job.company,
+              job.title,
+              String(job.description).slice(0, 8000),
+              job.url,
+              job.matchScore,
+              job.sourceName,
+              `auto-discovered via ${job.sourceName}`,
+            ],
+          )
+          return JSON.stringify({
+            saved: true,
+            company: job.company,
+            title: job.title,
+            matchScore: job.matchScore,
+          })
+        },
+      }),
+    }
+
+    // ── The agent run ────────────────────────────────────────────────────
+    const systemPrompt = `You are a job search agent that browses real job websites the user has configured.
 
 CANDIDATE PROFILE:
 ${profileStr}
 
 SEARCH CRITERIA: "${criteria}"
 
-Below are ${raw.length} ACTUAL listings fetched from job boards. Score each one 0.0–1.0 for fit
-(candidate profile vs role). Only include listings you'd score >= 0.4. Return STRICT JSON, no prose:
-{"ranked":[{"idx":0,"matchScore":0.82,"reason":"one line why"}, ...]}
+Available tools:
+- list_job_sources: see which job websites you are allowed to search.
+- search_site: run a search on one of those sites for a role/location.
+- fetch_page: open a link you found (a job posting, or a "next page" link).
+- save_job: record a listing AFTER you have opened its page with fetch_page.
 
-LISTINGS:
-${raw
-  .map(
-    (r, i) =>
-      `[${i}] ${r.title} @ ${r.company} (${r.location})\n    tags: ${r.tags.join(", ") || "n/a"}\n    ${r.description.slice(0, 280).replace(/\s+/g, " ")}…\n    url: ${r.url}`,
-  )
-  .join("\n\n")}`
+How to work:
+1. Call list_job_sources first. Pick the site(s) most likely to have relevant
+   roles for this search — you do not have to search every site on every run.
+2. Call search_site with a concise query derived from the criteria. Read the
+   returned links and page text.
+3. If a result looks relevant, call fetch_page on its link to read the actual
+   job posting before saving. NEVER save a listing you have not opened.
+4. If the search results are paginated and the profile match is promising, you
+   may fetch the next page (search_site again with page+1) instead of opening
+   more listings on the current page. Use your judgement — do not page through
+   a site that is returning no relevant results.
+5. Only call save_job for listings you retrieved from a tool. NEVER invent a
+   company, title, or URL. Every save_job call must reference a URL you
+   actually fetched via fetch_page.
+6. Score matchScore 0.0–1.0 based on fit between the profile and the role. Only
+   save listings scoring >= 0.4.
+7. Stop once you have enough strong candidates for this run (aim for ${maxResults})
+   or you have searched ${maxPages} pages without new relevant results, whichever
+   comes first.
 
-    let ranked: Array<{ idx: number; matchScore: number; reason: string }> = []
+You will not always find something on every source. That is fine — report what
+you found and stop rather than fabricating results to fill a quota.`
+    const userPrompt = `Find up to ${maxResults} real job listings matching "${criteria}" for the candidate profile above. Use the tools; do not write listings from memory.`
+
+    // Snapshot prompts for the trace.
+    recorder.recordSystem("system-prompt", systemPrompt)
+    recorder.recordPrompt(0, [{ role: "user", content: userPrompt }])
+
     try {
       const model = getModel(this.env)
       const result = await generateText({
         model,
-        system:
-          "You score job listings for fit. You never invent listings — you only return idx values that reference the provided list, with a matchScore in [0,1]. Output is JSON only.",
-        prompt,
+        tools: jobSearchTools,
+        stopWhen: isStepCount(maxPages * 6),
+        system: systemPrompt,
+        prompt: userPrompt,
         ...getParams(this.env),
+        ...recorder.attach(),
       })
-
-      const text = result.text.trim()
-      // Tolerate accidental markdown fences / prose around the JSON object.
-      const start = text.indexOf("{")
-      const end = text.lastIndexOf("}")
-      if (start !== -1 && end !== -1 && end > start) {
-        const parsed = JSON.parse(text.slice(start, end + 1))
-        ranked = Array.isArray(parsed?.ranked) ? parsed.ranked : []
-      }
-    } catch {
-      // Ranking failed (model/API error). Fall back to a CHEAP keyword-overlap
-      // score so we don't blindly dump 40 listings into the pipeline. Only
-      // listings whose title/tags/description overlap the criteria get saved.
-      const criteriaTokens = criteria
-        .toLowerCase()
-        .split(/[^a-z0-9+#.]+/)
-        .filter(t => t.length > 2)
-      ranked = raw.map((listing, idx) => {
-        const hay =
-          `${listing.title} ${listing.company} ${listing.tags.join(" ")} ${listing.description}`.toLowerCase()
-        const hits = criteriaTokens.filter(t => hay.includes(t)).length
-        const score =
-          criteriaTokens.length > 0 ? hits / criteriaTokens.length : 0.3
-        return {
-          idx,
-          matchScore: Math.min(score, 1),
-          reason: "auto: keyword overlap",
-        }
+      recorder.flushFallback(null, Date.now(), {
+        usage: result.usage,
+        steps: result.steps,
+        response: result.response,
+        finishReason: result.finishReason,
+        warnings: result.warnings,
       })
+    } catch (err: any) {
+      // Non-fatal — the surfaced result below is what the pipeline ended with.
+      // A model/API error mid-search still leaves any listings the agent
+      // already saved via save_job in place. Record the error into the trace.
+      recorder.recordError(null, err?.message ?? String(err))
     }
 
-    // ---- Step 3: filter + persist, preserving only entries that map to a real listing ----
-    const savedThisRun: JobSearchResponse["newListings"] = []
-    for (const r of ranked) {
-      const listing = raw[r.idx]
-      if (!listing) continue // phantom idx — ignore, never invent
-      if (typeof r.matchScore !== "number" || r.matchScore < 0.4) continue
-
-      // Dedupe by URL or company+title
-      const existing = execSql(
-        this,
-        `SELECT id FROM job_listings
-           WHERE (url = ? AND url IS NOT NULL AND url <> '')
-              OR (company = ? AND title = ?)
-           LIMIT 1`,
-        [listing.url, listing.company, listing.title],
-      )
-      if (existing.length > 0) continue
-
-      execSql(
-        this,
-        `INSERT INTO job_listings (company, title, description, url, match_score, source, notes)
-         VALUES (?, ?, ?, ?, ?, 'auto-discovered', ?)`,
-        [
-          listing.company,
-          listing.title,
-          listing.description.slice(0, 8000),
-          listing.url,
-          r.matchScore,
-          `via ${listing.source}${r.reason ? ` — ${r.reason}` : ""}`,
-        ],
-      )
-
-      savedThisRun.push({
-        company: listing.company,
-        title: listing.title,
-        description: listing.description.slice(0, 2000),
-        url: listing.url,
-        matchScore: r.matchScore,
-      })
-      if (savedThisRun.length >= maxResults) break
-    }
+    // ── Surface what the agent actually persisted this run ──────────────
+    const recentRows = execSql(
+      this,
+      `SELECT company, title, description, url, match_score FROM job_listings
+         WHERE source <> 'manual'
+         ORDER BY created_at DESC LIMIT ?`,
+      [maxResults],
+    )
+    const newListings: JobSearchResponse["newListings"] = recentRows.map(
+      (r: any) => ({
+        company: r.company,
+        title: r.title,
+        description: String(r.description ?? "").slice(0, 2000),
+        url: r.url ?? "",
+        matchScore: r.match_score ?? 0,
+      }),
+    )
 
     return {
-      newListings: savedThisRun,
+      newListings,
       pipelineUpdate: this.getPipelineStats(),
+      // Sub-agent inner-loop trace — ingested by the harness recorder and
+      // nested under the discover_jobs tool call in the transcript.
+      __trace: recorder.toSubAgentTrace(),
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Job source management — operator-configured sites the agent may browse.
+  // These are the dashboard-facing CRUD RPCs; the agent itself reads
+  // job_sources via the list_job_sources tool inside the search run.
+  // ---------------------------------------------------------------------------
+
+  @callable()
+  async addJobSource(source: {
+    name: string
+    baseUrl: string
+    searchUrlTemplate: string
+    notes?: string
+  }): Promise<{ id: number; message: string }> {
+    this.ensureDb()
+    // Basic shape validation — template must contain {query}, baseUrl must parse.
+    if (!source.searchUrlTemplate.includes("{query}")) {
+      throw new Error(
+        "searchUrlTemplate must contain a {query} placeholder, e.g. https://example.com/jobs/{query}",
+      )
+    }
+    try {
+      // eslint-disable-next-line no-new
+      new URL(source.baseUrl)
+    } catch {
+      throw new Error(`baseUrl "${source.baseUrl}" is not a valid absolute URL`)
+    }
+    execSql(
+      this,
+      `INSERT INTO job_sources (name, base_url, search_url_template, notes) VALUES (?, ?, ?, ?)`,
+      [
+        source.name,
+        source.baseUrl,
+        source.searchUrlTemplate,
+        source.notes ?? null,
+      ],
+    )
+    const row = execSql(this, `SELECT last_insert_rowid() as id`)[0] as any
+    return {
+      id: row.id,
+      message: `Added job source "${source.name}" (${source.baseUrl})`,
+    }
+  }
+
+  @callable()
+  async listJobSources(): Promise<JobSource[]> {
+    this.ensureDb()
+    const rows = execSql(this, `SELECT * FROM job_sources ORDER BY id`)
+    return rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      baseUrl: r.base_url,
+      searchUrlTemplate: r.search_url_template,
+      notes: r.notes,
+      enabled: r.enabled === 1,
+      createdAt: r.created_at,
+    }))
+  }
+
+  @callable()
+  async updateJobSource(
+    id: number,
+    patch: Partial<{
+      name: string
+      baseUrl: string
+      searchUrlTemplate: string
+      notes: string
+      enabled: boolean
+    }>,
+  ): Promise<string> {
+    this.ensureDb()
+    const sets: string[] = []
+    const args: any[] = []
+    if (patch.name !== undefined) {
+      sets.push("name = ?")
+      args.push(patch.name)
+    }
+    if (patch.baseUrl !== undefined) {
+      sets.push("base_url = ?")
+      args.push(patch.baseUrl)
+    }
+    if (patch.searchUrlTemplate !== undefined) {
+      sets.push("search_url_template = ?")
+      args.push(patch.searchUrlTemplate)
+    }
+    if (patch.notes !== undefined) {
+      sets.push("notes = ?")
+      args.push(patch.notes)
+    }
+    if (patch.enabled !== undefined) {
+      sets.push("enabled = ?")
+      args.push(patch.enabled ? 1 : 0)
+    }
+    if (sets.length === 0) return `No fields to update for source ${id}.`
+    args.push(id)
+    execSql(
+      this,
+      `UPDATE job_sources SET ${sets.join(", ")} WHERE id = ?`,
+      args,
+    )
+    return `Updated job source ${id}: ${sets.map(s => s.split(" ")[0]).join(", ")}`
+  }
+
+  @callable()
+  async removeJobSource(id: number): Promise<string> {
+    this.ensureDb()
+    execSql(this, `DELETE FROM job_sources WHERE id = ?`, [id])
+    return `Removed job source ${id}`
   }
 
   // ---------------------------------------------------------------------------
@@ -591,6 +935,13 @@ Generate a tailored, compelling cover letter.`
     execSql(this, `UPDATE job_listings SET ${updates} WHERE id = ?`, args)
 
     return `Job ${params.jobId} updated to "${params.status}"`
+  }
+
+  @callable()
+  async deleteJob(params: { jobId: number }): Promise<string> {
+    this.ensureDb()
+    execSql(this, `DELETE FROM job_listings WHERE id = ?`, [params.jobId])
+    return `Removed job ${params.jobId}`
   }
 
   @callable()
