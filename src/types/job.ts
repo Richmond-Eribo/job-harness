@@ -20,9 +20,28 @@ export interface JobListing {
   status: JobStatus
   priority: number
   notes: string | null
-  source: "manual" | "auto-discovered"
+  // Widened from the v1 union ("manual" | "auto-discovered") so site-scraped
+  // listings can carry the originating job source's name, e.g. "reed",
+  // "linkedin", "manual". Kept as a free string because sources are
+  // operator-defined at runtime via the `job_sources` table, not enumerated.
+  source: string
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * A user-configured job website. The agent's search tools refuse any URL
+ * whose origin doesn't match an enabled row here — this is the runtime
+ * guardrail that lets the operator scope the agent to sites they trust.
+ */
+export interface JobSource {
+  id: number
+  name: string
+  baseUrl: string
+  searchUrlTemplate: string
+  notes: string | null
+  enabled: boolean
+  createdAt: string
 }
 
 export interface CoverLetter {
@@ -52,6 +71,8 @@ export interface UserProfile {
 export interface JobSearchRequest {
   criteria: string
   maxResults?: number
+  /** Harness run id, so the job-agent's inner-loop trace can be attributed. */
+  runId?: string
 }
 
 export interface JobSearchResponse {
@@ -67,10 +88,19 @@ export interface JobSearchResponse {
     byStatus: Record<JobStatus, number>
     dueFollowUps: number
   }
+  /**
+   * Sub-agent inner-loop trace. The harness ingests this into its trace_events
+   * (nested under the discover_jobs tool call) so the dashboard can show the
+   * real browsing the job-agent did. Present only when invoked through the
+   * harness tool.
+   */
+  __trace?: { agent: string; events: unknown[] }
 }
 
 export interface CoverLetterRequest {
   jobId: number
+  /** Harness run id, so the job-agent's inner-loop trace can be attributed. */
+  runId?: string
 }
 
 export interface CoverLetterResponse {
@@ -79,4 +109,6 @@ export interface CoverLetterResponse {
   title: string
   coverLetter: string
   version: number
+  /** Sub-agent inner-loop trace, nested under the write_cover_letter call. */
+  __trace?: { agent: string; events: unknown[] }
 }

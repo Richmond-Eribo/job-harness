@@ -21,6 +21,7 @@ export type {
 export type {
   JobStatus,
   JobListing,
+  JobSource,
   CoverLetter,
   FollowUp,
   UserProfile,
@@ -32,6 +33,12 @@ export type {
 
 export type { StepLogEntry, DailySummary } from "./log"
 
-export type { TraceEvent, TraceEventInput, TraceEventType } from "./trace"
+export type {
+  TraceEvent,
+  TraceEventInput,
+  TraceEventType,
+  TraceAgent,
+  SubAgentTrace,
+} from "./trace"
 
 export type { UserMemory } from "./memory"

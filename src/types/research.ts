@@ -25,6 +25,8 @@ export interface ResearchRequest {
   topic: string
   depth?: "quick" | "standard" | "deep"
   context?: string
+  /** Harness run id, so the research-agent's inner-loop trace can be attributed. */
+  runId?: string
 }
 
 export interface ResearchResponse {
@@ -36,4 +38,11 @@ export interface ResearchResponse {
     source: string
   }>
   newTopicsDiscovered: string[]
+  /**
+   * Sub-agent inner-loop trace. The harness ingests this into its trace_events
+   * (nested under the `research` tool call) so the dashboard can show what the
+   * research-agent did. Present only when invoked through the harness tool;
+   * standalone API calls (POST /api/research/run) leave it unset.
+   */
+  __trace?: { agent: string; events: unknown[] }
 }
