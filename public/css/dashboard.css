@@ -1164,6 +1164,149 @@ button.small, .btn.sm, button.sm {
 .ev-type-run_start, .ev-type-run_end { color: var(--text); }
 .ev-type-error { color: var(--danger); }
 
+/* ============================ TRANSCRIPT =============================== */
+/* Single-run step-grouped transcript (/traces/:runId). One .ts-step per LLM
+   turn, nested sub-agent activity under .ts-nest. Agent color coding:
+   harness = amber, job-agent = steel, research-agent = warn. */
+.ts-run-card { margin-bottom: 16px; }
+.ts-back { font-size: 12px; color: var(--text-3); text-decoration: none; }
+.ts-back:hover { color: var(--amber); }
+.ts-run-totals {
+  display: flex; flex-wrap: wrap; gap: 18px; padding: 12px 0 6px;
+  border-top: 1px solid var(--border-soft); margin-top: 8px;
+}
+.ts-total { display: flex; flex-direction: column; gap: 2px; }
+.ts-total-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-3); font-weight: 600;
+}
+.ts-total-val { font-family: var(--font-mono); font-size: 14px; color: var(--text); }
+.ts-run-goal {
+  display: flex; gap: 10px; align-items: baseline; padding-top: 8px;
+  border-top: 1px solid var(--border-soft); margin-top: 6px;
+}
+.ts-run-goal-text { font-size: 13px; color: var(--text-2); font-style: italic; }
+
+.ts-transcript { display: flex; flex-direction: column; gap: 12px; }
+
+.ts-live-banner {
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+  background: var(--amber-dim); border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  border-radius: var(--radius-sm); font-size: 12px; color: var(--text); font-family: var(--font-mono);
+}
+.ts-live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--amber);
+  box-shadow: 0 0 6px var(--amber); animation: ts-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ts-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Step card */
+.ts-step {
+  background: var(--bg-2); border: 1px solid var(--border); border-left: 3px solid var(--text-4);
+  border-radius: var(--radius); overflow: hidden;
+}
+.ts-step.ts-agent-harness { border-left-color: var(--amber); }
+.ts-step.ts-agent-job-agent { border-left-color: var(--steel); }
+.ts-step.ts-agent-research-agent { border-left-color: var(--warn); }
+.ts-step-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px;
+  background: var(--bg-3); border-bottom: 1px solid var(--border-soft);
+  font-size: 11.5px; color: var(--text-2); font-family: var(--font-mono);
+}
+.ts-step-num { font-weight: 700; color: var(--text); letter-spacing: 0.04em; }
+.ts-step-pre { color: var(--text-3); }
+.ts-step-meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--text-3); }
+.ts-agent-tag {
+  font-weight: 700; text-transform: lowercase; padding: 1px 7px; border-radius: var(--radius-pill);
+  font-size: 10px;
+}
+.ts-agent-tag.ts-agent-harness { background: var(--amber-dim); color: var(--amber); }
+.ts-agent-tag.ts-agent-job-agent { background: color-mix(in srgb, var(--steel) 16%, transparent); color: var(--steel); }
+.ts-agent-tag.ts-agent-research-agent { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.ts-step-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+/* Blocks within a step */
+.ts-block { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden; }
+.ts-block-system, .ts-block-prompt, .ts-block-step_end { background: var(--bg-3); }
+.ts-block-reasoning { background: color-mix(in srgb, var(--warn) 5%, var(--bg-2)); }
+.ts-block-text { background: color-mix(in srgb, var(--steel) 5%, var(--bg-2)); }
+.ts-block-tool { background: color-mix(in srgb, var(--amber) 4%, var(--bg-2)); }
+.ts-block-title {
+  cursor: pointer; padding: 7px 12px; font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3);
+  list-style: none; display: flex; align-items: center; gap: 8px;
+}
+.ts-block-title::-webkit-details-marker { display: none; }
+.ts-block-title::before { content: "▸"; color: var(--text-4); font-size: 10px; }
+details[open] > .ts-block-title::before { content: "▾"; }
+.ts-block-title-row { padding: 7px 12px; display: flex; align-items: center; gap: 8px; }
+.ts-block-title-inline {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-3);
+}
+.ts-block-body { padding: 0 12px 12px; font-size: 12.5px; }
+.ts-block-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 11.5px; }
+.ts-trunc {
+  font-size: 9.5px; font-weight: 600; color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent);
+  padding: 1px 6px; border-radius: var(--radius-pill); text-transform: uppercase; letter-spacing: 0.04em;
+}
+
+/* Tool block */
+.ts-tool-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 12px;
+  font-size: 11.5px; border-bottom: 1px solid var(--border-soft);
+}
+.ts-tool-icon { color: var(--amber); }
+.ts-tool-name { font-weight: 700; color: var(--amber); font-family: var(--font-mono); }
+.ts-tool-caller { color: var(--text-3); font-size: 11px; }
+.ts-tool-caller b { color: var(--text-2); }
+.ts-tool-id, .ts-tool-dur {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3);
+  margin-left: auto;
+}
+.ts-tool-args, .ts-tool-result { padding: 8px 12px; }
+.ts-tool-result { border-top: 1px dashed var(--border-soft); }
+.ts-mini-label {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-3); margin-bottom: 4px; font-weight: 600;
+}
+.ts-tool-result .ts-mini-label { color: var(--ok); }
+
+/* Nested sub-agent activity */
+.ts-nest {
+  margin: 0 12px 10px; padding: 10px; border: 1px dashed var(--border);
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg) 50%, var(--bg-3));
+}
+.ts-nest-label {
+  font-size: 10.5px; color: var(--text-3); margin-bottom: 8px;
+  font-family: var(--font-mono);
+}
+.ts-substep {
+  padding: 6px 0; border-top: 1px solid var(--border-soft);
+}
+.ts-substep:first-child { border-top: none; }
+.ts-substep-meta {
+  font-size: 10.5px; color: var(--text-3); font-family: var(--font-mono); margin-bottom: 4px;
+}
+.ts-subtool {
+  display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 11.5px;
+}
+.ts-subtool .ts-tool-name { color: var(--steel); font-weight: 600; }
+.ts-subtool-det summary { cursor: pointer; font-size: 10.5px; color: var(--text-3); }
+.ts-subtool-det .ts-block-body { padding-top: 8px; }
+
+/* JSON syntax in trace blocks */
+.ts-block-body .json-pre,
+.ts-tool-args .json-pre,
+.ts-tool-result .json-pre {
+  font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-word;
+}
+
+/* Run-list table goal cell */
+.ts-goal-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+.tr-link { cursor: pointer; }
+.tr-link:hover { background: var(--bg-3); }
+
 /* live activity mini-line (Overview) */
 .live-line {
   font-size: 12px; color: var(--text-2); padding: 6px 0; border-bottom: 1px solid var(--border-soft);

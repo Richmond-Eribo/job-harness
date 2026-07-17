@@ -174,7 +174,15 @@ async function refreshStatus() {
       if (runLabel) runLabel.textContent = status.status + " — no active run"
     }
 
-    if (activePage === "traces") loadRunsTable().catch(() => {})
+    // On the traces page, refresh the run list OR the open transcript
+    // (whichever is mounted). The transcript page handles its own live poll.
+    if (activePage === "traces") {
+      if (document.getElementById("page-trace")) {
+        // transcript live-poll is driven by loadTranscript; nothing here
+      } else {
+        loadRunsTable().catch(() => {})
+      }
+    }
     if (activePage === "logs") loadLog().catch(() => {})
 
     // New: per-turn output token stats (drives the dedicated card)
@@ -1813,12 +1821,18 @@ if (TOKEN) init()
 // target element isn't on the current page, so this is safe to call anywhere.
 // =========================================================================
 function hydrateActivePage() {
-  // The sidebar item carries data-page-id (set in Layout.tsx) so we know
-  // which page we're on without parsing the URL.
-  const activeEl = document.querySelector(".sb-item[aria-current='page']")
-  const page = activeEl ? activeEl.getAttribute("data-page-id") : null
+  // Derive the active page from the URL path. The sidebar's aria-current is
+  // set by the server on first load and by spa-nav.js on swaps, but reading
+  // the path is authoritative and survives DOM swaps without depending on
+  // markup staying in sync.
+  const page = pathToPage(location.pathname)
   if (!page) return
   activePage = page
+
+  // Stop the transcript live-poll when leaving the trace page.
+  if (page !== "traces") stopTranscriptPoll()
+  // Stop the browser status poll when leaving settings.
+  if (page !== "settings") stopBrowserPoll()
 
   if (page === "overview") {
     loadSummaries()
@@ -1828,6 +1842,44 @@ function hydrateActivePage() {
     loadMemory()
     loadUserMemory()
   }
+  if (page === "settings") {
+    loadBrowserStatus()
+  }
+  // The single-run transcript page. Both it and the run-list page share the
+  // "traces" sidebar item, so we distinguish by the #page-trace container.
+  if (page === "traces") {
+    const traceEl = document.getElementById("page-trace")
+    if (traceEl) {
+      loadTranscript(traceEl.getAttribute("data-run-id"))
+    } else {
+      // Fresh tbody after an SPA swap -> allow the delegated click handler
+      // to re-wire on the new element.
+      runsTableClickWired = false
+      wireRunsTableClick()
+      loadRunsTable()
+    }
+  }
+}
+
+// Map a URL path to a page id. Mirrors the NAV array in Layout.tsx. /traces/:id
+// and /traces both report "traces"; the hydrator distinguishes them by markup.
+function pathToPage(path) {
+  if (path === "/") return "overview"
+  if (path === "/jobs") return "jobs"
+  if (path === "/traces" || path.indexOf("/traces/") === 0) return "traces"
+  if (path === "/logs") return "logs"
+  if (path === "/memory") return "memory"
+  if (path === "/settings") return "settings"
+  return null
+}
+
+// Called by spa-nav.js after the `.main-scroll` region has been swapped in.
+// Re-detect the active page from the new URL and hydrate it, so the swapped
+// page picks up its live refreshers just like a freshly loaded page would.
+window.onSpaNav = function () {
+  try {
+    hydrateActivePage()
+  } catch (_) {}
 }
 
 function collapseSidebar() {
@@ -1852,8 +1904,16 @@ function prefetch(url) {
 }
 
 // =========================================================================
-// Runs table (Traces page)
+// Runs table (Traces page) — columns match the SSR <thead> in Traces.tsx:
+// Started · Run · Status · Steps · Tokens · Goal · [Open]
 // =========================================================================
+const RUN_STATUS_LABEL = {
+  max_steps_reached: "max steps",
+  token_budget_reached: "budget",
+  idle_detected: "idle",
+  repeated_loop_detected: "loop",
+  interrupted: "interrupted",
+}
 async function loadRunsTable() {
   try {
     const runs = await api("/runs?limit=30")
@@ -1864,32 +1924,552 @@ async function loadRunsTable() {
         '<tr><td colspan="7" class="empty">No traces yet. Start a run from the topbar.</td></tr>'
       return
     }
-    body.innerHTML = runs
-      .map(
-        r =>
-          '<tr onclick="openTraceSheet(\'' +
-          md.escapeHtml(r.runId).replace(/'/g, "&#39;") +
-          "')\">" +
-          "<td>" +
-          new Date(r.createdAt).toLocaleString() +
-          "</td>" +
-          "<td><code>" +
-          md.escapeHtml(r.runId.slice(0, 14)) +
+
+    // Keyed reconciliation instead of wholesale innerHTML replacement.
+    // Reuse existing rows when possible so hover/focus/scroll and any
+    // expanded <details> inside a row survive the 8s refresh — and only
+    // touch cells whose value actually changed. New runs prepend; runs no
+    // longer in the response are removed.
+    const existing = new Map()
+    for (const tr of Array.from(body.querySelectorAll("tr[data-run-id]"))) {
+      existing.set(tr.getAttribute("data-run-id"), tr)
+    }
+    const seen = new Set()
+    let firstChild = body.firstElementChild
+    for (const r of runs) {
+      const rid = r.runId
+      seen.add(rid)
+      let tr = existing.get(rid)
+      const created = new Date(r.createdAt).toLocaleString()
+      const shortId = md.escapeHtml(rid.slice(0, 14))
+      const status = r.status
+        ? md.escapeHtml(RUN_STATUS_LABEL[r.status] || r.status)
+        : "—"
+      const steps = String(r.steps ?? 0)
+      const tokens = r.tokens != null ? r.tokens.toLocaleString() : "—"
+      const goal = r.goal ? md.escapeHtml(r.goal.slice(0, 80)) : "—"
+      if (!tr) {
+        // Build a new row via a template (avoids inline-event string escaping).
+        tr = document.createElement("tr")
+        tr.className = "tr-link"
+        tr.setAttribute("data-run-id", rid)
+        tr.setAttribute("data-href", "/traces/" + rid)
+        // Click handling is delegated (wireRunsTableClick) — no per-row
+        // listener, so reconciled rows keep their wiring automatically.
+        tr.innerHTML =
+          '<td class="cell-created"></td>' +
+          '<td><code>' +
+          shortId +
           "</code></td>" +
-          "<td>" +
-          (r.goal ? md.escapeHtml(r.goal.slice(0, 80)) : "—") +
-          "</td>" +
-          "<td>" +
-          (r.steps ?? 0) +
-          "</td>" +
-          "<td>" +
-          (r.tokens != null ? r.tokens.toLocaleString() : "—") +
-          "</td>" +
-          "<td>—</td>" +
-          '<td><span class="link">Open →</span></td></tr>',
-      )
-      .join("")
+          '<td><span class="chip chip-neutral cell-status">' +
+          status +
+          "</span></td>" +
+          '<td class="cell-steps"></td>' +
+          '<td class="cell-tokens"></td>' +
+          '<td class="ts-goal-cell cell-goal"></td>' +
+          '<td><span class="link">Open →</span></td>'
+        tr.querySelector(".cell-created").textContent = created
+        tr.querySelector(".cell-steps").textContent = steps
+        tr.querySelector(".cell-tokens").textContent = tokens
+        tr.querySelector(".cell-goal").textContent = goal
+      } else {
+        // Patch only changed cells. Each row remembers its rendered values
+        // via data-* attrs so unchanged cells never get touched.
+        setIfChanged(tr, "created", created)
+        setIfChanged(tr, "status", status)
+        setIfChanged(tr, "steps", steps)
+        setIfChanged(tr, "tokens", tokens)
+        setIfChanged(tr, "goal", goal)
+      }
+      // Place rows in response order (newest first). If this row isn't
+      // already at the right position, move it.
+      if (tr !== firstChild) {
+        body.insertBefore(tr, firstChild)
+      } else {
+        firstChild = firstChild.nextElementSibling
+      }
+    }
+    // Drop rows that vanished from the response.
+    for (const [rid, tr] of existing) {
+      if (!seen.has(rid)) tr.remove()
+    }
   } catch (_) {}
+}
+
+// Patch a labelled cell only when its value changed; remember the value in a
+// data-* attr so the next poll can skip the write. keeps DOM writes minimal.
+function setIfChanged(tr, key, value) {
+  const k = "data-" + key
+  if (tr.getAttribute(k) === value) return
+  const el = tr.querySelector(".cell-" + key)
+  if (el) el.textContent = value
+  tr.setAttribute(k, value)
+}
+
+// Delegated click handler for the runs table. One listener covers both the
+// server-rendered rows and rows created/patched by loadRunsTable(). Uses SPA
+// navigation (window.navigate) when available, hard nav otherwise.
+let runsTableClickWired = false
+function wireRunsTableClick() {
+  if (runsTableClickWired) return
+  const body = document.getElementById("runs-table-body")
+  if (!body) return
+  runsTableClickWired = true
+  body.addEventListener("click", function (e) {
+    const tr = e.target.closest && e.target.closest("tr[data-run-id]")
+    if (!tr) return
+    const rid = tr.getAttribute("data-run-id")
+    if (!rid) return
+    ;(window.navigate || function (u) {
+      window.location.href = u
+    })("/traces/" + rid)
+  })
+}
+
+// =========================================================================
+// Transcript (single-run page) — step-grouped, with nested sub-agent events.
+// =========================================================================
+// Events from /api/runs/:runId are grouped by stepNumber, then each step's
+// blocks render in order: SYSTEM PROMPT → MESSAGES SENT → REASONING → TOOL
+// CALLS (each paired with its result by toolCallId, with sub-agent activity
+// nested underneath via parentId) → TEXT → RESPONSE. Every block carries a
+// timestamp + token accounting. While the run is active, this long-polls
+// ?sinceSeq=N every ~2.5s and appends new steps.
+let transcriptPollTimer = null
+let transcriptLastSeq = 0
+let transcriptRunId = null
+let transcriptRunActive = false
+
+async function loadTranscript(runId) {
+  if (!runId) return
+  transcriptRunId = runId
+  const root = document.getElementById("transcript")
+  if (!root) return
+  root.innerHTML =
+    '<div class="empty">Loading transcript…</div>'
+  try {
+    const data = await api("/runs/" + encodeURIComponent(runId))
+    const events = Array.isArray(data?.events) ? data.events : []
+    transcriptLastSeq = events.reduce((m, e) => Math.max(m, e.seq || 0), 0)
+    transcriptRunActive = !!(
+      data?.run &&
+      (data.run.status === null || data.run.status === undefined)
+    ) || (events.length > 0 && !events.some(e => e.eventType === "run_end"))
+    renderTranscript(root, events, runId)
+  } catch (e) {
+    root.innerHTML =
+      '<div class="empty">Failed to load: ' + md.escapeHtml(e.message) + "</div>"
+  }
+  startTranscriptPoll()
+}
+
+function stopTranscriptPoll() {
+  if (transcriptPollTimer) {
+    clearInterval(transcriptPollTimer)
+    transcriptPollTimer = null
+  }
+}
+
+function startTranscriptPoll() {
+  stopTranscriptPoll()
+  // Only poll while the run appears active (no run_end event yet).
+  if (!transcriptRunActive || !transcriptRunId) return
+  const banner = document.getElementById("ts-live-banner")
+  if (banner) banner.style.display = "flex"
+  transcriptPollTimer = setInterval(pollTranscript, 2500)
+}
+
+async function pollTranscript() {
+  if (!transcriptRunId) return
+  try {
+    const events = await api(
+      "/runs/" +
+        encodeURIComponent(transcriptRunId) +
+        "/events?sinceSeq=" +
+        transcriptLastSeq +
+        "&limit=500",
+    )
+    if (!Array.isArray(events) || events.length === 0) return
+    for (const e of events) {
+      transcriptLastSeq = Math.max(transcriptLastSeq, e.seq || 0)
+      if (e.eventType === "run_end") {
+        transcriptRunActive = false
+        stopTranscriptPoll()
+        const banner = document.getElementById("ts-live-banner")
+        if (banner) banner.style.display = "none"
+      }
+    }
+    // Re-render the full transcript from the cumulative set. Cheaper than
+    // surgically inserting blocks, and correct for grouping/nesting.
+    const full = await api(
+      "/runs/" + encodeURIComponent(transcriptRunId) + "?_=1",
+    )
+    const allEvents = Array.isArray(full?.events) ? full.events : []
+    renderTranscript(
+      document.getElementById("transcript"),
+      allEvents,
+      transcriptRunId,
+    )
+    const liveText = document.getElementById("ts-live-text")
+    if (liveText && events.length > 0) {
+      const last = events[events.length - 1]
+      liveText.textContent =
+        "running · last: " +
+        (last.eventType || "?") +
+        (last.label ? " " + last.label : "")
+    }
+  } catch (_) {
+    // transient — keep polling
+  }
+}
+
+// ── Group events into steps and render ──────────────────────────────────
+// Per-step reconciliation: the live banner is created once and never torn
+// down, and each step card is only rebuilt when its event signature changes
+// (event count + highest seq). This preserves the DOM the user is looking at
+// — expanded <details>, scroll position — across the 2.5s poll, instead of
+// wholesale-replacing root.innerHTML like the old version did.
+function renderTranscript(root, events, runId) {
+  if (!root) return
+  if (!events || events.length === 0) {
+    root.innerHTML = '<div class="empty">No trace events for this run.</div>'
+    return
+  }
+
+  // Ensure the live banner exists exactly once and reflects current state.
+  let banner = root.querySelector("#ts-live-banner")
+  if (!banner) {
+    // First render of this transcript root — start clean.
+    root.innerHTML =
+      '<div class="ts-live-banner" id="ts-live-banner"><span class="ts-live-dot"></span> <span id="ts-live-text">running…</span></div>'
+    banner = root.querySelector("#ts-live-banner")
+    // Forget any cached cards from a previous run mounted in this root.
+    delete root._stepCards
+  }
+  banner.style.display = transcriptRunActive ? "flex" : "none"
+
+  // Split into: top-level (parentId null/empty) vs nested sub-agent events.
+  const topLevel = []
+  const nestedByParent = {} // parentId -> [events]
+  for (const e of events) {
+    if (e.parentId) {
+      ;(nestedByParent[e.parentId] = nestedByParent[e.parentId] || []).push(e)
+    } else {
+      topLevel.push(e)
+    }
+  }
+
+  // Group top-level events by stepNumber. Events without a stepNumber
+  // (run_start, run_end, system-prompt) bucket under step null.
+  const steps = {} // stepNumber -> [events]
+  const order = [] // preserve first-seen step order
+  for (const e of topLevel) {
+    const k = e.stepNumber == null ? "_pre" : e.stepNumber
+    if (!steps[k]) {
+      steps[k] = []
+      order.push(k)
+    }
+    steps[k].push(e)
+  }
+
+  // Cache of rendered step cards on this root: stepKey -> { el, signature }.
+  const cache = root._stepCards || (root._stepCards = new Map())
+  const seen = new Set()
+
+  for (const stepKey of order) {
+    const evs = steps[stepKey]
+    // Signature: number of events + the max seq we've seen for this step.
+    // Changing either means the step grew (or got a step_end summary) and
+    // its card needs to be rebuilt.
+    let maxSeq = 0
+    for (const e of evs) if ((e.seq || 0) > maxSeq) maxSeq = e.seq || 0
+    const sig = evs.length + ":" + maxSeq
+    seen.add(stepKey)
+    const cached = cache.get(stepKey)
+    if (cached && cached.signature === sig) continue // unchanged — keep DOM
+    // (Re)build this step's card.
+    const isPre = stepKey === "_pre"
+    const stepNum = isPre ? null : stepKey
+    const html = renderStepCard(stepNum, evs, nestedByParent)
+    const tmp = document.createElement("div")
+    tmp.innerHTML = html
+    const card = tmp.firstElementChild
+    if (cached) {
+      // Replace the existing card in place (preserves step ordering).
+      cached.el.replaceWith(card)
+    } else {
+      // New step — append after the last existing step card (or the banner).
+      const insertAfter =
+        (cache.size && Array.from(cache.values()).pop().el) || banner
+      insertAfter.after(card)
+    }
+    cache.set(stepKey, { el: card, signature: sig })
+  }
+  // Steps can only grow during a run, so we don't prune; but if a future
+  // caller passes a smaller event set, drop any cards no longer present.
+  for (const [k, v] of cache) {
+    if (!seen.has(k)) {
+      v.el.remove()
+      cache.delete(k)
+    }
+  }
+}
+
+function renderStepCard(stepNum, evs, nestedByParent) {
+  // Bucket the step's events by type so we can render them in a fixed order.
+  const byType = {}
+  for (const e of evs) {
+    ;(byType[e.eventType] = byType[e.eventType] || []).push(e)
+  }
+  // Pick the agent + model + tokens from the step_end event (the authoritative
+  // per-turn summary). Fallbacks for steps without one.
+  const stepEnd = (byType.step_end || [])[0]
+  const agent = stepEnd?.agent || (evs[0] && evs[0].agent) || "harness"
+  const model = stepEnd?.model || null
+  const ts = evs[0]?.createdAt || stepEnd?.createdAt || null
+  const tokensIn = stepEnd?.tokensIn
+  const tokensOut = stepEnd?.tokensOut
+  const tokensReasoning = stepEnd?.tokensReasoning
+  const cacheRead = stepEnd?.cacheRead
+  const dur = stepEnd?.durationMs
+
+  const agentClass = "ts-agent-" + (agent || "harness")
+
+  let metaParts = []
+  if (ts) metaParts.push(fmtTime(ts))
+  metaParts.push('<span class="ts-agent-tag ' + agentClass + '">' + md.escapeHtml(agent) + "</span>")
+  if (model) metaParts.push(md.escapeHtml(model))
+  let tokParts = []
+  if (tokensIn != null) tokParts.push('in <b style="color:var(--steel)">' + tokensIn.toLocaleString() + "</b>")
+  if (tokensOut != null) tokParts.push('out <b style="color:var(--ok)">' + tokensOut.toLocaleString() + "</b>")
+  if (tokensReasoning != null && tokensReasoning > 0)
+    tokParts.push('reasoning <b style="color:var(--warn)">' + tokensReasoning.toLocaleString() + "</b>")
+  if (cacheRead != null && cacheRead > 0) tokParts.push("cache " + cacheRead.toLocaleString())
+  if (dur != null) tokParts.push((dur / 1000).toFixed(1) + "s")
+  if (tokParts.length) metaParts.push(tokParts.join(" · "))
+
+  const blocks = []
+  // SYSTEM PROMPT
+  for (const e of byType.system || []) {
+    if (e.label === "plan") continue // plan rendered separately if desired
+    blocks.push(renderCollapsibleBlock("SYSTEM PROMPT", e, "system"))
+  }
+  // MESSAGES SENT (prompt)
+  for (const e of byType.prompt || []) {
+    blocks.push(renderCollapsibleBlock("MESSAGES SENT", e, "prompt"))
+  }
+  // REASONING
+  for (const e of byType.reasoning || []) {
+    blocks.push(renderMarkdownBlock("REASONING", e, "reasoning"))
+  }
+  // TOOL CALLS (paired with results + nested sub-agent events)
+  const toolCalls = byType.tool_call || []
+  const toolResults = byType.tool_result || []
+  for (const tc of toolCalls) {
+    const result = toolResults.find(
+      tr => tr.toolCallId && tr.toolCallId === tc.toolCallId,
+    )
+    const nested = (tc.toolCallId && nestedByParent[tc.toolCallId]) || []
+    blocks.push(renderToolBlock(tc, result, nested, nestedByParent))
+  }
+  // Standalone tool_results without a matching call (rare; e.g. sub-agent
+  // events that surfaced at top level). Skip — they're nested or redundant.
+  // TEXT
+  for (const e of byType.text || []) {
+    blocks.push(renderMarkdownBlock("TEXT", e, "text"))
+  }
+  // RESPONSE (step_end detail)
+  if (stepEnd) {
+    blocks.push(renderCollapsibleBlock("RESPONSE", stepEnd, "step_end"))
+  }
+
+  return (
+    '<div class="ts-step ' + agentClass + '">' +
+    '<div class="ts-step-head">' +
+    (stepNum != null
+      ? '<span class="ts-step-num">STEP ' + stepNum + "</span>"
+      : '<span class="ts-step-num ts-step-pre">RUN</span>') +
+    '<span class="ts-step-meta">' + metaParts.join(" · ") + "</span>" +
+    "</div>" +
+    '<div class="ts-step-body">' +
+    blocks.join("") +
+    "</div>" +
+    "</div>"
+  )
+}
+
+function renderCollapsibleBlock(title, e, typeClass) {
+  const trunc = e.truncated ? '<span class="ts-trunc">truncated</span>' : ""
+  const payload = e.payload || ""
+  // system/prompt payloads are JSON strings or raw text; pretty-print if JSON.
+  const body = looksLikeJson(payload)
+    ? renderJson(payload, { maxChars: 20000 })
+    : "<pre>" + md.escapeHtml(payload) + "</pre>"
+  return (
+    '<div class="ts-block ts-block-' + typeClass + '">' +
+    '<details><summary class="ts-block-title">' +
+    md.escapeHtml(title) +
+    trunc +
+    "</summary>" +
+    '<div class="ts-block-body">' +
+    body +
+    "</div></details>" +
+    "</div>"
+  )
+}
+
+function renderMarkdownBlock(title, e, typeClass) {
+  const trunc = e.truncated ? '<span class="ts-trunc">truncated</span>' : ""
+  const body = e.payload
+    ? '<div class="md-body md-body-tight">' + md.render(e.payload) + "</div>"
+    : '<span class="empty">—</span>'
+  return (
+    '<div class="ts-block ts-block-' + typeClass + '">' +
+    '<div class="ts-block-title-row">' +
+    '<span class="ts-block-title-inline">' + md.escapeHtml(title) + "</span>" +
+    trunc +
+    "</div>" +
+    '<div class="ts-block-body">' + body + "</div>" +
+    "</div>"
+  )
+}
+
+function renderToolBlock(callEv, resultEv, nested, nestedByParent) {
+  const toolName = callEv.label || "tool"
+  const caller = callEv.agent || "harness"
+  const args = callEv.payload || ""
+  const result = resultEv?.payload || null
+  const dur = resultEv?.durationMs
+  const callTrunc = callEv.truncated
+    ? '<span class="ts-trunc">args truncated</span>'
+    : ""
+  const resTrunc = resultEv?.truncated
+    ? '<span class="ts-trunc">result truncated</span>'
+    : ""
+
+  // Render the nested sub-agent events (grouped into their own step cards).
+  let nestedHtml = ""
+  if (nested && nested.length > 0) {
+    // Group nested events by their stepNumber for sub-step cards.
+    const subSteps = {}
+    const subOrder = []
+    for (const e of nested) {
+      const k = e.stepNumber == null ? "_s" : e.stepNumber
+      if (!subSteps[k]) {
+        subSteps[k] = []
+        subOrder.push(k)
+      }
+      subSteps[k].push(e)
+    }
+    const subCards = subOrder.map(k => {
+      const subAgent = (nested[0] && nested[0].agent) || "sub-agent"
+      return renderSubStepCard(k === "_s" ? null : k, subSteps[k], subAgent)
+    })
+    nestedHtml =
+      '<div class="ts-nest">' +
+      '<div class="ts-nest-label">└ nested: ' +
+      md.escapeHtml(nested[0].agent || "sub-agent") +
+      " · " +
+      nested.length +
+      " events</div>" +
+      subCards.join("") +
+      "</div>"
+  }
+
+  return (
+    '<div class="ts-block ts-block-tool">' +
+    '<div class="ts-tool-head">' +
+    '<span class="ts-tool-icon">🔧</span>' +
+    '<span class="ts-tool-name">' + md.escapeHtml(toolName) + "</span>" +
+    '<span class="ts-tool-caller">called by <b>' +
+    md.escapeHtml(caller) + "</b></span>" +
+    (callEv.toolCallId
+      ? '<span class="ts-tool-id">id ' + md.escapeHtml(callEv.toolCallId.slice(0, 12)) + "</span>"
+      : "") +
+    (dur != null ? '<span class="ts-tool-dur">' + (dur / 1000).toFixed(1) + "s</span>" : "") +
+    "</div>" +
+    '<div class="ts-tool-args">' +
+    '<div class="ts-mini-label">args ' + callTrunc + "</div>" +
+    (args
+      ? looksLikeJson(args)
+        ? renderJson(args, { maxChars: 20000 })
+        : "<pre>" + md.escapeHtml(args) + "</pre>"
+      : '<span class="empty">—</span>') +
+    "</div>" +
+    nestedHtml +
+    (result != null
+      ? '<div class="ts-tool-result">' +
+        '<div class="ts-mini-label">→ result ' + resTrunc + "</div>" +
+        (looksLikeJson(result)
+          ? renderJson(result, { maxChars: 20000 })
+          : "<pre>" + md.escapeHtml(result) + "</pre>") +
+        "</div>"
+      : "") +
+    "</div>"
+  )
+}
+
+// A sub-agent step card (lighter styling than a top-level step).
+function renderSubStepCard(stepNum, evs, agent) {
+  const byType = {}
+  for (const e of evs) {
+    ;(byType[e.eventType] = byType[e.eventType] || []).push(e)
+  }
+  const stepEnd = (byType.step_end || [])[0]
+  const tokOut = stepEnd?.tokensOut
+  const dur = stepEnd?.durationMs
+  const blocks = []
+  for (const e of byType.reasoning || [])
+    blocks.push(renderMarkdownBlock("reasoning", e, "reasoning"))
+  for (const tc of byType.tool_call || []) {
+    const tr = (byType.tool_result || []).find(
+      x => x.toolCallId && x.toolCallId === tc.toolCallId,
+    )
+    if (tr) {
+      // Inline a compact tool row for sub-agent calls.
+      blocks.push(
+        '<div class="ts-subtool">' +
+        '<span class="ts-tool-icon">🔧</span>' +
+        '<span class="ts-tool-name">' + md.escapeHtml(tc.label || "tool") + "</span>" +
+        (tr.durationMs != null
+          ? '<span class="ts-tool-dur">' + (tr.durationMs / 1000).toFixed(1) + "s</span>"
+          : "") +
+        '<details class="ts-subtool-det"><summary>args/result</summary>' +
+        '<div class="ts-block-body">' +
+        (tc.payload ? renderJson(tc.payload, { maxChars: 6000 }) : "") +
+        (tr.payload ? renderJson(tr.payload, { maxChars: 6000 }) : "") +
+        "</div></details>" +
+        "</div>",
+      )
+    }
+  }
+  for (const e of byType.text || [])
+    blocks.push(renderMarkdownBlock("text", e, "text"))
+
+  let meta = []
+  if (stepNum != null) meta.push("step " + stepNum)
+  if (tokOut != null) meta.push(tokOut.toLocaleString() + " tok")
+  if (dur != null) meta.push((dur / 1000).toFixed(1) + "s")
+  return (
+    '<div class="ts-substep">' +
+    (meta.length ? '<div class="ts-substep-meta">' + meta.join(" · ") + "</div>" : "") +
+    blocks.join("") +
+    "</div>"
+  )
+}
+
+function fmtTime(iso) {
+  if (!iso) return ""
+  try {
+    const d = new Date(iso)
+    return (
+      d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) +
+      " · " +
+      d.toLocaleDateString([], { month: "short", day: "numeric" })
+    )
+  } catch (_) {
+    return ""
+  }
 }
 
 // =========================================================================
