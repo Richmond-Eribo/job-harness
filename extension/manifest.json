@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Harness Browser Relay",
+  "version": "1.0.0",
+  "description": "Relays your logged-in Chrome to the Agent Harness so it can browse login-walled job sites (Indeed, LinkedIn). Credentials never leave your browser.",
+  "permissions": ["debugger", "storage", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Agent Harness Relay",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

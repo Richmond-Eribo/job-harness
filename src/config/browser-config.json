@@ -1,0 +1,21 @@
+{
+  "$doc": "Browser capability config. The relay DO bridges agent CDP commands to either the user's real logged-in Chrome (via the extension relay, free-tier) or Cloudflare's managed headless Chromium (@cloudflare/playwright binding, paid plan). The vision flag lives in llm-config.json (it's a model property); this file holds the relay/runtime knobs.",
+
+  "relay": {
+    "$doc": "WebSocket relay between the agent and the browser extension.",
+    "heartbeatMs": 25000,
+    "cdpCallTimeoutMs": 15000
+  },
+
+  "managed": {
+    "$doc": "Managed headless target (@cloudflare/playwright). Only used if the BROWSER env binding is present (paid Workers plan). Lazily created on first use; one session reused across calls within a relay instance lifetime.",
+    "enabledByBinding": true
+  },
+
+  "safety": {
+    "$doc": "Credentials NEVER touch our system. The agent assumes the user is already logged in via the relay target. observe() detects login walls and STOPS — it never attempts login itself.",
+    "loginWallUrlPatterns": ["/login", "/signin", "/sign-in", "/auth", "/account/login", "/session/new", "/users/sign_in"],
+    "loginWallInputSelectors": ["input[type='password']"],
+    "domainAllowList": []
+  }
+}
