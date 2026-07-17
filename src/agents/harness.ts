@@ -1995,20 +1995,9 @@ export class Harness extends Agent<Env, HarnessState> {
   // v3 trace_events + user_memory RPCs
   // ---------------------------------------------------------------------------
 
-  @callable()
-  async getTraceEvents(
-    runId: string,
-    sinceSeq: number = 0,
-    limit: number = 500,
-  ): Promise<TraceEvent[]> {
-    this.ensureDb()
-    const rows = execSql(
-      this,
-      `SELECT * FROM trace_events WHERE run_id = ? AND seq > ?
-       ORDER BY seq ASC LIMIT ?`,
-      [runId, sinceSeq, limit],
-    )
-    return rows.map((r: any) => ({
+  /** Map a trace_events SQLite row → TraceEvent, including the v2 columns. */
+  private mapTraceRow(r: any): TraceEvent {
+    return {
       id: r.id,
       runId: r.run_id,
       stepNumber: r.step_number ?? null,
@@ -2023,7 +2012,32 @@ export class Harness extends Agent<Env, HarnessState> {
       durationMs: r.duration_ms ?? null,
       model: r.model ?? null,
       createdAt: r.created_at,
-    }))
+      // v2 columns. Legacy rows written before the migration have NULL here;
+      // coalesce to safe defaults so the type stays uniform.
+      agent: (r.agent ?? "harness") as TraceAgent,
+      toolCallId: r.tool_call_id ?? null,
+      parentId: r.parent_id ?? null,
+      parentLabel: r.parent_label ?? null,
+      cacheRead: r.cache_read ?? null,
+      cacheWrite: r.cache_write ?? null,
+      truncated: r.truncated ?? 0,
+    }
+  }
+
+  @callable()
+  async getTraceEvents(
+    runId: string,
+    sinceSeq: number = 0,
+    limit: number = 500,
+  ): Promise<TraceEvent[]> {
+    this.ensureDb()
+    const rows = execSql(
+      this,
+      `SELECT * FROM trace_events WHERE run_id = ? AND seq > ?
+       ORDER BY seq ASC LIMIT ?`,
+      [runId, sinceSeq, limit],
+    )
+    return rows.map((r: any) => this.mapTraceRow(r))
   }
 
   @callable()
@@ -2034,24 +2048,7 @@ export class Harness extends Agent<Env, HarnessState> {
       `SELECT * FROM trace_events ORDER BY id DESC LIMIT ?`,
       [limit],
     )
-    return rows
-      .map((r: any) => ({
-        id: r.id,
-        runId: r.run_id,
-        stepNumber: r.step_number ?? null,
-        seq: r.seq,
-        eventType: r.event_type,
-        role: r.role ?? null,
-        label: r.label ?? null,
-        payload: r.payload ?? null,
-        tokensIn: r.tokens_in ?? null,
-        tokensOut: r.tokens_out ?? null,
-        tokensReasoning: r.tokens_reasoning ?? null,
-        durationMs: r.duration_ms ?? null,
-        model: r.model ?? null,
-        createdAt: r.created_at,
-      }))
-      .reverse()
+    return rows.map((r: any) => this.mapTraceRow(r)).reverse()
   }
 
   // ----- user_memory (human-authored notes; high-authority prompt layer) -----
@@ -2193,24 +2190,34 @@ export class Harness extends Agent<Env, HarnessState> {
   /**
    * Notifications — recent operator-relevant happenings, derived from trace
    * events. Powers the bell dropdown. One row per notable event:
-   *   run started / ended (with stop reason)
-   *   job discovery returned new listings (tool_result of discover_jobs)
-   *   cover letter drafted (tool_call of write_cover_letter)
-   *   error during a run
+   *   run started / ended (with a human-readable stop reason)
+   *   job discovery searched (with the criteria)
+   *   cover letter drafted (with the company/title)
+   *   agent saved a memory (with the key)
+   *   error during a run (with the message)
+   *
+   * Each note carries runId + step so the dropdown can deep-link into the
+   * transcript at the exact turn that produced it.
    */
   @callable()
   async getRecentNotifications(limit: number = 12): Promise<
     Array<{
       id: number
       kind: "run" | "job" | "cover_letter" | "error" | "memory"
+      /** severity drives the row's visual weight: high = errors/stops,
+       *  normal = activity, low = routine memory saves. */
+      severity: "high" | "normal" | "low"
       title: string
       detail: string | null
+      runId: string | null
+      step: number | null
       createdAt: string
     }>
   > {
     this.ensureDb()
     const n = Math.max(1, Math.min(limit, 50))
-    // Pull the event types we care about, newest first.
+    // Pull the event types we care about, newest first. We over-fetch (n*4)
+    // because many events are filtered out (only the notable ones surface).
     const rows = execSql(
       this,
       `SELECT id, run_id, step_number, event_type, label, payload,
@@ -2219,14 +2226,17 @@ export class Harness extends Agent<Env, HarnessState> {
         WHERE event_type IN ('run_start','run_end','tool_call','tool_result','error')
         ORDER BY id DESC
         LIMIT ?`,
-      [n * 4], // over-fetch then filter down
+      [n * 4],
     )
 
     type Note = {
       id: number
       kind: "run" | "job" | "cover_letter" | "error" | "memory"
+      severity: "high" | "normal" | "low"
       title: string
       detail: string | null
+      runId: string | null
+      step: number | null
       createdAt: string
     }
     const notes: Note[] = []
@@ -2238,53 +2248,77 @@ export class Harness extends Agent<Env, HarnessState> {
       const payload = r.payload as string | null
       const label = r.label as string | null
       const id = r.id as number
+      const runId = (r.run_id as string) ?? null
+      const step = (r.step_number as number) ?? null
 
       if (et === "run_start") {
         notes.push({
           id,
           kind: "run",
+          severity: "normal",
           title: "Run started",
-          detail: (r.run_id as string)?.slice(0, 14) ?? null,
+          detail: payload ? safePick(payload, "goal") ?? null : null,
+          runId,
+          step,
           createdAt: when,
         })
       } else if (et === "run_end") {
+        // Translate the raw stop code into a readable sentence.
+        const code = label ?? ""
+        const reason = humanizeStopReason(code, payload)
+        const isErrorStop = code === "model_call_failed" || code === "error"
         notes.push({
           id,
           kind: "run",
-          title: "Run ended",
-          detail: label ?? null,
+          severity: isErrorStop ? "high" : "normal",
+          title: isErrorStop ? "Run failed" : "Run completed",
+          detail: reason,
+          runId,
+          step,
           createdAt: when,
         })
       } else if (et === "error") {
         notes.push({
           id,
           kind: "error",
-          title: "Run error",
+          severity: "high",
+          title: "Error during run",
           detail: payload ? payload.slice(0, 160) : null,
+          runId,
+          step,
           createdAt: when,
         })
       } else if (et === "tool_call" && label === "discover_jobs") {
         notes.push({
           id,
           kind: "job",
+          severity: "normal",
           title: "Searched for jobs",
           detail: payload ? safePick(payload, "criteria") : null,
+          runId,
+          step,
           createdAt: when,
         })
       } else if (et === "tool_call" && label === "write_cover_letter") {
         notes.push({
           id,
           kind: "cover_letter",
-          title: "Drafted cover letter",
-          detail: payload ?? null,
+          severity: "normal",
+          title: "Drafted a cover letter",
+          detail: payload ? safePick(payload, "jobId") : null,
+          runId,
+          step,
           createdAt: when,
         })
       } else if (et === "tool_call" && label === "remember") {
         notes.push({
           id,
           kind: "memory",
-          title: "Agent saved a memory",
+          severity: "low",
+          title: "Saved a memory",
           detail: payload ? safePick(payload, "key") : null,
+          runId,
+          step,
           createdAt: when,
         })
       }
@@ -2498,5 +2532,71 @@ export class Harness extends Agent<Env, HarnessState> {
       // non-fatal — caller falls back to default goal
     }
     return null
+  }
+
+  /**
+   * Send a tiny canned request to the configured model and return the RAW
+   * shapes the AI SDK v7 exposes — so the operator can see exactly what a
+   * given provider returns and design the trace rendering against reality.
+   *
+   * Returns: response.messages (the canonical assistant message, incl. tool-
+   * call parts), full usage (input/output/reasoning + inputTokenDetails cache
+   * + outputTokenDetails), response.headers (rate limits), providerMetadata,
+   * finishReason, model id, and a per-step breakdown. This is the "learn what
+   * each model returns" lever.
+   */
+  @callable()
+  async probeModel(): Promise<{
+    model: ReturnType<typeof getModelInfo>
+    finishReason: string | null
+    text: string
+    usage: any
+    responseMessages: any
+    responseHeaders: any
+    providerMetadata: any
+    warnings: any[]
+    steps: number
+    durationMs: number
+    error: string | null
+  }> {
+    const info = getModelInfo(this.env)
+    const start = Date.now()
+    try {
+      const model = getModel(this.env)
+      const result = await generateText({
+        model,
+        system:
+          "You are a probe target. Reply with exactly one short sentence and nothing else.",
+        prompt: "Reply with: probe ok",
+        ...getParams(this.env),
+      })
+      return {
+        model: info,
+        finishReason: result.finishReason ?? null,
+        text: result.text,
+        usage: result.usage ?? null,
+        responseMessages: result.response?.messages ?? null,
+        responseHeaders: result.response?.headers ?? null,
+        providerMetadata: result.providerMetadata ?? null,
+        warnings: result.warnings ?? [],
+        steps: result.steps?.length ?? 0,
+        durationMs: Date.now() - start,
+        error: null,
+      }
+    } catch (err: any) {
+      return {
+        model: info,
+        finishReason: null,
+        text: "",
+        usage: null,
+        responseMessages: null,
+        responseHeaders: null,
+        providerMetadata: null,
+        warnings: [],
+        steps: 0,
+        durationMs: Date.now() - start,
+        error: err?.message ?? String(err),
+      }
+    }
   }
 }
