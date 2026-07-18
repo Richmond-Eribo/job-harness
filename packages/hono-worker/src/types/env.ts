@@ -82,9 +82,15 @@ export interface Env {
   // Resend API key for magic-link delivery. When empty, magic links are logged
   // to the console + surfaced via a dev-only response header (no email sent).
   RESEND_API_KEY?: string
-  // Public base URL of the deployment (e.g. https://app.example.com). Used by
-  // Better Auth to build absolute callback URLs in magic-link emails.
+  // Public base URL of the API deployment (e.g. https://api.example.com). Used
+  // by Better Auth to build absolute callback URLs and as a trusted CORS origin.
   BETTER_AUTH_URL?: string
+
+  // Public base URL of the STANDALONE frontend (TanStack Start), e.g.
+  // https://app.example.com (prod) or http://localhost:3000 (dev). Added to
+  // Better Auth's trustedOrigins and to the CORS allowlist so the separate-origin
+  // SPA can call /api/* with credentials (the session cookie).
+  FRONTEND_URL?: string
 
   // v2 non-secret knobs (sourced from wrangler.jsonc vars). Trace capture
   // toggle — "1" = on (default); any other value = off. Detailed cap values

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Frontend Worker — the standalone TanStack Start app. Deploys to its OWN
+  // Cloudflare origin, separate from the Hono REST API worker
+  // (packages/hono-worker). The browser calls the API cross-origin via
+  // VITE_API_URL with credentials; auth cookies live on the API origin.
+  //
+  // `main` is the virtual server entry TanStack Start provides; the Cloudflare
+  // vite plugin resolves it at build time into .output/server/index.js.
+  "name": "agent-harness-app",
+  "compatibility_date": "2025-09-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+
+  "observability": {
+    "enabled": true
+  }
+}

@@ -1,11 +1,14 @@
-// Typed API client for the Worker's /api/* endpoints.
+// Typed API client for the Worker's /api/* endpoints — CROSS-ORIGIN.
 //
-// Same-origin fetch — the session cookie authenticates automatically, so no
-// Authorization header is needed (the legacy bearer token is gone). Every call
-// goes through this helper so error handling is uniform.
+// The frontend is a standalone app on a separate origin from the API worker.
+// All calls go to `${API_URL}/api${path}` with credentials:"include" so the
+// SameSite=None session cookie (set by Better Auth on the API origin) is
+// attached cross-origin. The API worker echoes our origin in
+// Access-Control-Allow-Origin + sets Access-Control-Allow-Credentials: true.
 //
-// 401 → the session expired; the auth guard in the router will redirect to
-// /login. 428 → onboarding incomplete; the guard redirects to /onboarding.
+// 401 → the session expired; the router guards redirect to /login.
+// 428 → onboarding incomplete; the guards redirect to /onboarding.
+import { API_URL } from "./auth"
 
 export class ApiError extends Error {
   status: number
@@ -21,17 +24,17 @@ async function request<T = any>(
   opts: { method?: string; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<T> {
   const { method = "GET", body, signal } = opts
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_URL}/api${path}`, {
     method,
-    credentials: "same-origin",
+    credentials: "include", // send the cross-origin session cookie
     signal,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   })
 
   if (!res.ok) {
-    // 401 + 428 are handled by the router guards, but still throw so callers
-    // can react. The guards watch for navigation-level redirects.
+    // 401 + 428 are handled by the router guards (they watch navigation and
+    // redirect), but still throw so callers can react.
     let msg = `Request failed (${res.status})`
     try {
       const data = await res.json()

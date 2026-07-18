@@ -32,11 +32,17 @@ AUTH_SECRET=""
 # dev-only response header (no email sent) — handy for local dev.
 RESEND_API_KEY=""
 
-# Public base URL of this deployment. Better Auth uses it to build absolute
-# callback URLs in magic-link emails. For local dev use the wrangler dev URL.
+# Public base URL of the API deployment. Better Auth uses it to build absolute
+# callback URLs and as a trusted CORS origin. For local dev use the wrangler URL.
 BETTER_AUTH_URL="http://localhost:8787"
 
-# Sender address for magic-link emails (read by src/auth/auth.ts → resend.ts).
+# Public base URL of the STANDALONE frontend (TanStack Start), served from a
+# SEPARATE origin. This is added to Better Auth's trustedOrigins and to the CORS
+# allowlist so the cross-origin SPA can call /api/* with credentials. Empty = no
+# separate frontend (old same-origin SPA mode). Dev runs TanStack Start on :3000.
+FRONTEND_URL="http://localhost:3000"
+
+# Sender address for OTP emails (read by src/auth/auth.ts → resend.ts).
 # MUST be a Resend-verified sender (verify your domain at resend.com/domains).
 # Without this, magic links fall back to console-logging instead of emailing.
 MAIL_FROM="agent@example.com"

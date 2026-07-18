@@ -64,6 +64,17 @@ export type Auth = ReturnType<typeof createAuth>
  */
 export function createAuth(env: Env, opts?: { baseURL?: string }) {
   const baseURL = opts?.baseURL ?? env.BETTER_AUTH_URL
+  // Trusted origins: the API origin itself + the separate frontend origin (if
+  // one is configured). Better Auth uses this list for its CSRF/origin checks
+  // on cross-origin auth requests. Empty when no separate frontend is set.
+  const trustedOrigins = [baseURL, env.FRONTEND_URL].filter(
+    (o): o is string => typeof o === "string" && o.length > 0,
+  )
+  // Browsers only send a SameSite=None cookie over HTTPS, so a hardcoded
+  // secure:true would prevent the session cookie from persisting on the
+  // http://localhost dev origin. Better Auth auto-downgrades for localhost, but
+  // we gate it explicitly to be safe across versions.
+  const isLocalDev = baseURL?.includes("localhost") ?? false
 
   return betterAuth({
     // Native D1 — Better Auth manages its own Kysely D1 dialect.
@@ -71,9 +82,7 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
     secret: env.AUTH_SECRET,
     baseURL,
 
-    // The app is served same-origin by Workers Assets, so the only trusted
-    // origin is itself. (Widened later if a separate frontend domain ships.)
-    trustedOrigins: baseURL ? [baseURL] : [],
+    trustedOrigins,
 
     user: {
       // Declare the extra column so Better Auth maps it to the `user` table.
@@ -117,5 +126,18 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
         overrideDefaultEmailVerification: true,
       }),
     ],
+
+    advanced: {
+      // The frontend lives on a SEPARATE origin and calls /api/auth/* cross-
+      // origin with credentials:"include". For the browser to attach the
+      // session cookie across sites it must be SameSite=None + Secure. We do
+      // NOT set a domain — the cookie stays scoped to the API origin (the
+      // browser sends it on cross-origin fetches with credentials, but the
+      // cookie is never readable from document.cookie on the frontend origin).
+      defaultCookieAttributes: {
+        sameSite: "none",
+        secure: !isLocalDev,
+      },
+    },
   })
 }

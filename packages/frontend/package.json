@@ -13,19 +13,23 @@
     "@agent-harness/shared-types": "*",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.95.0",
+    "@tanstack/react-start": "^1.120.0",
     "better-auth": "^1.6.23",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@agent-harness/ui": "*",
-    "@tailwindcss/vite": "^4.3.3",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "tailwindcss": "^4.3.3",
+    "@cloudflare/vite-plugin": "^1.29.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/node": "^22.5.4",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tailwindcss": "^4.2.2",
     "tw-animate-css": "^1.0.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^8.0.14",
+    "wrangler": "^4.74.0"
   }
 }

@@ -51,13 +51,30 @@ export {
 const app = new Hono<AppEnv>()
 
 // CORS on everything (preflight handled automatically by the middleware).
+//
+// The frontend is a STANDALONE app on a separate origin, so we can't use the
+// wildcard "*" — browsers refuse to send credentials (the session cookie) when
+// Access-Control-Allow-Origin is the literal "*" AND credentials are involved.
+// Instead we echo the request Origin back iff it's in the allowlist (the
+// frontend origin + the API origin itself). `credentials: true` sets
+// Access-Control-Allow-Credentials so the cookie rides along cross-origin.
 app.use(
   "*",
-  cors({
-    origin: "*",
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
-  }),
+  async (c, next) => {
+    const allowed = new Set(
+      [c.env.FRONTEND_URL, c.env.BETTER_AUTH_URL].filter(
+        (o): o is string => typeof o === "string" && o.length > 0,
+      ),
+    )
+    const corsMiddleware = cors({
+      origin: (origin) => (origin && allowed.has(origin) ? origin : null),
+      credentials: true,
+      allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      allowHeaders: ["Content-Type", "Authorization"],
+      exposeHeaders: ["Set-Cookie"],
+    })
+    return corsMiddleware(c, next)
+  },
 )
 
 // ── Better Auth handler ──────────────────────────────────────────────────
