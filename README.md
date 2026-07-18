@@ -137,25 +137,46 @@ npm install
 
 ### 2. Configure local secrets
 
-Create a `.dev.vars` file in the project root:
+Create a `.dev.vars` file in the project root (see `.dev.vars.example`):
 
 ```bash
-LLM_API_KEY=sk-...            # your Anthropic or OpenAI key
-DASHBOARD_TOKEN=some-secret   # any strong token for dashboard auth
-LLM_PROVIDER=anthropic        # or "openai"
-LLM_MODEL=claude-sonnet-4-20250514
+LLM_API_KEY=sk-...            # your LLM provider key (GLM/OpenAI/Anthropic)
+AUTH_SECRET=                  # generate: openssl rand -hex 32
+RESEND_API_KEY=               # optional — omit to log magic links in dev
+BETTER_AUTH_URL=http://localhost:8787
 ```
 
-Provider/model can also be set in `wrangler.jsonc` under `vars`.
+Auth is multi-tenant: users sign in via **Better Auth magic link** (email →
+signed session cookie). The auth directory lives in **D1** (`DB` binding);
+CV/résumé files live in **R2** (`CV_BUCKET`). Both bindings are pre-wired in
+`wrangler.jsonc` — run the D1 migration once:
+
+```bash
+npx wrangler d1 migrations apply agent-harness-auth --local   # dev
+npx wrangler d1 migrations apply agent-harness-auth --remote  # prod
+```
 
 ### 3. Run locally
+
+**Backend** (the Worker + all Durable Objects):
 
 ```bash
 npm run dev
 ```
 
-Open the dashboard at the URL Wrangler prints (usually `http://localhost:8787`).
-You'll be prompted for your `DASHBOARD_TOKEN`.
+**Frontend** (the Vite + TanStack Router SPA) — in a second terminal:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+The Vite dev server runs on `:5173` and proxies `/api` to the Worker on
+`:8787`. Open `http://localhost:5173/app` for the new SPA. The legacy SSR
+dashboard remains at `http://localhost:8787/` during the cutover.
+
+In dev (no `RESEND_API_KEY`), magic links are logged to the Worker console
+and surfaced in the login page — click through to sign in without an email
+provider.
 
 ### 4. Deploy
 
