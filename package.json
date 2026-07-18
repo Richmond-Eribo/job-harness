@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "dev:all": "concurrently -n wrangler,vite -c blue,green \"wrangler dev\" \"npm --prefix frontend run dev\"",
+    "build": "npm run build:frontend && wrangler deploy --dry-run",
+    "deploy": "npm run build:frontend && wrangler deploy",
     "tail": "wrangler tail",
     "types": "wrangler types"
   },
@@ -24,6 +28,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",
     "@cloudflare/workers-types": "^4.20250620.0",
+    "concurrently": "^10.0.3",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.0.0"

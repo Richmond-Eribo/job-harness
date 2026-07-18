@@ -1,20 +1,22 @@
 import { usePipeline, useSetJobStatus } from "../hooks/queries"
+import type { JobListing, JobStatus } from "@/types"
 
-const COLUMNS = [
+const COLUMNS: { id: JobStatus; label: string; color: string }[] = [
   { id: "discovered", label: "Discovered", color: "border-t-slate-500" },
   { id: "draft", label: "Draft", color: "border-t-blue-500" },
   { id: "applied", label: "Applied", color: "border-t-amber-500" },
   { id: "interview", label: "Interview", color: "border-t-purple-500" },
   { id: "offer", label: "Offer", color: "border-t-emerald-500" },
   { id: "rejected", label: "Rejected", color: "border-t-red-500" },
-] as const
+]
 
 export function JobsPage() {
   const { data: pipeline, isLoading } = usePipeline()
   const setJobStatus = useSetJobStatus()
 
   const listings = pipeline?.listings ?? []
-  const byStage = (stage: string) => listings.filter((j: any) => j.status === stage)
+  const byStage = (stage: JobStatus) =>
+    listings.filter(j => j.status === stage)
 
   return (
     <div className="p-6">
@@ -37,11 +39,11 @@ export function JobsPage() {
                   </span>
                 </div>
                 <div className="p-3 space-y-2 min-h-[100px]">
-                  {jobs.map((job: any) => (
+                  {jobs.map((job: JobListing) => (
                     <JobCard
                       key={job.id}
                       job={job}
-                      onAdvance={(status) =>
+                      onAdvance={(status: JobStatus) =>
                         setJobStatus.mutate({ jobId: job.id, status })
                       }
                     />
@@ -65,13 +67,14 @@ function JobCard({
   job,
   onAdvance,
 }: {
-  job: any
-  onAdvance: (status: string) => void
+  job: JobListing
+  onAdvance: (status: JobStatus) => void
 }) {
   // Determine the next stage for the "advance" quick action.
-  const order = ["discovered", "draft", "applied", "interview", "offer"]
+  const order: JobStatus[] = ["discovered", "draft", "applied", "interview", "offer"]
   const idx = order.indexOf(job.status)
-  const next = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null
+  const next: JobStatus | null =
+    idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null
 
   return (
     <div className="bg-ink-950 rounded-lg p-3 border border-ink-800 hover:border-ink-700">

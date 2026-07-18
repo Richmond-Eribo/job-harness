@@ -3,7 +3,7 @@ import { useRuns } from "../hooks/queries"
 
 export function TracesPage() {
   const { data, isLoading } = useRuns()
-  const runs = Array.isArray(data) ? data : data?.runs ?? []
+  const runs = data ?? []
 
   return (
     <div className="p-6 max-w-4xl">

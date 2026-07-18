@@ -9,7 +9,7 @@ export function TraceDetailPage() {
   const { data, isLoading } = useRunTrace(runId)
 
   const events = data?.events ?? data?.trace ?? []
-  const run = data?.run ?? {}
+  const run = data?.run
 
   // Group events by stepNumber for display.
   const steps = new Map<string, any[]>()
@@ -26,7 +26,7 @@ export function TraceDetailPage() {
       </Link>
       <div className="flex items-center gap-3 mb-6">
         <h1 className="text-xl font-mono">{runId}</h1>
-        {run.status && (
+        {run?.status && (
           <span className="text-xs px-2 py-0.5 rounded-full bg-ink-800 text-ink-400">
             {run.status}
           </span>

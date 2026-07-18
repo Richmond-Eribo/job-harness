@@ -2,7 +2,7 @@ import { useLog } from "../hooks/queries"
 
 export function LogsPage() {
   const { data, isLoading } = useLog()
-  const logs = Array.isArray(data) ? data : data?.log ?? []
+  const logs = data ?? []
 
   return (
     <div className="p-6 max-w-4xl">

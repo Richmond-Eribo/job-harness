@@ -16,7 +16,11 @@ export function OverviewPage() {
   const stopRun = useStopRun()
 
   const isRunning = status?.status === "running"
-  const stats = pipeline?.stats ?? { total: 0, byStatus: {}, dueFollowUps: 0 }
+  const stats = pipeline?.stats ?? {
+    total: 0,
+    byStatus: {} as Partial<Record<string, number>>,
+    dueFollowUps: 0,
+  }
   const listings = pipeline?.listings ?? []
 
   return (
