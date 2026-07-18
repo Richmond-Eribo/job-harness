@@ -235,7 +235,7 @@ describe("execSql round-trip flow (read-after-write)", () => {
     ])
     execSql(agent, `INSERT INTO schedules (cron, focus) VALUES (?, ?)`, [
       "*/5 * * * *",
-      "research",
+      "jobs",
     ])
 
     // SELECT (the "reading from it does not" path — previously crashed)

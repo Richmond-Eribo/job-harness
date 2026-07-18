@@ -21,7 +21,7 @@
 //
 // AGENT ATTRIBUTION (v2):
 //   `agent` records WHICH agent emitted the event — "harness",
-//   "job-agent", or "research-agent". Before v2 only the Harness wrote trace
+//   "job-agent", or "browser-agent". Before v2 only the Harness wrote trace
 //   rows, so the two capability-provider sub-agents (which run their own inner
 //   LLM loops) were invisible. Now sub-agents buffer their events and return
 //   them on the RPC response; the Harness ingests them with the correct agent
@@ -35,7 +35,7 @@
 // =============================================================================
 
 /** Identifier of which agent emitted an event. Drives color + grouping in the UI. */
-export type TraceAgent = "harness" | "job-agent" | "research-agent" | "browser-agent"
+export type TraceAgent = "harness" | "job-agent" | "browser-agent"
 
 export type TraceEventType =
   | "run_start"

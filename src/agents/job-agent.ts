@@ -286,12 +286,23 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
 
     const rows = execSql(this, `SELECT key, value FROM user_profile`)
 
+    // All fields default to null; the kv table is sparse (only set keys exist).
     const profile: Record<string, string | null> = {
-      cv: null,
-      preferences: null,
+      fullName: null,
+      email: null,
+      phone: null,
+      location: null,
+      links: null,
+      workAuth: null,
       targetRoles: null,
       targetLocations: null,
       skills: null,
+      preferences: null,
+      cv: null,
+      cvFilename: null,
+      cvContentType: null,
+      cvR2Key: null,
+      cvUploadedAt: null,
     }
 
     for (const row of rows) {
@@ -303,10 +314,9 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
 
   // ---------------------------------------------------------------------------
   // Job search (autonomous, site-scoped discovery — replaced the hardcoded
-  // feed fetchers in v5). The agent uses the same loop shape as
-  // ResearchAgent.research: a generateText with tools that fetch+parse live
-  // pages. The runtime guard (origin must match an enabled job_sources row)
-  // is enforced in the tools themselves; the model never sees raw HTML.
+  // feed fetchers in v5). Uses a generateText loop with tools that fetch+parse
+  // live pages. The runtime guard (origin must match an enabled job_sources
+  // row) is enforced in the tools themselves; the model never sees raw HTML.
   // ---------------------------------------------------------------------------
 
   @callable()
@@ -725,14 +735,44 @@ you found and stop rather than fabricating results to fill a quota.`
     title: string
     description?: string
     url?: string
+    /** Where the job came from. 'manual' (operator) or a site name (agent). */
+    source?: string
+    /** Agent's fit assessment 0..1, for agent-discovered jobs. */
+    matchScore?: number
   }): Promise<{ id: number; message: string }> {
     this.ensureDb()
 
+    // Dedupe by URL or company+title so the agent can't add the same posting
+    // twice across runs (it re-browses the same listings otherwise).
+    const dup = execSql(
+      this,
+      `SELECT id FROM job_listings
+         WHERE (? IS NOT NULL AND url = ? AND url <> '')
+            OR (company = ? AND title = ?)
+       LIMIT 1`,
+      [job.url ?? null, job.url ?? null, job.company, job.title],
+    )
+    if (dup.length > 0) {
+      return {
+        id: (dup[0] as any).id,
+        message: `Already in pipeline: ${job.title} at ${job.company}`,
+      }
+    }
+
+    const source = job.source ?? "manual"
     execSql(
       this,
-      `INSERT INTO job_listings (company, title, description, url, source)
-       VALUES (?, ?, ?, ?, 'manual')`,
-      [job.company, job.title, job.description ?? null, job.url ?? null],
+      `INSERT INTO job_listings (company, title, description, url, match_score, source, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        job.company,
+        job.title,
+        job.description ? String(job.description).slice(0, 8000) : null,
+        job.url ?? null,
+        job.matchScore ?? null,
+        source,
+        source === "manual" ? null : `agent-discovered via ${source}`,
+      ],
     )
 
     const row = execSql(this, `SELECT last_insert_rowid() as id`)[0] as any

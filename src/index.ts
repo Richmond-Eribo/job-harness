@@ -13,12 +13,18 @@
 
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { bearerAuth } from "hono/bearer-auth"
 
 import { routeAgentRequest, getAgentByName } from "agents"
 import type { Env } from "./types"
+import type { AppEnv } from "./types/app-env"
 import { Harness } from "./agents"
 
+import { getAuth } from "./auth/session"
+import { requireAuth } from "./auth/require-auth"
+import {
+  issueExtensionTokenRoute,
+  userIdFromRelayRequest,
+} from "./auth/extension-token"
 import { renderer } from "./views/Layout"
 import { renderPage } from "./views/renderDashboard"
 import OverviewPage from "./views/pages/Overview"
@@ -28,21 +34,21 @@ import TracePage from "./views/pages/Trace"
 import LogsPage from "./views/pages/Logs"
 import MemoryPage from "./views/pages/Memory"
 import SettingsPage from "./views/pages/Settings"
-import { getAgents, HARNESS_ID } from "./utils/get-agents"
+import { getAgents, getHarnessForUser } from "./utils/get-agents"
 
 // Re-export all Durable Object classes (required by Cloudflare)
 export {
   Harness,
-  ResearchAgent,
   JobApplicationAgent,
   BrowserRelay,
   BrowserAgent,
+  RateLimiter,
 } from "./agents"
 // =============================================================================
 // Hono app
 // =============================================================================
 
-const app = new Hono<{ Bindings: Env }>()
+const app = new Hono<AppEnv>()
 
 // CORS on everything (preflight handled automatically by the middleware).
 app.use(
@@ -54,18 +60,221 @@ app.use(
   }),
 )
 
-// Bearer-token auth on the JSON API only. The HTML routes intentionally stay
-// public — the dashboard prompts for the token client-side on first visit,
-// and every data-fetching route is under /api/* where this middleware applies.
-app.use(
-  "/api/*",
-  bearerAuth<{ Bindings: Env }>({
-    verifyToken: async (token, c) => {
-      const TOKEN = c.env?.DASHBOARD_TOKEN
-      return token === TOKEN
-    },
-  }),
+// ── Better Auth handler ──────────────────────────────────────────────────
+// Better Auth's handler owns the full request/response for its routes
+// (sign-in, callback, session, sign-out, etc.). Mounted before requireAuth so
+// the auth endpoints are reachable without a session. The instance is built
+// per-request from env so baseURL resolves to the real request host.
+app.on(["GET", "POST"], "/api/auth/*", async c => {
+  const auth = getAuth(c)
+  return auth.handler(c.req.raw)
+})
+
+// ── Session-cookie auth on everything ────────────────────────────────────
+// Replaces the legacy shared bearer token. requireAuth reads the Better Auth
+// session cookie, redirects HTML requests to /login (or 401s JSON), and on
+// success sets c.var.session + c.var.userId. Exempt paths: /api/auth/*,
+// /login, /signup, static assets, /browser/relay (auth'd via extension token).
+app.use("*", requireAuth)
+
+// ── Login page ───────────────────────────────────────────────────────────
+// Minimal email → magic-link form. Exempt from requireAuth (see above). The
+// form POSTs to Better Auth's magic-link endpoint (/api/auth/magic-link/sign-
+// in) which sends the link and returns here. The full login UI ships with the
+// Vite frontend in Stage 8; this is the functional placeholder.
+app.get("/login", c =>
+  c.html(LOGIN_PAGE_HTML),
 )
+const LOGIN_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .card{background:#1e293b;padding:40px;border-radius:16px;max-width:380px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
+  h1{margin:0 0 8px;font-size:24px;font-weight:700}
+  p{color:#94a3b8;margin:0 0 24px;font-size:14px}
+  label{display:block;font-size:13px;color:#cbd5e1;margin-bottom:6px}
+  input{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:15px;margin-bottom:16px}
+  button{width:100%;padding:12px;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+  button:hover{background:#2563eb}
+  .msg{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;display:none}
+  .msg.ok{background:#064e3b;color:#6ee7b7;display:block}
+  .msg.err{background:#7f1d1d;color:#fca5a5;display:block}
+</style>
+</head>
+<body>
+<form class="card" id="login-form">
+  <h1>Sign in</h1>
+  <p>Enter your email and we'll send a magic link.</p>
+  <label for="email">Email</label>
+  <input type="email" id="email" name="email" required autocomplete="email" autofocus />
+  <button type="submit">Send magic link</button>
+  <div class="msg" id="msg"></div>
+</form>
+<script>
+const form = document.getElementById('login-form');
+const msg = document.getElementById('msg');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value;
+  msg.className = 'msg';
+  msg.textContent = 'Sending...';
+  try {
+    const res = await fetch('/api/auth/magic-link/sign-in', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ email, callbackURL: '/' })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || 'Failed');
+    msg.className = 'msg ok';
+    // Better Auth returns the link in dev (no email provider). Show it.
+    msg.textContent = data?.url
+      ? 'Dev mode — click this link: ' + data.url
+      : 'Check your email for the sign-in link.';
+  } catch (err) {
+    msg.className = 'msg err';
+    msg.textContent = err.message;
+  }
+});
+</script>
+</body>
+</html>`
+
+// ── Onboarding page + completion endpoint ────────────────────────────────
+// A user who hasn't completed profile + CV setup is redirected here by the
+// onboarding gate. This is the functional placeholder; the full onboarding UI
+// ships with the Vite frontend in Stage 8. The completion endpoint writes the
+// profile + marks onboarding_complete = 1 in D1.
+app.get("/onboarding", c => c.html(ONBOARDING_PAGE_HTML))
+
+app.post("/api/onboarding", async c => {
+  const userId = c.var.userId
+  const body = await c.req.json().catch(() => ({}))
+
+  // Persist the profile fields to the user's JobApplicationAgent.
+  const { jobAgent } = await getAgents(c.env, userId)
+  const profilePatch: Record<string, string> = {}
+  for (const k of [
+    "fullName",
+    "email",
+    "phone",
+    "location",
+    "links",
+    "workAuth",
+    "targetRoles",
+    "targetLocations",
+    "skills",
+    "preferences",
+  ]) {
+    if (typeof (body as any)[k] === "string") profilePatch[k] = (body as any)[k]
+  }
+  if (Object.keys(profilePatch).length > 0) {
+    await jobAgent.setProfile(profilePatch)
+  }
+
+  // Mark onboarding complete in D1. The user can edit their profile later via
+  // PUT /api/profile; this flag just unlocks the rest of the app.
+  try {
+    await c.env.DB.prepare(
+      `UPDATE "user" SET onboarding_complete = 1, updated_at = ? WHERE id = ?`,
+    )
+      .bind(Date.now(), userId)
+      .run()
+  } catch (error: any) {
+    return c.json({ error: `Failed to mark onboarding: ${error.message}` }, 500)
+  }
+
+  return c.json({ message: "Onboarding complete", redirect: "/" })
+})
+
+const ONBOARDING_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Complete your profile</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
+  .wrap{max-width:560px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 8px}
+  p.sub{color:#94a3b8;margin:0 0 24px;font-size:14px}
+  .field{margin-bottom:16px}
+  label{display:block;font-size:13px;color:#cbd5e1;margin-bottom:6px}
+  input,textarea{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:14px}
+  textarea{min-height:60px;resize:vertical}
+  button{padding:12px 24px;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+  button:hover{background:#2563eb}
+  .msg{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;display:none}
+  .msg.ok{background:#064e3b;color:#6ee7b7;display:block}
+  .msg.err{background:#7f1d1d;color:#fca5a5;display:block}
+</style>
+</head>
+<body>
+<form class="wrap" id="ob-form">
+  <h1>Complete your profile</h1>
+  <p class="sub">This info powers your job search agent. You can edit it later in Settings.</p>
+  <div class="field"><label>Full name</label><input id="fullName" required /></div>
+  <div class="field"><label>Email</label><input id="email" type="email" required /></div>
+  <div class="field"><label>Phone</label><input id="phone" /></div>
+  <div class="field"><label>Location</label><input id="location" /></div>
+  <div class="field"><label>Target roles</label><input id="targetRoles" placeholder="e.g. Senior TypeScript Engineer" /></div>
+  <div class="field"><label>Target locations</label><input id="targetLocations" placeholder="e.g. Remote, London" /></div>
+  <div class="field"><label>Skills (comma-separated)</label><textarea id="skills"></textarea></div>
+  <div class="field"><label>Work authorization</label><input id="workAuth" placeholder="e.g. EU citizen, requires sponsorship" /></div>
+  <div class="field"><label>CV upload (PDF/DOCX)</label><input id="cv-file" type="file" accept=".pdf,.doc,.docx" /></div>
+  <button type="submit">Complete setup</button>
+  <div class="msg" id="msg"></div>
+</form>
+<script>
+const form = document.getElementById('ob-form');
+const msg = document.getElementById('msg');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.className = 'msg';
+  msg.textContent = 'Saving...';
+  try {
+    // 1. Upload CV if selected (R2).
+    const fileInput = document.getElementById('cv-file');
+    if (fileInput.files[0]) {
+      const f = fileInput.files[0];
+      const upRes = await fetch('/api/profile/cv?filename=' + encodeURIComponent(f.name), {
+        method: 'POST',
+        headers: {'Content-Type': f.type},
+        body: f
+      });
+      if (!upRes.ok) throw new Error('CV upload failed');
+    }
+    // 2. Save profile fields + mark onboarding complete.
+    const body = {
+      fullName: document.getElementById('fullName').value,
+      email: document.getElementById('email').value,
+      phone: document.getElementById('phone').value,
+      location: document.getElementById('location').value,
+      targetRoles: document.getElementById('targetRoles').value,
+      targetLocations: document.getElementById('targetLocations').value,
+      skills: document.getElementById('skills').value,
+      workAuth: document.getElementById('workAuth').value,
+    };
+    const res = await fetch('/api/onboarding', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || 'Failed');
+    window.location.href = '/';
+  } catch (err) {
+    msg.className = 'msg err';
+    msg.textContent = err.message;
+  }
+});
+</script>
+</body>
+</html>`
 
 // =============================================================================
 // Pages — each route is its own URL, server-renders only what that page needs.
@@ -83,7 +292,7 @@ app.use(
 // =============================================================================
 
 app.get("/", renderer, async c => {
-  const { harness, jobAgent } = await getAgents(c.env)
+  const { harness, jobAgent } = await getAgents(c.env, c.var.userId)
   // The overview is job-first: pipeline stats + listings + follow-ups are the
   // primary data; agent status + token trend are demoted to the bottom. Each
   // fetch is independently guarded so one slow/failing DO call doesn't blank
@@ -111,7 +320,7 @@ app.get("/", renderer, async c => {
 })
 
 app.get("/jobs", renderer, async c => {
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   let pipeline: {
     listings: any[]
     stats: { total: number; byStatus: Record<string, number> }
@@ -126,7 +335,7 @@ app.get("/jobs", renderer, async c => {
 })
 
 app.get("/traces", renderer, async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   let runs: any[] = []
   try {
     runs = await harness.listRuns(30)
@@ -140,7 +349,7 @@ app.get("/traces", renderer, async c => {
 // client-side from /api/runs/:runId (which returns run + events in one call).
 app.get("/traces/:runId", renderer, async c => {
   const runId = c.req.param("runId")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   let run: any = null
   try {
     run = await harness.getRun(runId)
@@ -149,7 +358,7 @@ app.get("/traces/:runId", renderer, async c => {
 })
 
 app.get("/logs", renderer, async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   let log: any[] = []
   try {
     log = await harness.getLog(50)
@@ -158,7 +367,7 @@ app.get("/logs", renderer, async c => {
 })
 
 app.get("/memory", renderer, async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   const [userMemory, agentMemory] = await Promise.all([
     harness.getAllUserMemory().catch(() => []),
     harness.getAllMemory().catch(() => []),
@@ -167,7 +376,7 @@ app.get("/memory", renderer, async c => {
 })
 
 app.get("/settings", renderer, async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   const [config, schedules] = await Promise.all([
     harness.getConfig().catch(() => ({})),
     harness.listAppSchedules().catch(() => []),
@@ -186,19 +395,32 @@ app.get("/settings", renderer, async c => {
 // login-walled job sites. See docs/browser-cdp-guide.md.
 
 app.all("/browser/relay", async c => {
-  // Forward the WS upgrade straight to the relay DO. The relay accepts +
-  // hibernates the socket and tags it for its webSocketMessage handler.
-  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, "main")
+  // The extension can't send a session cookie on a WS upgrade, so the relay
+  // identifies the user via a signed extension token on the URL
+  // (?token=<jwt>). The dashboard mints the token against the session user
+  // (POST /api/browser/extension-token); the extension stores it and appends
+  // it on connect. This is the ONLY way the Worker knows which per-user relay
+  // DO to route the socket to.
+  const url = new URL(c.req.url)
+  const userId = await userIdFromRelayRequest(url, c.env.AUTH_SECRET)
+  if (!userId) {
+    return c.json({ error: "Missing or invalid extension token" }, 401)
+  }
+  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, userId)
   return relay.fetch(c.req.raw)
 })
 
+// Mint an extension token for the session user (the dashboard surfaces it for
+// the extension to copy/store). Session-gated by requireAuth.
+app.post("/api/browser/extension-token", issueExtensionTokenRoute)
+
 app.get("/api/browser/status", async c => {
-  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, "main")
+  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, c.var.userId)
   return c.json(await relay.statusSnapshot())
 })
 
 app.post("/api/browser/disconnect", async c => {
-  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, "main")
+  const relay: any = await getAgentByName(c.env.BROWSER_RELAY, c.var.userId)
   return c.json({ disconnected: relay.disconnectLive() })
 })
 
@@ -209,35 +431,37 @@ app.post("/api/browser/disconnect", async c => {
 app.post("/api/browser/probe", async c => {
   const body = await c.req.json().catch(() => ({}))
   if (!body?.url) return c.json({ error: "url required" }, 400)
-  const agent: any = await getAgentByName(c.env.BROWSER_AGENT, "main")
+  const agent: any = await getAgentByName(c.env.BROWSER_AGENT, c.var.userId)
   return c.json(await agent.probe(body.url))
 })
 
 // =============================================================================
 
 app.get("/api/status", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.getFullStatus())
 })
 
 app.post("/api/start", async c => {
   const body = await c.req.json().catch(() => ({}))
-  const { harness } = await getAgents(c.env)
-  return c.json({ message: await harness.start(body.goal) })
+  const { harness } = await getAgents(c.env, c.var.userId)
+  // Pass the session userId so the harness persists it + threads it through
+  // buildAgentTools → every delegating tool resolves sub-agents by this user.
+  return c.json({ message: await harness.start(body.goal, c.var.userId) })
 })
 
 app.post("/api/stop", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.stop() })
 })
 
 app.post("/api/pause", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.pause() })
 })
 
 app.post("/api/resume", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.resume() })
 })
 
@@ -246,13 +470,13 @@ app.post("/api/resume", async c => {
 // =============================================================================
 
 app.get("/api/config", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.getConfig())
 })
 
 app.put("/api/config", async c => {
   const body = await c.req.json()
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.updateConfig(body) })
 })
 
@@ -261,13 +485,13 @@ app.put("/api/config", async c => {
 // =============================================================================
 
 app.get("/api/schedules", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.listAppSchedules())
 })
 
 app.post("/api/schedules", async c => {
   const body = await c.req.json()
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await harness.addSchedule(body.cron, body.focus ?? "all"),
   })
@@ -275,14 +499,14 @@ app.post("/api/schedules", async c => {
 
 app.delete("/api/schedules/:id", async c => {
   const id = Number(c.req.param("id"))
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.removeSchedule(id) })
 })
 
 app.put("/api/schedules/:id/toggle", async c => {
   const id = Number(c.req.param("id"))
   const body = await c.req.json()
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.toggleSchedule(id, body.enabled) })
 })
 
@@ -292,7 +516,7 @@ app.put("/api/schedules/:id/toggle", async c => {
 
 app.get("/api/log", async c => {
   const limit = Number(c.req.query("limit") ?? "50")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getLog(limit))
   } catch (e: any) {
@@ -303,7 +527,7 @@ app.get("/api/log", async c => {
 
 app.get("/api/summaries", async c => {
   const limit = Number(c.req.query("limit") ?? "10")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.getDailySummaries(limit))
 })
 
@@ -316,14 +540,14 @@ app.get("/api/summaries", async c => {
 
 app.get("/api/runs", async c => {
   const limit = Number(c.req.query("limit") ?? "20")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.listRuns(limit))
 })
 
 app.get("/api/run/:runId/trace", async c => {
   const runId = c.req.param("runId")
   if (!runId) return c.json({ error: "runId required" }, 400)
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.getTrace(runId))
 })
 
@@ -336,7 +560,7 @@ app.get("/api/run/:runId/trace", async c => {
 // =============================================================================
 
 app.get("/api/memory", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.getAllMemory())
 })
 
@@ -345,7 +569,7 @@ app.put("/api/memory", async c => {
   if (!body?.key || typeof body.key !== "string") {
     return c.json({ error: "key required" }, 400)
   }
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await harness.setMemory(body.key, String(body.value ?? "")),
   })
@@ -353,7 +577,7 @@ app.put("/api/memory", async c => {
 
 app.delete("/api/memory/:key", async c => {
   const key = decodeURIComponent(c.req.param("key"))
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.forgetMemory(key) })
 })
 
@@ -365,7 +589,7 @@ app.delete("/api/memory/:key", async c => {
 // =============================================================================
 
 app.get("/api/user-memory", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json(await harness.getAllUserMemory())
 })
 
@@ -374,7 +598,7 @@ app.put("/api/user-memory", async c => {
   if (!body?.key || typeof body.key !== "string") {
     return c.json({ error: "key required" }, 400)
   }
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await harness.setUserMemory(body.key, String(body.value ?? "")),
   })
@@ -382,7 +606,7 @@ app.put("/api/user-memory", async c => {
 
 app.delete("/api/user-memory/:key", async c => {
   const key = decodeURIComponent(c.req.param("key"))
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.forgetUserMemory(key) })
 })
 
@@ -391,7 +615,7 @@ app.delete("/api/user-memory/:key", async c => {
 // =============================================================================
 
 app.get("/api/goal", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   const status = await harness.getFullStatus()
   return c.json({ goal: status.goal })
 })
@@ -401,12 +625,12 @@ app.put("/api/goal", async c => {
   if (typeof body?.goal !== "string") {
     return c.json({ error: "goal string required" }, 400)
   }
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.setGoal(body.goal) })
 })
 
 app.post("/api/goal/synthesize", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   const goal = await harness.synthesizeGoalFromCapabilities()
   return c.json({ goal })
 })
@@ -416,7 +640,7 @@ app.post("/api/goal/synthesize", async c => {
 // =============================================================================
 
 app.get("/api/plan", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json({ plan: await harness.getPlan() })
   } catch (e: any) {
@@ -426,7 +650,7 @@ app.get("/api/plan", async c => {
 
 app.post("/api/plan/advance", async c => {
   const body = await c.req.json().catch(() => ({}))
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     const plan = await harness.advancePlan(
       body.stepId ?? null,
@@ -454,7 +678,7 @@ app.post("/api/plan/advance", async c => {
 app.get("/api/runs/:runId/events", async c => {
   const runId = c.req.param("runId")
   const sinceSeq = Number(c.req.query("sinceSeq") ?? "0")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getTraceEvents(runId, sinceSeq))
   } catch (e: any) {
@@ -468,7 +692,7 @@ app.get("/api/runs/:runId/events", async c => {
 // cacheRead/Write, truncated) the transcript renderer needs.
 app.get("/api/runs/:runId", async c => {
   const runId = c.req.param("runId")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     const [run, events] = await Promise.all([
       harness.getRun(runId),
@@ -486,7 +710,7 @@ app.get("/api/runs/:runId", async c => {
 // "learn what each model returns" lever: run this after switching providers
 // to see exactly what the trace renderer will be working with.
 app.get("/api/debug/model-probe", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     // Cast to any: probeModel's return type (with the model-info union) can
     // push Hono's c.json() type instantiation past its depth limit.
@@ -496,9 +720,21 @@ app.get("/api/debug/model-probe", async c => {
   }
 })
 
+// DEBUG: validate the current checkpoint's messages against the AI SDK v7
+// ModelMessage[] schema. Returns the exact field that fails. Used to diagnose
+// "messages do not match the ModelMessage[] schema" without guessing.
+app.get("/api/debug/validate-messages", async c => {
+  const { harness } = await getAgents(c.env, c.var.userId)
+  try {
+    return c.json((await (harness as any).debugValidateMessages()) as any)
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500)
+  }
+})
+
 app.get("/api/trace-events", async c => {
   const limit = Number(c.req.query("limit") ?? "200")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getRecentTraceEvents(limit))
   } catch (e: any) {
@@ -509,7 +745,7 @@ app.get("/api/trace-events", async c => {
 // Token spend grouped by day — bars for the Overview chart.
 app.get("/api/tokens-by-day", async c => {
   const days = Number(c.req.query("days") ?? "14")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getTokensByDay(days))
   } catch (e: any) {
@@ -519,7 +755,7 @@ app.get("/api/tokens-by-day", async c => {
 
 // Per-turn output token stats — drives the Overview "Output tokens / turn" card.
 app.get("/api/turn-tokens", async c => {
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getTurnTokenStats())
   } catch (e: any) {
@@ -530,7 +766,7 @@ app.get("/api/turn-tokens", async c => {
 // Notifications — recent operator-relevant happenings for the bell dropdown.
 app.get("/api/notifications", async c => {
   const limit = Number(c.req.query("limit") ?? "12")
-  const { harness } = await getAgents(c.env)
+  const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getRecentNotifications(limit))
   } catch (e: any) {
@@ -543,7 +779,7 @@ app.get("/api/notifications", async c => {
 app.get("/api/jobs/:id", async c => {
   const jobId = Number(c.req.param("id"))
   if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await jobAgent.getJob(jobId))
   } catch (e: any) {
@@ -552,40 +788,11 @@ app.get("/api/jobs/:id", async c => {
 })
 
 // =============================================================================
-// Research
-// =============================================================================
-
-app.get("/api/research", async c => {
-  const { researchAgent } = await getAgents(c.env)
-  try {
-    const [topics, findings] = await Promise.all([
-      researchAgent.getTopics(),
-      researchAgent.getRecentFindings(20),
-    ])
-    return c.json({ topics, findings })
-  } catch (e: any) {
-    console.error("[/api/research] THREW:", e?.stack ?? e)
-    return c.json({ error: e?.message ?? String(e) }, 500)
-  }
-})
-
-app.post("/api/research/run", async c => {
-  const body = await c.req.json()
-  const { researchAgent } = await getAgents(c.env)
-  return c.json(
-    await researchAgent.research({
-      topic: body.topic,
-      depth: body.depth ?? "standard",
-    }),
-  )
-})
-
-// =============================================================================
 // Job Pipeline
 // =============================================================================
 
 app.get("/api/pipeline", async c => {
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.getPipeline())
 })
 
@@ -597,20 +804,20 @@ app.get("/api/pipeline", async c => {
 // =============================================================================
 
 app.get("/api/job-sources", async c => {
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.listJobSources())
 })
 
 app.post("/api/job-sources", async c => {
   const body = await c.req.json()
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.addJobSource(body))
 })
 
 app.put("/api/job-sources/:id", async c => {
   const id = Number(c.req.param("id"))
   const body = await c.req.json()
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.updateJobSource(id, body),
   })
@@ -618,32 +825,32 @@ app.put("/api/job-sources/:id", async c => {
 
 app.delete("/api/job-sources/:id", async c => {
   const id = Number(c.req.param("id"))
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await jobAgent.removeJobSource(id) })
 })
 
 app.post("/api/jobs", async c => {
   const body = await c.req.json()
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.addJob(body))
 })
 
 app.post("/api/jobs/:id/cover-letter", async c => {
   const jobId = Number(c.req.param("id"))
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.generateCoverLetter({ jobId }))
 })
 
 app.get("/api/jobs/:id/cover-letters", async c => {
   const jobId = Number(c.req.param("id"))
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.getCoverLettersForJob(jobId))
 })
 
 app.put("/api/jobs/:id/status", async c => {
   const jobId = Number(c.req.param("id"))
   const body = await c.req.json()
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.updateStatus({
       jobId,
@@ -655,14 +862,14 @@ app.put("/api/jobs/:id/status", async c => {
 
 app.delete("/api/jobs/:id", async c => {
   const jobId = Number(c.req.param("id"))
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await jobAgent.deleteJob({ jobId }) })
 })
 
 app.post("/api/jobs/:id/follow-up", async c => {
   const jobId = Number(c.req.param("id"))
   const body = await c.req.json()
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.addFollowUp({
       jobId,
@@ -677,40 +884,67 @@ app.post("/api/jobs/:id/follow-up", async c => {
 // =============================================================================
 
 app.get("/api/profile", async c => {
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.getProfile())
 })
 
 app.put("/api/profile", async c => {
   const body = await c.req.json()
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await jobAgent.setProfile(body) })
 })
 
-// CV file upload — stores the uploaded bytes as profile.cv. Text formats
-// (.txt/.md) are normally handled client-side (populated into the textarea
-// without a round-trip), but binary formats (PDF/DOCX) need a server round-
-// trip because they can't be edited inline. We store the bytes as a base64
-// data URL so the getProfile() consumer can see the format and size, and the
-// cover-letter writer can pass them on to the LLM.
+// CV file upload — stores the bytes in R2 (keyed by userId), and writes only a
+// metadata pointer {r2Key, filename, contentType} into the user's profile.
+// The bytes never touch SQLite. Cap raised to 10 MB for real PDFs/DOCX.
 app.post("/api/profile/cv", async c => {
-  const { jobAgent } = await getAgents(c.env)
+  const userId = c.var.userId
+  const { jobAgent } = await getAgents(c.env, userId)
   const filename = c.req.query("filename") || "cv"
   const contentType = c.req.header("Content-Type") || "application/octet-stream"
   const raw = await c.req.arrayBuffer()
-  // Cap at 2 MB — CVs are small; prevent abuse.
-  if (raw.byteLength > 2 * 1024 * 1024) {
-    return c.json({ error: "File too large (max 2 MB)" }, 413)
+  if (raw.byteLength > 10 * 1024 * 1024) {
+    return c.json({ error: "File too large (max 10 MB)" }, 413)
   }
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(raw)))
-  const dataUrl = `data:${contentType};filename=${encodeURIComponent(
-    filename,
-  )};base64,${base64}`
-  await jobAgent.setProfile({ cv: dataUrl })
+  const r2Key = `cvs/${userId}/${crypto.randomUUID()}`
+  await c.env.CV_BUCKET.put(r2Key, raw, {
+    httpMetadata: { contentType },
+  })
+  // Store the pointer (NOT the bytes) in the profile kv table.
+  await jobAgent.setProfile({
+    cv: JSON.stringify({ r2Key, filename, contentType }),
+    cvFilename: filename,
+    cvContentType: contentType,
+    cvR2Key: r2Key,
+    cvUploadedAt: new Date().toISOString(),
+  })
   return c.json({
     message: `CV uploaded (${filename}, ${raw.byteLength} bytes)`,
-    cv: dataUrl,
+    r2Key,
+    filename,
+    contentType,
   })
+})
+
+// CV download — streams the file back from R2 (attachment). Lets the user
+// retrieve their uploaded CV and lets operators verify uploads.
+app.get("/api/profile/cv", async c => {
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
+  const profile = await jobAgent.getProfile()
+  if (!profile.cvR2Key) {
+    return c.json({ error: "No CV uploaded" }, 404)
+  }
+  const obj = await c.env.CV_BUCKET.get(profile.cvR2Key)
+  if (!obj) {
+    return c.json({ error: "CV file not found in storage" }, 404)
+  }
+  const headers = new Headers()
+  obj.writeHttpMetadata(headers)
+  headers.set(
+    "Content-Disposition",
+    `attachment; filename="${encodeURIComponent(profile.cvFilename ?? "cv")}"`,
+  )
+  return new Response(obj.body, { headers })
 })
 
 // =============================================================================
@@ -718,7 +952,7 @@ app.post("/api/profile/cv", async c => {
 // =============================================================================
 
 app.get("/api/follow-ups", async c => {
-  const { jobAgent } = await getAgents(c.env)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.getDueFollowUps())
 })
 
@@ -741,26 +975,54 @@ export default {
     return new Response("Not found", { status: 404 })
   },
 
-  // Cron watchdog — thin forwarder.
+  // Cron watchdog — multi-tenant with per-user staggering.
   //
-  // Previously this was a 3-RPC decision sequence (getStatus →
-  // checkSchedulesDue → start) with the Worker acting as the brain. That made
-  // the harness reactive to Worker-side decisions and was racy. Now the Worker
-  // just forwards the wake signal; the harness inspects its own state and
-  // decides internally whether a run is due. This is the Managed Agents
-  // "wake(sessionId)" shape: events flow in, the brain takes over.
+  // Enumerates every user from D1 and wakes EACH user's harness. The harness
+  // inspects its own state and decides internally whether a run is due (the
+  // Managed Agents "wake(sessionId)" shape). Per-user try/catch so one failing
+  // user's harness doesn't block the others.
+  //
+  // STAGGERING: wakes are spread across the 2-minute cron window using a
+  // deterministic per-user offset (a hash of the userId % 120s → setTimeout).
+  // This prevents N users from all firing their first LLM call in the same
+  // tick, which would hammer the shared LLM_API_KEY's rate limit.
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+    let users: { id: string }[] = []
     try {
-      const harness = await getAgentByName<Env, Harness>(
-        env.HARNESS,
-        HARNESS_ID,
-      )
-      const result = await harness.wake()
-      if (result.ran) {
-        console.log(`[watchdog] harness wake → ${result.reason}`)
-      }
+      const result = await env.DB.prepare("SELECT id FROM user").all<{
+        id: string
+      }>()
+      users = result.results ?? []
     } catch (error: any) {
-      console.error("[watchdog] wake() error:", error.message)
+      console.error("[watchdog] failed to enumerate users:", error.message)
+      return
+    }
+
+    const STAGGER_WINDOW_MS = 120_000 // the cron runs every 2 minutes
+    for (const u of users) {
+      // Deterministic offset: a simple string hash of the userId, modulo the
+      // window. The same user always gets the same offset, so their wake time
+      // is stable across ticks.
+      const offset =
+        Array.from(u.id).reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 0) %
+        STAGGER_WINDOW_MS
+      const absOffset = Math.abs(offset)
+      setTimeout(() => {
+        getHarnessForUser(env, u.id)
+          .then(harness => harness.wake())
+          .then(result => {
+            if (result.ran) {
+              console.log(`[watchdog] user ${u.id} wake → ${result.reason}`)
+            }
+          })
+          .catch((error: any) => {
+            // One user's failure must not stop the rest.
+            console.error(
+              `[watchdog] user ${u.id} wake error:`,
+              error.message,
+            )
+          })
+      }, absOffset)
     }
   },
 }

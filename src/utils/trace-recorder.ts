@@ -4,7 +4,7 @@
 // THE PROBLEM IT SOLVES
 // Before v2, trace capture lived ONLY on the Harness's streamText loop, and it
 // was ad-hoc: onChunk handled deltas, pushTraceEvent ran after. The two
-// capability-provider sub-agents (ResearchAgent, JobApplicationAgent) run their
+// capability-provider sub-agents (JobApplicationAgent, BrowserAgent) run their
 // OWN multi-step generateText loops but captured nothing — so when the Harness
 // called `discover_jobs`, the entire job-agent inner loop (its prompt, its
 // reasoning, the real search_site / fetch_page / save_job calls, its tokens)
@@ -84,7 +84,7 @@ function num(v: unknown): number | null {
 // -----------------------------------------------------------------------------
 // Sub-agent trace extraction
 // -----------------------------------------------------------------------------
-// Delegating tools (discover_jobs, research, write_cover_letter) return their
+// Delegating tools (discover_jobs, write_cover_letter) return their
 // result as a JSON string. A sub-agent embeds its buffered inner-loop events
 // under a `__trace` key in that object. We pull it out (to ingest as nested
 // events) and strip it (so the persisted tool_result payload isn't bloated by
@@ -446,7 +446,7 @@ export class TraceRecorder {
     const value = ok ? result?.output : result?.error
 
     // ── Sub-agent trace ingestion ────────────────────────────────────────
-    // Delegating tools (discover_jobs, research, write_cover_letter) embed a
+    // Delegating tools (discover_jobs, write_cover_letter) embed a
     // `__trace` field in their result carrying the sub-agent's buffered inner-
     // loop events. We ingest those here — nested under THIS toolCallId — so
     // the transcript shows what happened inside the sub-agent (its prompts,
@@ -478,7 +478,20 @@ export class TraceRecorder {
   }
 
   private onStepEnd(step: any, stepFallback: number | null) {
-    const stepNumber = step?.stepNumber ?? stepFallback
+    // Prefer the EXPLICIT step number passed via attach() when present.
+    //
+    // The harness streams ONE model round-trip per tick (stopWhen:
+    // isStepCount(1)), so the SDK's internal step.stepNumber is ALWAYS 0 for
+    // it — meaningless as a grouping key. Using it (the old
+    // `step.stepNumber ?? stepFallback`) stamped reasoning/text/step_end at
+    // step 0 while the tool_call/tool_result events (which read the closure-
+    // captured currentStepNumber) landed at the real turn number — splitting a
+    // single turn's thought from the tool it triggered.
+    //
+    // Sub-agents pass no explicit number (attach() with no arg → null), so they
+    // correctly fall through to step.stepNumber (0,1,2... across their own
+    // multi-step generateText loops).
+    const stepNumber = stepFallback ?? step?.stepNumber ?? null
     this.currentStep = stepNumber
     this.markStepEndEmitted()
 

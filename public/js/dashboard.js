@@ -1408,66 +1408,6 @@ async function showJobActions(jobId) {
 }
 
 // =========================================================================
-// Research
-// =========================================================================
-async function loadResearch() {
-  try {
-    const data = await api("/research")
-    const topicsHtml =
-      data.topics.length === 0
-        ? '<div class="empty">No topics yet.</div>'
-        : data.topics
-            .map(
-              t =>
-                '<div class="topic-item"><div class="topic-title">' +
-                md.escapeHtml(t.topic) +
-                "</div><div class='topic-meta'>Researched " +
-                t.timesResearched +
-                "x · " +
-                (t.lastResearched
-                  ? new Date(t.lastResearched).toLocaleDateString()
-                  : "never") +
-                "</div></div>",
-            )
-            .join("")
-    const findingsHtml =
-      data.findings.length === 0
-        ? '<div class="empty">No findings yet.</div>'
-        : data.findings
-            .map(
-              f =>
-                '<article class="finding-card"><div class="finding-topic">' +
-                md.escapeHtml(f.topic) +
-                '</div><div class="md-body md-body-tight">' +
-                md.render(f.summary) +
-                "</div><div class='finding-date'>" +
-                new Date(f.createdAt).toLocaleString() +
-                "</div></article>",
-            )
-            .join("")
-    const tEl = document.getElementById("topics-list")
-    const fEl = document.getElementById("findings-list")
-    if (tEl) tEl.innerHTML = topicsHtml
-    if (fEl) fEl.innerHTML = findingsHtml
-  } catch (_) {}
-}
-
-async function runResearch() {
-  const topic = document.getElementById("research-topic").value.trim()
-  const depth = document.getElementById("research-depth").value
-  if (!topic) return toast("Enter a topic", "error")
-  hideModal("research-modal")
-  toast("Running research on: " + topic)
-  try {
-    await api("/research/run", "POST", { topic, depth })
-    toast("Research complete!")
-    loadResearch()
-  } catch (e) {
-    toast("Research failed: " + e.message, "error")
-  }
-}
-
-// =========================================================================
 // Manual job add
 // =========================================================================
 async function addJob() {
@@ -2436,20 +2376,24 @@ function renderStepCard(stepNum, evs, nestedByParent) {
   if (tokParts.length) metaParts.push(tokParts.join(" · "))
 
   const blocks = []
-  // SYSTEM PROMPT
-  for (const e of byType.system || []) {
-    if (e.label === "plan") continue // plan rendered separately if desired
-    blocks.push(renderCollapsibleBlock("SYSTEM PROMPT", e, "system"))
-  }
-  // MESSAGES SENT (prompt)
-  for (const e of byType.prompt || []) {
-    blocks.push(renderCollapsibleBlock("MESSAGES SENT", e, "prompt"))
-  }
-  // REASONING
+  // ── NARRATIVE ORDER: think → say → act → observe ─────────────────────
+  // The reasoning + text come FIRST because they explain WHY the tools below
+  // were called. Reading top-to-bottom follows the agent's actual thought
+  // flow: it reasoned, it said something, THEN it acted. (Previously text was
+  // at the bottom — actions appeared before the reasoning that caused them,
+  // which made the trace unreadable.)
+
+  // 1. REASONING — the "why" behind this turn's actions
   for (const e of byType.reasoning || []) {
     blocks.push(renderMarkdownBlock("REASONING", e, "reasoning"))
   }
-  // TOOL CALLS (paired with results + nested sub-agent events)
+  // 2. TEXT — what the agent said it was going to do
+  for (const e of byType.text || []) {
+    blocks.push(renderMarkdownBlock("TEXT", e, "text"))
+  }
+  // 3. TOOL CALLS — the actions the reasoning/text caused. Each result is
+  //    nested directly beneath its call (paired by toolCallId), so you see
+  //    action → immediate consequence as a unit.
   const toolCalls = byType.tool_call || []
   const toolResults = byType.tool_result || []
   for (const tc of toolCalls) {
@@ -2459,13 +2403,17 @@ function renderStepCard(stepNum, evs, nestedByParent) {
     const nested = (tc.toolCallId && nestedByParent[tc.toolCallId]) || []
     blocks.push(renderToolBlock(tc, result, nested, nestedByParent))
   }
-  // Standalone tool_results without a matching call (rare; e.g. sub-agent
-  // events that surfaced at top level). Skip — they're nested or redundant.
-  // TEXT
-  for (const e of byType.text || []) {
-    blocks.push(renderMarkdownBlock("TEXT", e, "text"))
+  // 4. CONTEXT (collapsed) — system prompt + messages sent. These are the
+  //    inputs, not the narrative, so they go last and collapsed so they don't
+  //    clutter the flow. Expandable if you want to inspect the exact prompt.
+  for (const e of byType.system || []) {
+    if (e.label === "plan") continue
+    blocks.push(renderCollapsibleBlock("SYSTEM PROMPT", e, "system"))
   }
-  // RESPONSE (step_end detail)
+  for (const e of byType.prompt || []) {
+    blocks.push(renderCollapsibleBlock("MESSAGES SENT", e, "prompt"))
+  }
+  // 5. RESPONSE (collapsed) — the step_end detail (finishReason, usage, perf)
   if (stepEnd) {
     blocks.push(renderCollapsibleBlock("RESPONSE", stepEnd, "step_end"))
   }
@@ -2606,8 +2554,11 @@ function renderSubStepCard(stepNum, evs, agent) {
   const tokOut = stepEnd?.tokensOut
   const dur = stepEnd?.durationMs
   const blocks = []
+  // Narrative order (same as top-level steps): reasoning → text → tools.
   for (const e of byType.reasoning || [])
     blocks.push(renderMarkdownBlock("reasoning", e, "reasoning"))
+  for (const e of byType.text || [])
+    blocks.push(renderMarkdownBlock("text", e, "text"))
   for (const tc of byType.tool_call || []) {
     const tr = (byType.tool_result || []).find(
       x => x.toolCallId && x.toolCallId === tc.toolCallId,
@@ -2630,8 +2581,6 @@ function renderSubStepCard(stepNum, evs, agent) {
       )
     }
   }
-  for (const e of byType.text || [])
-    blocks.push(renderMarkdownBlock("text", e, "text"))
 
   let meta = []
   if (stepNum != null) meta.push("step " + stepNum)

@@ -46,16 +46,43 @@
     "binding": "ASSETS",
   },
 
+  // D1 — global auth/user directory (Better Auth tables). A relational,
+  // queryable store is required for the user/session/verification registry
+  // that both the Worker and the cron must read (KV can't do relational
+  // lookups; per-user DOs can't serve as a global directory). The cron uses
+  // this to enumerate users and wake each one's harness.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "agent-harness-auth",
+      "database_id": "6c582a13-72b7-42a5-a495-e024f8b41ec0",
+      "migrations_dir": "migrations"
+    },
+  ],
+
+  // R2 — CV/résumé file storage, keyed by userId. Real binary files live here
+  // (not base64-in-SQLite); the JobApplicationAgent DO stores only a pointer
+  // {r2Key, filename, contentType} in its user_profile table.
+  "r2_buckets": [
+    {
+      "binding": "CV_BUCKET",
+      "bucket_name": "agent-harness-cvs",
+    },
+  ],
+
   "durable_objects": {
     "bindings": [
       { "name": "HARNESS", "class_name": "Harness" },
-      { "name": "RESEARCH_AGENT", "class_name": "ResearchAgent" },
       { "name": "JOB_AGENT", "class_name": "JobApplicationAgent" },
       // Browser capability — reaches login-walled job sites (Indeed/LinkedIn)
       // via the user's real Chrome (extension relay, free-tier) or the managed
       // headless Chromium (paid plan, see BROWSER binding below).
       { "name": "BROWSER_RELAY", "class_name": "BrowserRelay" },
       { "name": "BROWSER_AGENT", "class_name": "BrowserAgent" },
+      // Global rate limiter — a SINGLE instance guards the shared LLM_API_KEY
+      // across all users (sliding-window counter + per-user buckets) and enforces
+      // the per-user active-run limit. See src/agents/rate-limiter.ts.
+      { "name": "RATE_LIMITER", "class_name": "RateLimiter" },
     ],
   },
 
@@ -69,13 +96,24 @@
       "tag": "v1",
       "new_sqlite_classes": [
         "Harness",
-        "ResearchAgent",
         "JobApplicationAgent",
       ],
     },
     {
       "tag": "browser",
       "new_sqlite_classes": ["BrowserRelay", "BrowserAgent"],
+    },
+    {
+      // Drop the ResearchAgent DO. Removed_sqlite_classes deletes the class's
+      // backing SQLite namespace on deploy. Run once per environment.
+      "tag": "drop-research",
+      "removed_sqlite_classes": ["ResearchAgent"],
+    },
+    {
+      // Global rate limiter DO — guards the shared LLM_API_KEY across all
+      // users and enforces the per-user active-run limit. Single instance.
+      "tag": "auth-multi-tenant",
+      "new_sqlite_classes": ["RateLimiter"],
     },
   ],
 

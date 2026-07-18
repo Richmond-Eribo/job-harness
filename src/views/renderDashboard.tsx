@@ -8,11 +8,11 @@
 
 import type { Context } from "hono"
 import type { FC } from "hono/jsx"
-import type { Env } from "../types"
+import type { AppEnv } from "../types/app-env"
 import { PageLayout } from "./Layout"
 
 export function renderPage(
-  c: Context<{ Bindings: Env }>,
+  c: Context<AppEnv>,
   activePage: string,
   Page: FC<any>,
   props: Record<string, any> = {},

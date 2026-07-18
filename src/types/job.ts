@@ -61,11 +61,26 @@ export interface FollowUp {
 }
 
 export interface UserProfile {
-  cv: string | null
-  preferences: string | null
+  // --- Personal info (collected during onboarding) ---
+  fullName: string | null
+  email: string | null
+  phone: string | null
+  location: string | null
+  links: string | null // JSON array: [{type:"linkedin"|"github"|"portfolio", url:string}]
+  workAuth: string | null // visa/work-authorization status
+
+  // --- Job-seeking preferences ---
   targetRoles: string | null
   targetLocations: string | null
   skills: string | null
+  preferences: string | null
+
+  // --- CV/résumé (bytes live in R2; this is a metadata pointer) ---
+  cv: string | null // JSON: {r2Key, filename, contentType} — NOT base64
+  cvFilename: string | null
+  cvContentType: string | null
+  cvR2Key: string | null
+  cvUploadedAt: string | null
 }
 
 export interface JobSearchRequest {

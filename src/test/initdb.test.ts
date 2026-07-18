@@ -46,23 +46,6 @@ describe("initDb SQL splitting", () => {
     // EXISTS is idempotent..." in ensureDb().
     expect(createTableCount).toBe(6)
   })
-
-  it("splits CREATE TABLE statements into individual calls in research-agent.ts", () => {
-    const fs = require("fs")
-    const path = require("path")
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "agents", "research-agent.ts"),
-      "utf-8",
-    )
-
-    const multiStatementPattern =
-      /execSql\(\s*(?:sql|agent),\s*`[^`]*CREATE TABLE[^`]*CREATE TABLE/s
-    expect(multiStatementPattern.test(src)).toBe(false)
-
-    const createTableCount = (src.match(/CREATE TABLE IF NOT EXISTS/g) || [])
-      .length
-    expect(createTableCount).toBe(2) // research_results, research_topics
-  })
 })
 
 describe("execSql binding source guard", () => {
@@ -72,7 +55,6 @@ describe("execSql binding source guard", () => {
   const agents = [
     ["agents/harness.ts", "harness"],
     ["agents/job-agent.ts", "job-agent"],
-    ["agents/research-agent.ts", "research-agent"],
   ] as const
 
   for (const [file, name] of agents) {

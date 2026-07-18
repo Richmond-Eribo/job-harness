@@ -118,6 +118,79 @@ describe("TraceRecorder — onStepEnd emits authoritative step_end + flushes buf
     expect(reasoningEv).toBeDefined()
     expect(reasoningEv!.payload).toBe("thinking...")
   })
+
+  // ── Regression: step-number attribution across a harness turn ──────────
+  // The harness streams ONE model round-trip per tick (stopWhen:
+  // isStepCount(1)), so the SDK reports step.stepNumber === 0 on every call.
+  // The harness instead passes its real turn number via attach(N). If onStepEnd
+  // preferred step.stepNumber (0) over the explicit N, a turn's reasoning/text
+  // /step_end would be stamped 0 while its tool_call/tool_result events
+  // (captured via the closure-bound N) were stamped N — splitting the thought
+  // that triggered a tool from the tool call itself. This pins that the
+  // explicit number always wins.
+  it("uses the explicit attach() step number even when SDK step.stepNumber is 0", () => {
+    const { rec, sink } = makeRecorder()
+    const turn = 5 // arbitrary non-zero turn number
+    const cb = rec.attach(turn)
+    // text + reasoning stream in during the turn
+    cb.onChunk({ chunk: { type: "reasoning-delta", text: "I should call browse" } })
+    cb.onChunk({ chunk: { type: "text-delta", text: "Calling browse..." } })
+    // a tool call streams in
+    cb.onChunk({
+      chunk: {
+        type: "tool-call",
+        toolName: "browser_browse",
+        toolCallId: "call_xyz",
+        input: { url: "https://example.com" },
+      },
+    })
+    // SDK fires onStepEnd with its internal stepNumber (always 0 for the
+    // single-step harness stream). Must NOT override turn=5.
+    cb.onStepEnd({
+      stepNumber: 0,
+      usage: { inputTokens: 1, outputTokens: 1 },
+      response: { modelId: "GLM-5.2", messages: [] },
+      finishReason: "tool-calls",
+      performance: { stepTimeMs: 100 },
+      warnings: [],
+    })
+    // tool result lands via onToolExecutionEnd
+    cb.onToolExecutionEnd({
+      toolCall: { toolName: "browser_browse", toolCallId: "call_xyz" },
+      toolOutput: { type: "tool-result", output: "ok" },
+      toolExecutionMs: 50,
+    })
+
+    // EVERY event from this turn must share the turn number — no 0s leaking in.
+    for (const ev of sink) {
+      if (ev.stepNumber != null) {
+        expect(ev.stepNumber).toBe(turn)
+      }
+    }
+    // Specifically: the thought ("text") and the tool it triggered must match.
+    const textEv = sink.find(e => e.eventType === "text")
+    const toolCallEv = sink.find(e => e.eventType === "tool_call")
+    const stepEndEv = sink.find(e => e.eventType === "step_end")
+    expect(textEv!.stepNumber).toBe(turn)
+    expect(toolCallEv!.stepNumber).toBe(turn)
+    expect(stepEndEv!.stepNumber).toBe(turn)
+  })
+
+  // Sub-agents call attach() with NO argument → the recorder must fall back to
+  // the SDK's step.stepNumber across their multi-step generateText loops.
+  it("falls back to SDK step.stepNumber when no explicit number is passed", () => {
+    const { rec, sink } = makeRecorder({ agent: "job-agent" })
+    const cb = rec.attach() // no step number
+    cb.onChunk({ chunk: { type: "text-delta", text: "inner step 2" } })
+    cb.onStepEnd({
+      stepNumber: 2, // second inner step
+      usage: {},
+      response: { messages: [] },
+      performance: {},
+    })
+    const textEv = sink.find(e => e.eventType === "text")
+    expect(textEv!.stepNumber).toBe(2)
+  })
 })
 
 describe("TraceRecorder — tool call / result pairing via toolCallId", () => {
@@ -256,11 +329,11 @@ describe("TraceRecorder — flushFallback (safety net)", () => {
 
 describe("TraceRecorder — toSubAgentTrace", () => {
   it("returns the buffer for RPC transport", () => {
-    const { rec } = makeRecorder({ agent: "research-agent" })
+    const { rec } = makeRecorder({ agent: "job-agent" })
     rec.recordSystem("system-prompt", "sys")
     rec.recordError(0, "x")
     const sub = rec.toSubAgentTrace()
-    expect(sub.agent).toBe("research-agent")
+    expect(sub.agent).toBe("job-agent")
     expect(sub.events).toHaveLength(2)
   })
 })

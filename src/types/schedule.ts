@@ -5,7 +5,7 @@
 export interface ScheduleEntry {
   id: number
   cron: string
-  focus: "all" | "research" | "jobs"
+  focus: "all" | "jobs"
   enabled: boolean
   lastTriggeredAt: string | null
   // Derived (not stored): human-readable description + next fire time in UTC.

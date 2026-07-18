@@ -5,10 +5,14 @@
 // runtime circular dependency (the agent files import types from here).
 import type {
   Harness,
-  ResearchAgent,
   JobApplicationAgent,
 } from "../agents"
 import type { BrowserAgent, BrowserRelay } from "../agents/browser-relay"
+
+// The RateLimiter DO is built in Stage 5. Typed by a forward import so this
+// file compiles in Stages 1–4 before the class exists; the class lands in
+// src/agents/rate-limiter.ts.
+import type { RateLimiter } from "../agents/rate-limiter"
 
 /**
  * Cloudflare Worker environment bindings.
@@ -17,8 +21,11 @@ import type { BrowserAgent, BrowserRelay } from "../agents/browser-relay"
 export interface Env {
   // Durable Object namespaces — typed with their DO class so RPC method calls
   // (e.g. `await harness.start()`) are checked by the compiler.
+  //
+  // Multi-tenant: every agent DO below is resolved BY USER ID (the session
+  // user), not a shared name — so each user gets an isolated brain/pipeline/
+  // browser. The userId threads through the whole delegation chain.
   HARNESS: DurableObjectNamespace<Harness>
-  RESEARCH_AGENT: DurableObjectNamespace<ResearchAgent>
   JOB_AGENT: DurableObjectNamespace<JobApplicationAgent>
 
   // Browser capability (login-walled job sites). The relay DO bridges agent
@@ -27,6 +34,20 @@ export interface Env {
   // observe/act/extract LLM loop.
   BROWSER_RELAY: DurableObjectNamespace<BrowserRelay>
   BROWSER_AGENT: DurableObjectNamespace<BrowserAgent>
+
+  // Global rate limiter — a SINGLE instance guards the shared LLM_API_KEY
+  // across all users and enforces the per-user active-run limit. Always
+  // addressed by a fixed name ("global"), never per-user.
+  RATE_LIMITER: DurableObjectNamespace<RateLimiter>
+
+  // D1 — global auth/user directory (Better Auth tables). The single source
+  // of truth for which users exist; the cron queries it to wake each user's
+  // harness. Also holds the onboarding-complete flag.
+  DB: D1Database
+
+  // R2 — CV/résumé file storage, keyed by userId. The JobApplicationAgent DO
+  // stores only a pointer {r2Key, filename, contentType}; the bytes live here.
+  CV_BUCKET: R2Bucket
 
   // Managed headless browser binding (@cloudflare/playwright). Optional — only
   // present on the paid Workers plan. When absent, the relay targets the
@@ -45,7 +66,20 @@ export interface Env {
   // plus runtime knobs that DON'T make sense in a static config (DO tokens).
   LLM_API_KEY: string
   MAX_STEPS: string
-  DASHBOARD_TOKEN: string
+  // Legacy shared bearer token. Still used by the bearerAuth middleware on
+  // /api/* until Stage 4 replaces it with session-cookie auth. Optional now so
+  // a deployment without the secret set doesn't fail the type check.
+  DASHBOARD_TOKEN?: string
+
+  // --- Auth (multi-tenant) ---
+  // Better Auth secret — signs/verifies session cookies and extension tokens.
+  AUTH_SECRET: string
+  // Resend API key for magic-link delivery. When empty, magic links are logged
+  // to the console + surfaced via a dev-only response header (no email sent).
+  RESEND_API_KEY?: string
+  // Public base URL of the deployment (e.g. https://app.example.com). Used by
+  // Better Auth to build absolute callback URLs in magic-link emails.
+  BETTER_AUTH_URL?: string
 
   // v2 non-secret knobs (sourced from wrangler.jsonc vars). Trace capture
   // toggle — "1" = on (default); any other value = off. Detailed cap values

@@ -1,6 +1,6 @@
-// Settings page — config + goal + schedules + research trigger, all
-// server-rendered. Edits go through the existing JSON API; affected regions
-// re-render via JS after the PUT succeeds.
+// Settings page — config + goal + schedules + browser, all server-rendered.
+// Edits go through the existing JSON API; affected regions re-render via JS
+// after the PUT succeeds.
 import type { FC } from "hono/jsx"
 import { ICONS } from "../Layout"
 
@@ -173,21 +173,6 @@ export const SettingsPage: FC<{
               </div>
             ))
           )}
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <div>
-            <div class="card-title">Research</div>
-            <div class="card-sub">manual research trigger</div>
-          </div>
-          <button class="btn sm ghost" onclick="showModal('research-modal')">
-            + Run
-          </button>
-        </div>
-        <div id="research-list" class="scroll-list">
-          <div class="empty">Use the modal to run a research sweep.</div>
         </div>
       </div>
     </section>

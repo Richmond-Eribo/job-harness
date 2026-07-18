@@ -79,8 +79,6 @@ type Envelope = CdpCall &
 
 type TargetKind = "none" | "live" | "managed"
 
-const RELAY_ID = "main" // single relay instance per harness
-
 // -----------------------------------------------------------------------------
 // BrowserRelay DO
 // -----------------------------------------------------------------------------
@@ -383,4 +381,3 @@ export class BrowserRelay extends Agent<Env, BrowserRelayState> {
 // import both from one place.)
 // -----------------------------------------------------------------------------
 export type { BrowserAgent } from "./browser-agent"
-export { RELAY_ID as BROWSER_RELAY_ID }

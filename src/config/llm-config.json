@@ -1,6 +1,6 @@
 {
   "$schema": "Model generation config for the Agent Harness.",
-  "$doc": "Model identity + ONE shared set of generation params, applied to every agent call (harness loop, research, job ranking, cover letter, summaries). Only the API key lives in env (LLM_API_KEY). Edit this file to tune the model. Two protocols are supported: OpenAI-flavored (openai, openai-compatible) and Anthropic-flavored (anthropic, anthropic-compatible). Both option blocks may be present simultaneously; only the one matching the active provider is applied at runtime.",
+  "$doc": "Model identity + ONE shared set of generation params, applied to every agent call (harness loop, job ranking, cover letter, summaries). Only the API key lives in env (LLM_API_KEY). Edit this file to tune the model. Two protocols are supported: OpenAI-flavored (openai, openai-compatible) and Anthropic-flavored (anthropic, anthropic-compatible). Both option blocks may be present simultaneously; only the one matching the active provider is applied at runtime.",
 
   "model": {
     "provider": "openai-compatible",

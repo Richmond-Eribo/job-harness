@@ -12,13 +12,6 @@ export { DEFAULT_HARNESS_STATE } from "./harness"
 export type { ScheduleEntry } from "./schedule"
 
 export type {
-  ResearchResult,
-  ResearchTopic,
-  ResearchRequest,
-  ResearchResponse,
-} from "./research"
-
-export type {
   JobStatus,
   JobListing,
   JobSource,

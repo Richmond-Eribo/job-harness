@@ -22,10 +22,13 @@ import type { RunIdRef } from "./jobs.tool"
 
 type Advance = (toolName: string, input: string | null) => void
 
-const BROWSER_AGENT = (env: Env) =>
-  getAgentByName<Env, BrowserAgent>(env.BROWSER_AGENT, "main")
+// Resolve THIS user's BrowserAgent. The userId is the multi-tenant key — it
+// drives the agent, which in turn resolves the user's own BrowserRelay (their
+// live Chrome connection).
+const BROWSER_AGENT = (env: Env, userId: string) =>
+  getAgentByName<Env, BrowserAgent>(env.BROWSER_AGENT, userId)
 
-export function makeBrowserNavigateTool(env: Env, advance: Advance) {
+export function makeBrowserNavigateTool(env: Env, advance: Advance, userId: string) {
   return tool({
     description:
       "Open a URL in the connected browser (the operator's real, logged-in Chrome via the extension, or the managed headless browser). " +
@@ -36,14 +39,14 @@ export function makeBrowserNavigateTool(env: Env, advance: Advance) {
     }),
     execute: async ({ url }) => {
       advance("browser_navigate", JSON.stringify({ url }).slice(0, 2000))
-      const agent = await BROWSER_AGENT(env)
+      const agent = await BROWSER_AGENT(env, userId)
       const result = await withRpcRetry(() => agent.navigate(url))
       return JSON.stringify(result)
     },
   })
 }
 
-export function makeBrowserObserveTool(env: Env, advance: Advance) {
+export function makeBrowserObserveTool(env: Env, advance: Advance, userId: string) {
   return tool({
     description:
       "Read the current browser page as a structured element list (clickable elements with stable ids) + body text. " +
@@ -52,14 +55,14 @@ export function makeBrowserObserveTool(env: Env, advance: Advance) {
     inputSchema: z.object({}),
     execute: async () => {
       advance("browser_observe", null)
-      const agent = await BROWSER_AGENT(env)
+      const agent = await BROWSER_AGENT(env, userId)
       const result = await withRpcRetry(() => agent.observe())
       return JSON.stringify(result)
     },
   })
 }
 
-export function makeBrowserActTool(env: Env, advance: Advance) {
+export function makeBrowserActTool(env: Env, advance: Advance, userId: string) {
   return tool({
     description:
       "Act on the browser page: click an element (by elementId from observe), type into an input, scroll, press a key, or wait. " +
@@ -78,14 +81,19 @@ export function makeBrowserActTool(env: Env, advance: Advance) {
     }),
     execute: async args => {
       advance("browser_act", JSON.stringify(args).slice(0, 2000))
-      const agent = await BROWSER_AGENT(env)
+      const agent = await BROWSER_AGENT(env, userId)
       const result = await withRpcRetry(() => agent.act(args))
       return JSON.stringify(result)
     },
   })
 }
 
-export function makeBrowserExtractTool(env: Env, advance: Advance, runIdRef: RunIdRef) {
+export function makeBrowserExtractTool(
+  env: Env,
+  advance: Advance,
+  runIdRef: RunIdRef,
+  userId: string,
+) {
   return tool({
     description:
       "Extract structured data from the current browser page (e.g. a job posting's title, company, requirements) using an LLM over the page text. " +
@@ -97,7 +105,7 @@ export function makeBrowserExtractTool(env: Env, advance: Advance, runIdRef: Run
     }),
     execute: async ({ goal }) => {
       advance("browser_extract", JSON.stringify({ goal }).slice(0, 2000))
-      const agent = await BROWSER_AGENT(env)
+      const agent = await BROWSER_AGENT(env, userId)
       const result = await withRpcRetry(() =>
         agent.extract({ goal, runId: runIdRef.value }),
       )
@@ -106,7 +114,12 @@ export function makeBrowserExtractTool(env: Env, advance: Advance, runIdRef: Run
   })
 }
 
-export function makeBrowserBrowseTool(env: Env, advance: Advance, runIdRef: RunIdRef) {
+export function makeBrowserBrowseTool(
+  env: Env,
+  advance: Advance,
+  runIdRef: RunIdRef,
+  userId: string,
+) {
   return tool({
     description:
       "One-shot browse + extract: navigate to a URL, observe the page, and extract structured data per the goal. " +
@@ -118,7 +131,7 @@ export function makeBrowserBrowseTool(env: Env, advance: Advance, runIdRef: RunI
     }),
     execute: async ({ url, goal }) => {
       advance("browser_browse", JSON.stringify({ url, goal }).slice(0, 2000))
-      const agent = await BROWSER_AGENT(env)
+      const agent = await BROWSER_AGENT(env, userId)
       const result = await withRpcRetry(() =>
         agent.browseAndExtract({ url, goal, runId: runIdRef.value }),
       )

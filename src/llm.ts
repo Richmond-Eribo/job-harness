@@ -5,7 +5,7 @@
 // reasoningEffort) live in src/llm-config.json — NOT in env vars. Env keeps
 // only the secret: LLM_API_KEY. Tune behavior by editing the JSON.
 //
-// ONE shared params block applies to every agent call (harness loop, research,
+// ONE shared params block applies to every agent call (harness loop,
 // job ranking, cover letter, summaries). No per-purpose presets — simpler.
 //
 // Two protocol flavors are supported side-by-side:
@@ -173,7 +173,7 @@ function requireCustomUrl(provider: Provider, url: string | undefined): string {
  * (reasoningEffort, thinking) are nested under providerOptions, scoped to
  * whichever provider is active. Safe to spread: empty when unset.
  *
- * One config for every agent call (harness loop, research, jobs, cover letter).
+ * One config for every agent call (harness loop, jobs, cover letter).
  */
 export function getParams(_env: Env) {
   const p: ParamsConfig = config.params ?? {}

@@ -8,7 +8,6 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 // Mock environment
 const createMockEnv = () => ({
   HARNESS: {} as any,
-  RESEARCH_AGENT: {} as any,
   JOB_AGENT: {} as any,
   LLM_API_KEY: "test-key",
   MAX_STEPS: "100",
@@ -39,8 +38,6 @@ describe("Route structure", () => {
       'app.put("/api/schedules/:id/toggle"',
       'app.get("/api/log"',
       'app.get("/api/summaries"',
-      'app.get("/api/research"',
-      'app.post("/api/research/run"',
       'app.get("/api/pipeline"',
       'app.post("/api/jobs"',
       'app.post("/api/jobs/:id/cover-letter"',
@@ -57,18 +54,18 @@ describe("Route structure", () => {
     }
   })
 
-  it("has auth middleware on /api/* routes", () => {
+  it("has session-cookie auth on all routes", () => {
     const fs = require("fs")
     const path = require("path")
     const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
 
-    // The bearer-auth middleware is registered on the /api/* path. The literal
-    // may be split across lines in the source, so collapse whitespace before
-    // asserting rather than requiring a one-line pattern.
-    const collapsed = src.replace(/\s+/g, " ")
-    expect(collapsed).toContain('app.use( "/api/*", bearerAuth')
-    expect(src).toContain("Authorization")
-    expect(src).toContain("DASHBOARD_TOKEN")
+    // Stage 4 replaced the legacy shared bearer token with Better Auth session
+    // cookies. requireAuth runs on "*" and gates both HTML + /api/* routes.
+    expect(src).toContain('app.use("*", requireAuth)')
+    expect(src).toContain("requireAuth")
+    // Better Auth's own endpoints are mounted before the gate.
+    expect(src).toContain("/api/auth/")
+    expect(src).toContain("getAuth(c)")
   })
 
   it("has CORS middleware", () => {

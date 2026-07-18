@@ -348,8 +348,7 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
         <div class="form-group">
           <label class="form-label">Focus</label>
           <select id="focus-input">
-            <option value="all">All (research + jobs)</option>
-            <option value="research">Research only</option>
+            <option value="all">All</option>
             <option value="jobs">Jobs only</option>
           </select>
         </div>
@@ -479,40 +478,6 @@ const AppShell: FC<PropsWithChildren<{ activePage: string }>> = ({
       </div>
     </div>
 
-    <div
-      id="research-modal"
-      class="modal-overlay"
-      style="display: none;"
-      onclick="if(event.target===this)hideModal('research-modal')"
-    >
-      <div class="modal">
-        <h3>Run research</h3>
-        <div class="form-group">
-          <label class="form-label">Topic</label>
-          <input
-            type="text"
-            id="research-topic"
-            placeholder="e.g. Agents SDK best practices"
-          />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Depth</label>
-          <select id="research-depth">
-            <option value="quick">Quick (3 steps)</option>
-            <option value="standard" selected>
-              Standard (5 steps)
-            </option>
-            <option value="deep">Deep (10 steps)</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <button onclick="runResearch()">Start Research</button>
-          <button class="secondary" onclick="hideModal('research-modal')">
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
 
     <div
       id="sources-modal"

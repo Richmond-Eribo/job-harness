@@ -48,6 +48,11 @@ export interface HarnessState {
   // resume from where we left off and decide "stuck?" by checking plan
   // progress rather than tool-call patterns.
   plan: Plan | null
+  // Multi-tenant: the owning user's id. Set on start() from the session user.
+  // The harness DO's NAME is the userId; this stores it so the delegating tools
+  // (discover_jobs, write_cover_letter, browser_*) can resolve THEIR sub-agents
+  // by the same user — keeping the whole delegation chain within one user.
+  userId: string | null
 }
 
 export const DEFAULT_HARNESS_STATE: HarnessState = {
@@ -61,4 +66,5 @@ export const DEFAULT_HARNESS_STATE: HarnessState = {
   lastRunAt: null,
   lastError: null,
   plan: null,
+  userId: null,
 }

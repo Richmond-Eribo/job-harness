@@ -32,7 +32,6 @@ import { TraceRecorder } from "../utils/trace-recorder"
 import browserConfig from "../config/browser-config.json"
 import llmConfig from "../config/llm-config.json"
 import { getAgentByName } from "agents"
-import { BROWSER_RELAY_ID } from "./browser-relay"
 
 // -----------------------------------------------------------------------------
 // Login-wall detection (see browser-config.json → safety)
@@ -79,10 +78,14 @@ export class BrowserAgent extends Agent<Env, BrowserAgentState> {
   // methods; cast to any to avoid the SDK's deep generic instantiation on the
   // stub type. The relay's method signatures (sendCdp/targetKind/observe/act)
   // are stable.
+  //
+  // Multi-tenant: the relay is resolved by THIS agent's name (this.name), which
+  // is the userId — so the agent drives the SAME user's Chrome connection it
+  // was resolved for. The DO name threads the user identity down the chain.
   private async relay(): Promise<any> {
     const stub = await (getAgentByName as any)(
       this.env.BROWSER_RELAY,
-      BROWSER_RELAY_ID,
+      this.name,
     )
     return stub
   }

@@ -17,9 +17,24 @@
 LLM_API_KEY=""
 
 # --- Dashboard ---
-# Bearer token the dashboard JS sends as `Authorization: Bearer <token>`.
-# Pick any opaque random string. Used to gate /api/* routes.
+# Legacy shared bearer token. Replaced by session-cookie auth (Better Auth) in
+# Stage 4; kept only for the /legacy dashboard during the cutover. Optional.
+# Pick any opaque random string.
 DASHBOARD_TOKEN=""
+
+# --- Auth (multi-tenant) ---
+# Secret used to sign/verify Better Auth session cookies + browser-relay
+# extension tokens. Generate one: `openssl rand -hex 32`
+AUTH_SECRET=""
+
+# Resend API key for magic-link delivery. Get one at https://resend.com/api-keys
+# When left empty, magic links are LOGGED to the console + surfaced via a
+# dev-only response header (no email sent) — handy for local dev.
+RESEND_API_KEY=""
+
+# Public base URL of this deployment. Better Auth uses it to build absolute
+# callback URLs in magic-link emails. For local dev use the wrangler dev URL.
+BETTER_AUTH_URL="http://localhost:8787"
 
 # --- Forward-looking (sendmail tool — Phase 2, NOT yet wired) ---
 # When MAIL_FROM is empty, the sendmail tool returns needs_approval but never

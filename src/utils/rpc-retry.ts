@@ -1,10 +1,10 @@
 // =============================================================================
 // RPC retry helper — used by sub-agent delegation tools.
 // =============================================================================
-// Why: a transient failure during `discover_jobs` / `research` currently kills
+// Why: a transient failure during `discover_jobs` currently kills
 // that tool call permanently for the run (DO eviction, brief network blip).
 // The fix from the gap analysis (P1 #4): at least 1 retry with backoff for
-// ResearchAgent / JobApplicationAgent delegation.
+// sub-agent delegation.
 //
 // Kept tiny and dependency-free so it's easy to audit. Not a general-purpose
 // retry library — it exists to wrap one specific shape: a thunk that returns
