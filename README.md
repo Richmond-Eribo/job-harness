@@ -122,103 +122,122 @@ don't map to a real listing are dropped.
 
 ## 🚀 Quick start
 
+The app is split into **two independent Cloudflare origins**:
+- **API worker** (`packages/hono-worker`) — a pure REST + WebSocket backend (Hono, Durable Objects, D1, R2). Serves **no HTML**.
+- **Frontend worker** (`packages/frontend`) — a standalone **TanStack Start** SSR app that calls the API cross-origin over CORS.
+
+The browser holds the Better Auth session cookie on the **API** origin
+(`SameSite=None; Secure`) and sends it with every request via
+`credentials: "include"`.
+
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22+ (Vite 8 / TypeScript 6)
 - A Cloudflare account
-- An LLM API key (Anthropic **or** OpenAI)
-- `wrangler` CLI (bundled as a dev dependency)
+- An LLM API key (GLM/OpenAI/Anthropic — see `packages/hono-worker/src/config/llm-config.json`)
+- A Resend API key + verified sender domain (for OTP emails)
 
 ### 1. Install
 
 ```bash
-npm install
+npm install   # root — installs all workspaces
 ```
 
 ### 2. Configure local secrets
 
-Create a `.dev.vars` file in the project root (see `.dev.vars.example`):
+Copy the API worker's example env:
 
 ```bash
-LLM_API_KEY=sk-...            # your LLM provider key (GLM/OpenAI/Anthropic)
-AUTH_SECRET=                  # generate: openssl rand -hex 32
-RESEND_API_KEY=               # optional — omit to log magic links in dev
-BETTER_AUTH_URL=http://localhost:8787
+cd packages/hono-worker
+cp .dev.vars.example .dev.vars
+# Fill in: LLM_API_KEY, AUTH_SECRET (openssl rand -hex 32), RESEND_API_KEY,
+#          MAIL_FROM, BETTER_AUTH_URL=http://localhost:8787,
+#          FRONTEND_URL=http://localhost:5173
 ```
 
-Auth is multi-tenant: users sign in via **Better Auth magic link** (email →
-signed session cookie). The auth directory lives in **D1** (`DB` binding);
-CV/résumé files live in **R2** (`CV_BUCKET`). Both bindings are pre-wired in
-`wrangler.jsonc` — run the D1 migration once:
+`FRONTEND_URL` is the new frontend origin — it's added to the API's CORS
+allowlist and Better Auth `trustedOrigins` so the cross-origin SPA can call
+`/api/*` with credentials.
+
+Copy the frontend env:
 
 ```bash
+cd ../frontend
+cp .env.example .env
+# VITE_API_URL=http://localhost:8787  (the API origin the frontend calls)
+```
+
+Auth is multi-tenant: email/password + 6-digit OTP (Better Auth `emailOTP`
+plugin, delivered via Resend). The auth directory lives in **D1** (`DB`);
+CV/résumé files live in **R2** (`CV_BUCKET`). Run the D1 migration once:
+
+```bash
+cd ../hono-worker
 npx wrangler d1 migrations apply agent-harness-auth --local   # dev
 npx wrangler d1 migrations apply agent-harness-auth --remote  # prod
 ```
 
-### 3. Run locally
-
-**Backend** (the Worker + all Durable Objects):
+### 3. Run locally (both origins)
 
 ```bash
-npm run dev
+npm run dev   # root: runs API (:8787) + frontend (:5173) concurrently
 ```
 
-**Frontend** (the Vite + TanStack Router SPA) — in a second terminal:
+Open `http://localhost:5173`. The frontend talks to the API cross-origin
+(`VITE_API_URL`); OTP emails are sent for real via Resend (no dev fallback).
+
+### 4. Deploy (two separate workers)
+
+**API worker** — one-command provisioning:
 
 ```bash
-cd frontend && npm install && npm run dev
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... ./scripts/setup.sh
 ```
 
-The Vite dev server runs on `:5173` and proxies `/api` to the Worker on
-`:8787`. Open `http://localhost:5173/app` for the new SPA. The legacy SSR
-dashboard remains at `http://localhost:8787/` during the cutover.
+(set `LLM_API_KEY`, `AUTH_SECRET`, `RESEND_API_KEY`, `MAIL_FROM`,
+`BETTER_AUTH_URL`, `FRONTEND_URL` in `packages/hono-worker/.dev.vars` first).
 
-In dev (no `RESEND_API_KEY`), magic links are logged to the Worker console
-and surfaced in the login page — click through to sign in without an email
-provider.
-
-### 4. Deploy
-
-The one-command provisioning script sets the secrets and deploys:
+**Frontend worker** — build with the prod API origin baked in, then deploy:
 
 ```bash
-CLOUDFLARE_API_TOKEN=... \
-CLOUDFLARE_ACCOUNT_ID=... \
-LLM_API_KEY=... \
-DASHBOARD_TOKEN=... \
-./scripts/setup.sh
+VITE_API_URL=https://agent-harness.<sub>.workers.dev npm run deploy:web
 ```
 
-Or do it manually:
-
-```bash
-npx wrangler secret put LLM_API_KEY
-npx wrangler secret put DASHBOARD_TOKEN
-npx wrangler deploy
-```
-
-The cron watchdog will start the first scheduled run automatically (within ~2
-minutes of a schedule being due).
+Note the **two URL env vars** that must point at each other's deployed origin:
+`FRONTEND_URL` (on the API) and `VITE_API_URL` (on the frontend). Set both to
+the real prod URLs after the first deploy. CI (`.github/workflows/deploy.yml`)
+runs both deploys on push to `main` — set `VITE_API_URL` as a GitHub secret.
 
 ---
 
 ## 🔌 Configuration
 
-All toggable config lives in env vars / secrets:
+Backend secrets (set in `packages/hono-worker/.dev.vars` for dev, or via
+`wrangler secret put` / the dashboard for prod). See `.dev.vars.example` for
+the full list with comments:
 
-| Variable          | Required | Purpose                                    |
-| ----------------- | :------: | ------------------------------------------ |
-| `LLM_API_KEY`     |    ✅    | Anthropic **or** OpenAI API key            |
-| `DASHBOARD_TOKEN` |    ✅    | Bearer token for `/api/*` + dashboard auth |
-| `LLM_PROVIDER`    |    –     | `anthropic` (default) or `openai`          |
-| `LLM_MODEL`       |    –     | e.g. `claude-sonnet-4-20250514`, `gpt-4o`  |
-| `MAX_STEPS`       |    –     | Step ceiling per run (default `100`)       |
+| Variable         | Required | Purpose                                                          |
+| ---------------- | :------: | ---------------------------------------------------------------- |
+| `LLM_API_KEY`    |    ✅    | LLM provider key (GLM/OpenAI/Anthropic — see llm-config.json)    |
+| `AUTH_SECRET`    |    ✅    | Signs Better Auth session cookies + extension tokens (`rand -hex 32`) |
+| `RESEND_API_KEY` |    ✅    | Resend key for OTP delivery (https://resend.com/api-keys)        |
+| `MAIL_FROM`      |    ✅    | Resend-verified sender address for OTP emails                    |
+| `BETTER_AUTH_URL`|    –     | Public API origin (e.g. https://agent-harness.x.workers.dev)     |
+| `FRONTEND_URL`   |    –     | Public FRONTEND origin — added to CORS allowlist + trustedOrigins|
+| `MAX_STEPS`      |    –     | Step ceiling per run (default `100`, in `wrangler.jsonc` vars)   |
+
+Frontend build-time var (set in `packages/frontend/.env` for dev, or as the
+`VITE_API_URL` GitHub secret / env var at build time):
+
+| Variable       | Required | Purpose                                              |
+| -------------- | :------: | ---------------------------------------------------- |
+| `VITE_API_URL` |    ✅    | The API origin the frontend calls cross-origin (CORS)|
 
 ### Model config
 
 > **Heads-up (known v1 limitation):** model identity (provider / model / base
-> URL) and generation params live in [`src/llm-config.json`](src/llm-config.json),
+> URL) and generation params live in
+> [`packages/hono-worker/src/config/llm-config.json`](packages/hono-worker/src/config/llm-config.json),
 > which is a **static import — baked at build time**. Switching providers or
 > models therefore requires a code change + redeploy (not a runtime edit).
 > `PUT /api/config` updates the **goal / maxSteps / token budget** triplet only.
@@ -243,8 +262,11 @@ built in (if a window was never served, it triggers on the next watchdog tick).
 
 ## 🌐 API
 
-Everything under `/api/*` requires an `Authorization: Bearer <DASHBOARD_TOKEN>`
-header.
+Everything under `/api/*` requires a valid Better Auth **session cookie**
+(set by `/api/auth/sign-in/email` after OTP verification). The frontend sends
+it cross-origin with `credentials: "include"`; the API validates it via
+`requireAuth` middleware. A not-yet-onboarded user gets `428` (the frontend's
+guards redirect to `/onboarding`). Unauthenticated requests get `401`.
 
 > [!CAUTION]
 > **Known DO-concurrency limitation:** `start()` awaits the entire multi-minute
@@ -258,12 +280,8 @@ header.
 
 | Method        | Path                         | Description                                       |
 | ------------- | ---------------------------- | ------------------------------------------------- |
-| `GET`         | `/`                          | Dashboard (HTML, Overview page)                   |
-| `GET`         | `/jobs`                      | Jobs Kanban + covers (HTML page)                  |
-| `GET`         | `/traces`                    | Trace viewer (HTML page)                          |
-| `GET`         | `/logs`                      | Step logs (HTML page)                             |
-| `GET`         | `/memory`                    | Memory editor (HTML page)                         |
-| `GET`         | `/settings`                  | Config editor (HTML page)                         |
+| **Auth**                   |                              |                                                   |
+| `GET`/`POST`   | `/api/auth/*`                | Better Auth (sign-up/in/out, OTP verify, session) |
 | **Run control**            |                              |                                                   |
 | `GET`         | `/api/status`                | Full harness status                               |
 | `POST`        | `/api/start`                 | Start a run (optional `{ goal }`)                 |
@@ -295,9 +313,6 @@ header.
 | `DELETE`      | `/api/memory/:key`           | Forget a fact                                     |
 | `GET` / `PUT` | `/api/user-memory`           | Operator notes injected into every prompt         |
 | `DELETE`      | `/api/user-memory/:key`      | Delete an operator note                           |
-| **Research**               |                              |                                                   |
-| `GET`         | `/api/research`              | Topics + recent findings                          |
-| `POST`        | `/api/research/run`          | Trigger a search `{ topic, depth }`               |
 | **Jobs**                   |                              |                                                   |
 | `GET`         | `/api/pipeline`              | Job pipeline grouped by stage                     |
 | `POST`        | `/api/jobs`                  | Manually add a job                                |
@@ -312,52 +327,39 @@ header.
 ## 📁 Project structure
 
 ```
-src/
-  index.ts           # Hono router, API routes, cron watchdog, DO exports
-  db.ts              # SQL helpers (execSql tagged-template shim)
-  llm.ts             # Model-agnostic LLM factory (BYOK)
-  llm-config.json    # ⚙ static model config (baked at build time)
-  observability-config.json  # trace-event capture toggles
-  types.ts           # Shared types
-  agents/
-    harness.ts           # The orchestrator (autonomous agent loop + DB)
-    research-agent.ts    # arXiv + Hacker News capability agent
-    job-agent.ts         # job discovery + cover letters + pipeline agent
-    prompt.ts            # System-prompt builder
-    prompt-loader.ts     # Loads prompts/ from disk
-    index.ts             # Agent exports
-  tools/
-    finish.tool.ts  research.tool.ts  jobs.tool.ts  memory.tool.ts
-    index.ts              # tool registry wired into the harness
-  types/
-    env.ts harness.ts index.ts job.ts log.ts memory.ts
-    research.ts schedule.ts trace.ts
-  utils/
-    cron.ts          # range/step/list parsing + missed-fire catch-up
-    get-agents.ts    # getAgentByName wrappers
-    run.ts           # run helpers
-    trace.ts         # trace-event emission helpers
-  db/
-    db.ts            # low-level SQL plumbing
-  views/
-    Layout.tsx           # <html> shell + nav
-    renderDashboard.tsx  # page renderer
-    pages/
-      Overview.tsx Jobs.tsx Traces.tsx Logs.tsx Memory.tsx Settings.tsx
-public/
-  css/dashboard.css
-  js/dashboard.js   markdown.js   json.js
-  # markdown.js  — client-side Markdown rendering for LLM output
-  # json.js       — pretty-printing for tool I/O
+packages/
+  hono-worker/                # 🟦 BACKEND — pure REST API + WS relay (Cloudflare Worker)
+    src/
+      index.ts                # Hono router: /api/* + /browser/relay + scheduled() cron
+      auth/                   # Better Auth (email/password + emailOTP) + Resend + requireAuth
+      agents/                 # Durable Objects: Harness, JobApplicationAgent, Browser*, RateLimiter
+      tools/                  # agent tool registry
+      config/                 # llm-config.json, observability-config.json, rate-limits.json
+      types/env.ts            # Env bindings (D1, R2, DOs — NO ASSETS; serves no files)
+    wrangler.jsonc            # DOs, cron, D1, R2 — NO assets binding
+    migrations/               # D1 auth schema
+    .dev.vars.example         # LLM_API_KEY, AUTH_SECRET, RESEND_API_KEY, FRONTEND_URL, …
+
+  frontend/                   # 🟩 FRONTEND — standalone TanStack Start SSR app (Cloudflare Worker)
+    src/
+      routes/                 # file-based routes (12): __root.tsx (HTML shell + guards),
+                              #   index/login/signup/forgot-password/onboarding/dashboard/
+                              #   jobs/logs/memory/settings + traces/$runId
+      pages/                  # the page components rendered by the routes
+      router.tsx              # getRouter() — Start's per-request factory
+      lib/api.ts  lib/auth.ts # cross-origin clients (VITE_API_URL + credentials:include)
+    vite.config.ts            # tailwindcss + cloudflare + tanstackStart + react (in that order)
+    wrangler.jsonc            # main: @tanstack/react-start/server-entry (frontend Worker)
+    .env.example              # VITE_API_URL (the API origin)
+
+  ui/                         # shared shadcn/ui primitives (@agent-harness/ui, raw TSX)
+  shared-types/               # browser-safe types shared by both sides (@agent-harness/shared-types)
 scripts/
-  setup.sh               # one-command provisioning
-prompts/
-  default.md   # default system-prompt template
-  soul.md      # higher-order agent persona / philosophy
+  setup.sh                    # provisions the API worker (secrets + deploy)
+prompts/                      # agent system-prompt templates
 docs/
-  implementation_plan.md
-  REDESIGN.md            # v1 redesign decisions + known TODOs
-wrangler.jsonc           # DOs, cron trigger, vars, assets
+  future-phases.md            # CV→markitdown + feature phases (not yet built)
+  REDESIGN.md                 # v1 redesign decisions + known TODOs
 ```
 
 ---
@@ -369,8 +371,14 @@ wrangler.jsonc           # DOs, cron trigger, vars, assets
   some APIs are unstable and may require a cast.)*
 - **Vercel AI SDK** (`ai@latest`, `@ai-sdk/anthropic@latest`,
   `@ai-sdk/openai@latest`)
-- **Hono 4** — HTTP router + server-rendered JSX dashboard (no SPA / build step
-  for the UI; static assets in `public/` served by the platform)
+- **Hono 4** — the API worker's HTTP router (pure REST + WS relay, no HTML)
+- **TanStack Start** (`@tanstack/react-start`) + **Vite 8** + **React 19** —
+  the standalone SSR frontend, deployed as its own Cloudflare Worker via
+  `@cloudflare/vite-plugin`. File-based routing, `shellComponent` renders the
+  HTML document server-side.
+- **Better Auth** — email/password + `emailOTP` (6-digit codes via Resend),
+  cross-origin session cookie (`SameSite=None; Secure`)
+- **Tailwind CSS v4** + **shadcn/ui** (`@agent-harness/ui` shared primitives)
 - **cron-parser** (schedule matching + missed-fire catch-up, pinned to UTC)
 - **Zod** (tool parameter schemas)
 - **Workers observability** — `trace_events` SQLite table + live-poll endpoint,
@@ -423,17 +431,18 @@ changes consistent with the architecture described above.
 
 1. Fork the repository and create a feature branch
    (`git checkout -b feat/my-change`).
-2. Make your changes. Verify with `npx tsc --noEmit` (0 errors) before
-   committing.
+2. Make your changes. Verify both sides typecheck — `npm run typecheck`
+   (runs the frontend + the worker) — and `npm run test:unit` before committing.
 3. Open a pull request describing **what** changed and **why**.
 
 ### Areas that welcome help
 
-- New grounded data sources for the Research/Job agents (no-auth HTTPS JSON APIs
-  only, to keep the free-tier design).
+- New grounded data sources for the Job agent (no-auth HTTPS JSON APIs only,
+  to keep the free-tier design).
 - A v2 (paid-tier) variant that adds a `Sandbox` container for code execution.
-- Additional LLM providers in `src/llm.ts` (Gemini, Mistral, etc.).
-- Dashboard UX improvements (`src/views/`, `public/`).
+- Additional LLM providers in `packages/hono-worker/src/config/llm-config.json`.
+- Frontend feature pages (Job Detail, Cover Letter editor, Schedules manager,
+  Goal/Plan editor — see `docs/future-phases.md`).
 
 ---
 

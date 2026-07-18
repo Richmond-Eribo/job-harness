@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "vite dev",
+    "build": "vite build && tsc --noEmit",
     "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

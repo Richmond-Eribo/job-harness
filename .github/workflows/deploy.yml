@@ -4,21 +4,76 @@ on:
   push:
     branches: [main]
 
+# Two independent Cloudflare deploys: the Hono REST API worker and the
+# TanStack Start frontend worker. They run on SEPARATE origins and are deployed
+# independently. deploy-api goes first so a new frontend always has a
+# compatible API to talk to.
+#
+# Required GitHub secrets:
+#   CLOUDFLARE_API_TOKEN   — an API token with Workers Deploy permission
+#   CLOUDFLARE_ACCOUNT_ID  — the Cloudflare account id
+#   VITE_API_URL           — the PROD API origin the frontend calls cross-origin
+#                            (e.g. https://agent-harness.<subdomain>.workers.dev
+#                            or your custom api domain). Passed as a build-time
+#                            var so it's baked into the client bundle.
+#
+# Worker runtime secrets (LLM_API_KEY, AUTH_SECRET, RESEND_API_KEY, MAIL_FROM,
+# BETTER_AUTH_URL, FRONTEND_URL) are NOT set here — manage them out-of-band via
+# `wrangler secret put` or the Cloudflare dashboard. Once set they persist
+# across deploys.
+
 jobs:
-  deploy:
+  deploy-api:
+    name: Deploy API worker
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/hono-worker
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-
-      - name: Install dependencies
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies (root workspaces)
+        working-directory: .
         run: npm install
-
-      - name: Deploy to Cloudflare
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Deploy API worker
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/hono-worker
+          command: deploy
+
+  deploy-web:
+    name: Deploy frontend worker
+    runs-on: ubuntu-latest
+    needs: deploy-api
+    defaults:
+      run:
+        working-directory: packages/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies (root workspaces)
+        working-directory: .
+        run: npm install
+      - name: Build frontend (VITE_API_URL baked into the bundle)
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: npm run build
+      - name: Deploy frontend worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/frontend
+          command: deploy
