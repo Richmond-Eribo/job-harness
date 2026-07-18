@@ -85,6 +85,22 @@ app.use("*", requireAuth)
 app.get("/login", c =>
   c.html(LOGIN_PAGE_HTML),
 )
+
+// ── Vite SPA entry point ─────────────────────────────────────────────────
+// The new Vite + @tanstack/react-router frontend. Built into ./public/app/
+// (see frontend/vite.config.ts) and served via the ASSETS binding. The SPA
+// uses hash-based routing, so this single entry covers all client routes
+// (#/jobs, #/traces, etc.). Exempt from requireAuth (the SPA does its own
+// auth guards client-side; the /api calls it makes are still session-gated).
+app.get("/app", async c => {
+  const asset = await c.env.ASSETS.fetch(new URL("/app/index.html", c.req.url))
+  return new Response(asset.body, asset)
+})
+app.get("/app/*splat", async c => {
+  // Serve any built asset under /app/ (JS/CSS chunks) directly from ASSETS.
+  const asset = await c.env.ASSETS.fetch(new URL(c.req.path, c.req.url))
+  return new Response(asset.body, asset)
+})
 const LOGIN_PAGE_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>

@@ -21,6 +21,8 @@ const PUBLIC_PREFIXES = [
   "/api/auth/", // Better Auth's own endpoints (login, callback, sign-out)
   "/login",
   "/signup",
+  "/app", // the Vite SPA shell (does its own client-side auth checks)
+  "/app/", // built SPA assets (JS/CSS chunks)
 ]
 
 // Paths that require a SESSION but are exempt from the onboarding gate (so a
