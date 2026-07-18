@@ -1,0 +1,13 @@
+{
+  "$doc": "Per-user rate limits. Non-secret, version-controlled (same convention as llm-config.json / observability-config.json). Read by src/agents/rate-limiter.ts. All users share ONE LLM_API_KEY whose provider limit is per-key, so these per-user windows bound cost + protect the shared key.",
+
+  "llm": {
+    "windowSeconds": 60,
+    "max": 120
+  },
+
+  "activeRun": {
+    "windowSeconds": 600,
+    "max": 1
+  }
+}

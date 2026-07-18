@@ -36,8 +36,12 @@ RESEND_API_KEY=""
 # callback URLs in magic-link emails. For local dev use the wrangler dev URL.
 BETTER_AUTH_URL="http://localhost:8787"
 
+# Sender address for magic-link emails (read by src/auth/auth.ts → resend.ts).
+# MUST be a Resend-verified sender (verify your domain at resend.com/domains).
+# Without this, magic links fall back to console-logging instead of emailing.
+MAIL_FROM="agent@example.com"
+
 # --- Forward-looking (sendmail tool — Phase 2, NOT yet wired) ---
-# When MAIL_FROM is empty, the sendmail tool returns needs_approval but never
-# transports anything. Set these to enable real delivery in a future phase.
-# MAIL_FROM="agent@example.com"
+# When MAIL_ALLOWLIST is empty, the sendmail tool returns needs_approval but
+# never transports anything. Set this to enable real delivery in a future phase.
 # MAIL_ALLOWLIST="you@example.com,recruiter@acme.com"

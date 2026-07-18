@@ -37,8 +37,15 @@ export async function sendMagicLinkEmail(
 
   if (!apiKey || !from) {
     // Dev path — never send real email. The caller surfaces `devUrl`.
+    // Be explicit about WHICH value is missing so misconfiguration is obvious.
+    const missing = [
+      !apiKey && "RESEND_API_KEY",
+      !from && "MAIL_FROM",
+    ]
+      .filter(Boolean)
+      .join(" + ")
     console.log(
-      `[auth][magic-link] dev mode (no RESEND_API_KEY / MAIL_FROM). ` +
+      `[auth][magic-link] dev mode (missing ${missing}). ` +
         `Magic link for ${to}: ${url}`,
     )
     return { sent: false, devUrl: url }

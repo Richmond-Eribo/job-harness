@@ -65,9 +65,19 @@ app.use(
 // (sign-in, callback, session, sign-out, etc.). Mounted before requireAuth so
 // the auth endpoints are reachable without a session. The instance is built
 // per-request from env so baseURL resolves to the real request host.
+//
+// Better Auth's internal router (better-call) swallows unhandled errors into
+// empty-body 500s, which are hard to diagnose. We wrap the handler so any 5xx
+// is logged with the route for visibility in `wrangler tail` / the dev console.
 app.on(["GET", "POST"], "/api/auth/*", async c => {
   const auth = getAuth(c)
-  return auth.handler(c.req.raw)
+  const res = await auth.handler(c.req.raw)
+  if (res.status >= 500) {
+    console.error(
+      `[auth] ${c.req.method} ${c.req.path} → ${res.status}`,
+    )
+  }
+  return res
 })
 
 // ── Session-cookie auth on everything ────────────────────────────────────
@@ -139,7 +149,7 @@ form.addEventListener('submit', async (e) => {
   msg.className = 'msg';
   msg.textContent = 'Sending...';
   try {
-    const res = await fetch('/api/auth/magic-link/sign-in', {
+    const res = await fetch('/api/auth/sign-in/magic-link', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ email, callbackURL: '/' })

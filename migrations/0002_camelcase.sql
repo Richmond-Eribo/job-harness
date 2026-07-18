@@ -1,28 +1,36 @@
--- 0001_auth.sql — Better Auth core tables + onboarding/profile columns.
--- Mirrors the shape Better Auth 1.6.x queries at runtime. Better Auth's default
--- field names are camelCase (emailVerified, createdAt, etc.) — verified in
--- node_modules/@better-auth/core/dist/db/get-tables.mjs. The runtime queries
--- these exact column names, so the D1 schema MUST match or every insert/select
--- throws "no such column" → empty 500.
+-- 0002_camelcase.sql — Fix column casing to match Better Auth runtime defaults.
 --
--- Apply with: npx wrangler d1 migrations apply agent-harness-auth --local
--- (and --remote for the prod DB)
+-- 0001 used snake_case columns (email_verified, created_at) but Better Auth
+-- 1.6.x queries camelCase (emailVerified, createdAt) at runtime — causing
+-- "no such column" 500s on every auth DB operation. This migration drops the
+-- old tables and recreates them with the correct camelCase columns.
+--
+-- (D1 migrations are append-only — wrangler tracks by filename, so we can't
+-- just edit 0001. This is the corrective migration. Fresh deployments apply
+-- 0001 then 0002; the net effect is the camelCase schema.)
+--
+-- Safe to re-run: the data in these tables is auth/session/verification tokens
+-- only. No user-created jobs/profiles are lost (those live in the per-user DOs).
+
+DROP TABLE IF EXISTS "account";
+DROP TABLE IF EXISTS "verification";
+DROP TABLE IF EXISTS "session";
+DROP TABLE IF EXISTS "user";
 
 -- user -----------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS "user" (
+CREATE TABLE "user" (
   "id"                  TEXT PRIMARY KEY NOT NULL,
   "email"               TEXT NOT NULL UNIQUE,
-  "emailVerified"       INTEGER NOT NULL DEFAULT 0,    -- camelCase (Better Auth default)
+  "emailVerified"       INTEGER NOT NULL DEFAULT 0,
   "name"                TEXT NOT NULL,
   "image"               TEXT,
   "createdAt"           INTEGER NOT NULL,
   "updatedAt"           INTEGER NOT NULL,
-  -- Our extension: profile + CV onboarding gate (Stage 7).
   "onboardingComplete"  INTEGER NOT NULL DEFAULT 0
 );
 
 -- session --------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS "session" (
+CREATE TABLE "session" (
   "id"          TEXT PRIMARY KEY NOT NULL,
   "expiresAt"   INTEGER NOT NULL,
   "token"       TEXT NOT NULL UNIQUE,
@@ -32,11 +40,10 @@ CREATE TABLE IF NOT EXISTS "session" (
   "userAgent"   TEXT,
   "userId"      TEXT NOT NULL REFERENCES "user"("id") ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS "session_userId_idx" ON "session"("userId");
+CREATE INDEX "session_userId_idx" ON "session"("userId");
 
 -- verification ---------------------------------------------------------
--- Used by the magic-link plugin to store the one-time sign-in tokens.
-CREATE TABLE IF NOT EXISTS "verification" (
+CREATE TABLE "verification" (
   "id"          TEXT PRIMARY KEY NOT NULL,
   "identifier"  TEXT NOT NULL,
   "value"       TEXT NOT NULL,
@@ -46,9 +53,7 @@ CREATE TABLE IF NOT EXISTS "verification" (
 );
 
 -- account --------------------------------------------------------------
--- Used by credential/OAuth accounts. Magic-link uses the verification table,
--- but this must exist for Better Auth's schema expectations.
-CREATE TABLE IF NOT EXISTS "account" (
+CREATE TABLE "account" (
   "id"                        TEXT PRIMARY KEY NOT NULL,
   "accountId"                 TEXT NOT NULL,
   "providerId"                TEXT NOT NULL,
@@ -63,4 +68,4 @@ CREATE TABLE IF NOT EXISTS "account" (
   "createdAt"                 INTEGER NOT NULL,
   "updatedAt"                 INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS "account_userId_idx" ON "account"("userId");
+CREATE INDEX "account_userId_idx" ON "account"("userId");

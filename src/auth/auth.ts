@@ -86,20 +86,32 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
         // 10-minute link expiry (default is 5). Gives email delivery slack.
         expiresIn: 60 * 10,
         sendMagicLink: async ({ email, url, token }, ctx) => {
-          const result = await sendMagicLinkEmail(
-            { to: email, url, token },
-            { apiKey: env.RESEND_API_KEY, from: env.MAIL_FROM },
-          )
-          if (!result.sent && result.devUrl) {
-            // Dev path — surface the link so the caller (the auth route) can
-            // expose it via a header for local click-through. We stash it on
-            // the context's response headers if available.
-            try {
-              ctx?.context?.setCookie?.("dev-magic-link", result.devUrl)
-            } catch {
-              // ctx shape varies; the console.log in sendMagicLinkEmail is the
-              // primary dev signal. Not worth failing the flow over.
+          try {
+            const result = await sendMagicLinkEmail(
+              { to: email, url, token },
+              { apiKey: env.RESEND_API_KEY, from: env.MAIL_FROM },
+            )
+            if (!result.sent && result.devUrl) {
+              // Dev path — surface the link so the caller (the auth route) can
+              // expose it via a header for local click-through. We stash it on
+              // the context's response headers if available.
+              try {
+                ctx?.context?.setCookie?.("dev-magic-link", result.devUrl)
+              } catch {
+                // ctx shape varies; the console.log in sendMagicLinkEmail is the
+                // primary dev signal. Not worth failing the flow over.
+              }
             }
+          } catch (err: any) {
+            // Email delivery failure must NOT crash the magic-link request
+            // (Better Auth would return an empty 500). Log it loudly so the
+            // operator can diagnose (wrong domain, unverified sender, bad key)
+            // and let the flow continue — the user gets a generic response
+            // rather than a silent 500.
+            console.error(
+              `[auth][magic-link] sendMagicLink failed for ${email}:`,
+              err?.message ?? String(err),
+            )
           }
         },
       }),

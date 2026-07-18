@@ -23,6 +23,7 @@
 import { Agent, callable } from "agents"
 import type { Env } from "../types"
 import { execSql } from "../db/db"
+import rateLimitsConfig from "../config/rate-limits.json"
 
 interface RateLimiterState {
   initialized: boolean
@@ -111,8 +112,21 @@ export class RateLimiter extends Agent<Env, RateLimiterState> {
 // ---------------------------------------------------------------------------
 // Limits + windows (single source of truth for the harness + start gate).
 // ---------------------------------------------------------------------------
+// Read from src/config/rate-limits.json (version-controlled, same convention
+// as llm-config.json). Falls back to safe defaults if the JSON is malformed or
+// a field is missing — never let a config typo take down the rate limiter.
+const cfg = rateLimitsConfig as {
+  llm?: { windowSeconds?: number; max?: number }
+  activeRun?: { windowSeconds?: number; max?: number }
+}
 
-/** LLM calls per user per minute. Bounds cost + protects the shared key. */
-export const LLM_RATE_LIMIT = { window: 60, max: 30 }
+/** LLM calls per user per window. Bounds cost + protects the shared key. */
+export const LLM_RATE_LIMIT = {
+  window: cfg.llm?.windowSeconds ?? 60,
+  max: cfg.llm?.max ?? 120,
+}
 /** One active harness run per user at a time. */
-export const ACTIVE_RUN_LIMIT = { window: 60 * 10, max: 1 }
+export const ACTIVE_RUN_LIMIT = {
+  window: cfg.activeRun?.windowSeconds ?? 600,
+  max: cfg.activeRun?.max ?? 1,
+}

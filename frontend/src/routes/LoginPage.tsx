@@ -14,12 +14,14 @@ export function LoginPage() {
     e.preventDefault()
     setStatus({ kind: "sending" })
     try {
-      // Better Auth magic-link: sends an email with a link. callbackURL is
-      // where the user lands after clicking the link.
-      // Cast: the client plugin infers its methods from the server plugin's
-      // types, which aren't co-located here, so TS doesn't see
-      // sendMagicLinkEmail (it works at runtime).
-      const { data, error } = await (authClient as any).magicLink.sendMagicLinkEmail({
+      // Better Auth magic-link sign-in. The documented client helper is
+      // `signInMagicLink` — the proxy maps it to POST /api/auth/sign-in/magic-link
+      // (the path the server registers at
+      // node_modules/better-auth/dist/plugins/magic-link/index.mjs:41).
+      // Do NOT use `magicLink.sendMagicLinkEmail` — the proxy kebab-cases that
+      // to /magic-link/send-magic-link-email, which doesn't exist → 404.
+      // Cast: TS can't infer the method without co-located server plugin types.
+      const { data, error } = await (authClient as any).signInMagicLink({
         email,
         callbackURL: "/",
       })
