@@ -204,9 +204,11 @@ app.post("/api/onboarding", async c => {
 
   // Mark onboarding complete in D1. The user can edit their profile later via
   // PUT /api/profile; this flag just unlocks the rest of the app.
+  // Columns are camelCase to match migrations/0002_camelcase.sql (Better Auth
+  // 1.6.x queries camelCase at runtime).
   try {
     await c.env.DB.prepare(
-      `UPDATE "user" SET onboarding_complete = 1, updated_at = ? WHERE id = ?`,
+      `UPDATE "user" SET onboardingComplete = 1, updatedAt = ? WHERE id = ?`,
     )
       .bind(Date.now(), userId)
       .run()

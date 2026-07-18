@@ -11,7 +11,10 @@
     "build": "npm run build:frontend && wrangler deploy --dry-run",
     "deploy": "npm run build:frontend && wrangler deploy",
     "tail": "wrangler tail",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.workers.config.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.12",
