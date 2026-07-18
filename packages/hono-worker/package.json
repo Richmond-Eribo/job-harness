@@ -1,0 +1,12 @@
+{
+  "name": "@agent-harness/hono-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agent-harness/shared-types": "*"
+  }
+}

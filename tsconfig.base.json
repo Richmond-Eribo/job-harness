@@ -1,0 +1,17 @@
+{
+  // Shared compiler options for every package in the monorepo. Each package's
+  // tsconfig.json extends this and adds only what it needs (types, jsx, paths).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true
+  }
+}
