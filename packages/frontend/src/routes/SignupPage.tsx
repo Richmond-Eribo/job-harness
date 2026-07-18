@@ -330,7 +330,7 @@ export function SignupPage() {
                       value={profile.skills ?? ""}
                       onChange={set("skills")}
                       placeholder="e.g. TypeScript, React, distributed systems"
-                      className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                      className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring resize-y"
                     />
                   </div>
                   <Field label="LinkedIn URL" name="linkedinUrl" value={profile.linkedinUrl} onChange={set("linkedinUrl")} placeholder="https://linkedin.com/in/you" />
@@ -456,7 +456,7 @@ function SelectField({
         name={name}
         value={value}
         onChange={onChange}
-        className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
       >
         {options.map(o => (
           <option key={o} value={o} className="bg-background">

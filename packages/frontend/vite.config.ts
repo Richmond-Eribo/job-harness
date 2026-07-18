@@ -1,5 +1,6 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
+import tailwindcss from "@tailwindcss/vite"
 import path from "path"
 
 // Vite config for the agent-harness frontend.
@@ -15,7 +16,7 @@ import path from "path"
 // file-based route generator, so the @tanstack/router-plugin Vite plugin is
 // intentionally NOT included. Add it back if switching to file-based routes.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

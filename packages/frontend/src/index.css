@@ -1,42 +1,105 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "tw-animate-css";
 
-/* shadcn/ui semantic tokens — mapped onto the existing slate-based "ink"
- * dark palette so components from @agent-harness/ui match the app's look.
- * The app is dark-first; the :root block carries the dark values directly
- * (no light theme is shipped). Raw HSL channels let opacity modifiers
- * (bg-primary/90) work via Tailwind's `<color>/<alpha>` syntax. */
+/* Scan the shared @agent-harness/ui package source so utility classes inside
+   its components are preserved (monorepo safety net — the Vite plugin's
+   module-graph detection covers most cases, but this is explicit). */
+@source "../ui/src";
+
+/* shadcn/ui semantic tokens for Tailwind v4. The app is dark-first: the dark
+   values live directly in :root (no .dark class toggling). hsl() is wrapped
+   INTO the variable values so @theme inline can reference them bare and
+   opacity modifiers (bg-primary/90) resolve correctly via color-mix(). */
 :root {
-  --background: 222 47% 11%; /* ink-950 #0f172a */
-  --foreground: 210 40% 90%; /* ink-100 #e2e8f0 */
+  --background: hsl(222 47% 11%); /* ink-950 #0f172a */
+  --foreground: hsl(210 40% 90%); /* ink-100 #e2e8f0 */
 
-  --card: 222 47% 17%; /* ink-900 #1e293b */
-  --card-foreground: 210 40% 90%;
+  --card: hsl(222 47% 17%); /* ink-900 #1e293b */
+  --card-foreground: hsl(210 40% 90%);
 
-  --popover: 222 47% 17%;
-  --popover-foreground: 210 40% 90%;
+  --popover: hsl(222 47% 17%);
+  --popover-foreground: hsl(210 40% 90%);
 
-  --primary: 217 91% 60%; /* accent #3b82f6 */
-  --primary-foreground: 0 0% 100%;
+  --primary: hsl(217 91% 60%); /* accent #3b82f6 */
+  --primary-foreground: hsl(0 0% 100%);
 
-  --secondary: 215 25% 27%; /* ink-800 #334155 */
-  --secondary-foreground: 210 40% 90%;
+  --secondary: hsl(215 25% 27%); /* ink-800 #334155 */
+  --secondary-foreground: hsl(210 40% 90%);
 
-  --muted: 215 25% 27%;
-  --muted-foreground: 215 16% 47%; /* ink-700 #475569 */
+  --muted: hsl(215 25% 27%);
+  --muted-foreground: hsl(215 16% 47%); /* ink-700 #475569 */
 
-  --accent: 215 25% 27%;
-  --accent-foreground: 210 40% 90%;
+  --accent: hsl(215 25% 27%);
+  --accent-foreground: hsl(210 40% 90%);
 
-  --destructive: 0 72% 51%;
-  --destructive-foreground: 0 0% 100%;
+  --destructive: hsl(0 72% 51%);
+  --destructive-foreground: hsl(0 0% 100%);
 
-  --border: 215 25% 27%; /* ink-800 */
-  --input: 215 25% 27%;
-  --ring: 217 91% 60%; /* accent */
+  --border: hsl(215 25% 27%); /* ink-800 */
+  --input: hsl(215 25% 27%);
+  --ring: hsl(217 91% 60%); /* accent */
 
   --radius: 0.5rem;
+}
+
+/* Map the CSS variables onto Tailwind utility names (--color-* -> bg-*,
+   text-*, border-*). `inline` substitutes the var reference directly so
+   runtime theme switching + alpha modifiers work. The `ink` slate palette is
+   kept as literal colors for the legacy pages still using ink-* classes
+   during the restyle. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Legacy slate palette (kept until the dashboard restyle removes all ink-*). */
+  --color-ink-950: #0f172a;
+  --color-ink-900: #1e293b;
+  --color-ink-800: #334155;
+  --color-ink-700: #475569;
+  --color-ink-500: #64748b;
+  --color-ink-300: #cbd5e1;
+  --color-ink-100: #e2e8f0;
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
 }
 
 /* Global resets + base styling for the dark SPA. */
