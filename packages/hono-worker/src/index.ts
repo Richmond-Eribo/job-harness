@@ -191,10 +191,17 @@ app.post("/api/onboarding", async c => {
     "location",
     "links",
     "workAuth",
+    "seniority",
+    "yearsExperience",
     "targetRoles",
     "targetLocations",
     "skills",
     "preferences",
+    "workMode",
+    "jobSearchStatus",
+    "linkedinUrl",
+    "githubUrl",
+    "portfolioUrl",
   ]) {
     if (typeof (body as any)[k] === "string") profilePatch[k] = (body as any)[k]
   }
@@ -319,7 +326,22 @@ form.addEventListener('submit', async (e) => {
 // documented pattern (cf. https://hono.dev/docs/middleware/builtin/jsx-renderer).
 // =============================================================================
 
-app.get("/", renderer, async c => {
+// ── Public marketing landing page (SPA shell) ────────────────────────────
+// `/` is the front door: it serves the Vite SPA's index.html via the ASSETS
+// binding. The SPA's hash router shows the public LandingPage at `#/` for
+// logged-out visitors and redirects to `#/dashboard` for logged-in ones.
+// Auth-gating happens client-side; the Worker keeps `/` public (see
+// require-auth.ts PUBLIC_PREFIXES) so unauthenticated visitors see marketing.
+app.get("/", async c => {
+  const asset = await c.env.ASSETS.fetch(new URL("/app/index.html", c.req.url))
+  return new Response(asset.body, asset)
+})
+
+// ── Legacy SSR dashboard (Overview) ──────────────────────────────────────
+// The server-rendered overview moved off `/` (now the marketing page) to
+// `/legacy` so the SPA is the primary UI. Kept for reference/fallback; the
+// other SSR pages (/jobs, /traces, …) stay at their original paths.
+app.get("/legacy", renderer, async c => {
   const { harness, jobAgent } = await getAgents(c.env, c.var.userId)
   // The overview is job-first: pipeline stats + listings + follow-ups are the
   // primary data; agent status + token trend are demoted to the bottom. Each

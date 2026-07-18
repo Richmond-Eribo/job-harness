@@ -1,5 +1,5 @@
 // =============================================================================
-// Better Auth instance — magic-link auth on Cloudflare D1 + Resend.
+// Better Auth instance — email/password + email-OTP verification on D1 + Resend.
 // =============================================================================
 // DESIGN
 // Better Auth has first-class D1 support — its `database` option accepts a
@@ -13,15 +13,26 @@
 // request host in dev. It's mounted on Hono via app.on(["GET","POST"],
 // "/api/auth/*", ...) in src/index.ts.
 //
-// DEV MODE: when RESEND_API_KEY is unset, magic links are NOT emailed — the
-// sendMagicLink callback logs the URL to console and stashes it on the request
-// via the `__devMagicLink` header so the Stage-4 route can surface it for
-// click-through testing with zero provider setup.
+// AUTH MODEL
+//   - Credentials: email + password (Scrypt-hashed, stored in the `account`
+//     table's `password` column — already in the schema).
+//   - Email verification: a 6-digit OTP code (Better Auth's `emailOTP` plugin)
+//     delivered via Resend. The plugin mints the code, stores it HASHED in the
+//     existing `verification` table, enforces 3 attempts + a 60s/3 rate limit,
+//     and exposes /sign-up/email, /sign-in/email, /email-otp/send-verification-
+//     otp, /email-otp/verify-email, etc. `overrideDefaultEmailVerification`
+//     routes the standard verify-email flow through OTP.
+//   - `requireEmailVerification` blocks sign-in until the code is confirmed, so
+//     signup always goes: enter email+password → receive OTP → verify → in.
+//
+// Resend is called UNCONDITIONALLY (no dev-mode console fallback). If
+// RESEND_API_KEY or MAIL_FROM is missing, sendOtpEmail throws loudly — see
+// resend.ts. Verify your sending domain at resend.com/domains.
 // =============================================================================
 import { betterAuth } from "better-auth"
-import { magicLink } from "better-auth/plugins"
+import { emailOTP } from "better-auth/plugins"
 import type { Env } from "../types"
-import { sendMagicLinkEmail } from "./resend"
+import { sendOtpEmail } from "./resend"
 
 /**
  * The shape Better Auth returns for a session. We widen `user` with our extra
@@ -77,43 +88,33 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
     },
 
     emailAndPassword: {
-      // Magic link is the only login method. Explicitly disable password auth.
-      enabled: false,
+      enabled: true,
+      // Block sign-in until the OTP verifies the email. Signup sends the OTP
+      // immediately (sendVerificationOnSignUp below).
+      requireEmailVerification: true,
+      minPasswordLength: 8,
+      autoSignIn: true,
     },
 
     plugins: [
-      magicLink({
-        // 10-minute link expiry (default is 5). Gives email delivery slack.
-        expiresIn: 60 * 10,
-        sendMagicLink: async ({ email, url, token }, ctx) => {
-          try {
-            const result = await sendMagicLinkEmail(
-              { to: email, url, token },
-              { apiKey: env.RESEND_API_KEY, from: env.MAIL_FROM },
-            )
-            if (!result.sent && result.devUrl) {
-              // Dev path — surface the link so the caller (the auth route) can
-              // expose it via a header for local click-through. We stash it on
-              // the context's response headers if available.
-              try {
-                ctx?.context?.setCookie?.("dev-magic-link", result.devUrl)
-              } catch {
-                // ctx shape varies; the console.log in sendMagicLinkEmail is the
-                // primary dev signal. Not worth failing the flow over.
-              }
-            }
-          } catch (err: any) {
-            // Email delivery failure must NOT crash the magic-link request
-            // (Better Auth would return an empty 500). Log it loudly so the
-            // operator can diagnose (wrong domain, unverified sender, bad key)
-            // and let the flow continue — the user gets a generic response
-            // rather than a silent 500.
-            console.error(
-              `[auth][magic-link] sendMagicLink failed for ${email}:`,
-              err?.message ?? String(err),
-            )
-          }
+      emailOTP({
+        // Delivers the 6-digit code via Resend. Throws if the key/sender is
+        // missing — no silent dev fallback, by design.
+        sendVerificationOTP: async ({ email, otp }) => {
+          await sendOtpEmail(
+            { to: email, otp },
+            { apiKey: env.RESEND_API_KEY, from: env.MAIL_FROM },
+          )
         },
+        storeOTP: "hashed", // hash codes at rest in the `verification` table
+        otpLength: 6,
+        expiresIn: 60 * 5, // 5 minutes
+        allowedAttempts: 3,
+        // Mint + email the OTP as soon as the user signs up.
+        sendVerificationOnSignUp: true,
+        // Route core's email-verification flow through OTP (so
+        // /api/auth/send-verification-email mints a code, not a link).
+        overrideDefaultEmailVerification: true,
       }),
     ],
   })

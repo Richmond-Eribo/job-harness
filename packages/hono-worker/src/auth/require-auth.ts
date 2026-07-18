@@ -18,9 +18,10 @@ import { getSessionUser } from "./session"
 
 // Paths that must be reachable WITHOUT a session.
 const PUBLIC_PREFIXES = [
-  "/api/auth/", // Better Auth's own endpoints (login, callback, sign-out)
+  "/api/auth/", // Better Auth's own endpoints (sign-up, sign-in, verify, sign-out)
   "/login",
   "/signup",
+  "/", // the public marketing landing page (SPA decides auth client-side)
   "/app", // the Vite SPA shell (does its own client-side auth checks)
   "/app/", // built SPA assets (JS/CSS chunks)
 ]
@@ -50,9 +51,11 @@ function isStaticAsset(path: string): boolean {
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   const path = c.req.path
 
-  // 1. Always-public paths + static assets.
+  // 1. Always-public paths + static assets. "/" is matched exactly (a prefix
+  //    match on "/" would let everything through), the rest by prefix.
   if (isStaticAsset(path)) return next()
-  if (PUBLIC_PREFIXES.some(p => path.startsWith(p))) return next()
+  if (path === "/") return next()
+  if (PUBLIC_PREFIXES.some(p => p !== "/" && path.startsWith(p))) return next()
 
   // 2. The browser-relay WS upgrade is authenticated via its own extension
   //    token (Stage 4) — don't gate it with a session cookie here.

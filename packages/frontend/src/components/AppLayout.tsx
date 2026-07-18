@@ -2,15 +2,19 @@ import { useEffect } from "react"
 import { Link, Outlet, useRouterState, useNavigate } from "@tanstack/react-router"
 import { authClient } from "../lib/auth"
 
-// The nav entries. Matching the legacy dashboard's structure.
+// The nav entries. `/` (marketing) is public; the app shell routes start at
+// /dashboard.
 const NAV = [
-  { id: "/", label: "Overview", icon: "📊" },
+  { id: "/dashboard", label: "Overview", icon: "📊" },
   { id: "/jobs", label: "Jobs", icon: "💼" },
   { id: "/traces", label: "Traces", icon: "🔍" },
   { id: "/logs", label: "Logs", icon: "📋" },
   { id: "/memory", label: "Memory", icon: "🧠" },
   { id: "/settings", label: "Settings", icon: "⚙️" },
 ] as const
+
+// Routes that render WITHOUT the sidebar shell (public/auth surfaces).
+const SHELL_LESS = new Set(["/", "/login", "/signup", "/onboarding"])
 
 export function AppLayout() {
   const session = authClient.useSession()
@@ -19,54 +23,54 @@ export function AppLayout() {
 
   // --- Auth + onboarding guards ---
   // After the session resolves, redirect based on auth state:
-  //   - not logged in AND not on /login → /login
-  //   - logged in, not onboarded, not on /onboarding → /onboarding
+  //   - logged-in on `/`           → `/dashboard` (or `/onboarding` if not onboarded)
+  //   - logged-in on `/login`|`/signup` → `/dashboard` (or `/onboarding`)
+  //   - logged-out on an app route (not `/`, `/login`, `/signup`) → `/login`
+  //   - logged-in + not onboarded on an app route → `/onboarding`
   useEffect(() => {
     if (session.isPending) return // still loading — wait
-    const onLogin = pathname === "/login"
+    const user = session.data?.user as any
+    const onboardingDone = user?.onboardingComplete !== false
+    const onPublicRoot = pathname === "/"
+    const onAuth = pathname === "/login" || pathname === "/signup"
     const onOnboarding = pathname === "/onboarding"
 
     if (!session.data) {
-      if (!onLogin) navigate({ to: "/login" })
+      // Logged out: only redirect away from protected app routes. The marketing
+      // page (`/`) and the auth pages render for anonymous visitors.
+      if (!onPublicRoot && !onAuth) navigate({ to: "/login" })
       return
     }
 
-    // Logged in. If onboarding incomplete, force onboarding (unless already
-    // there, or on /login which we redirect away from).
-    if (!onLogin && !onOnboarding) {
-      // The onboardingComplete flag comes from the session user object.
-      // We check it via the profile/onboarding status — the session carries it
-      // through Better Auth's additional field.
-      const user = session.data?.user as any
-      if (user && user.onboardingComplete === false) {
-        navigate({ to: "/onboarding" })
-      }
+    // Logged in. Send marketing/auth visitors into the app.
+    if (onPublicRoot || onAuth) {
+      navigate({ to: onboardingDone ? "/dashboard" : "/onboarding" })
+      return
     }
 
-    // If logged in + onboarded but sitting on /login or /onboarding, go home.
-    if ((onLogin || onOnboarding) && session.data) {
-      const user = session.data?.user as any
-      if (onLogin || (onOnboarding && user?.onboardingComplete !== false)) {
-        navigate({ to: "/" })
-      }
+    // On an app route: enforce the onboarding gate.
+    if (!onOnboarding && !onboardingDone) {
+      navigate({ to: "/onboarding" })
     }
   }, [session.isPending, session.data, pathname, navigate])
 
-  // While the session is loading, show a minimal loader.
-  if (session.isPending) {
+  // While the session is loading, show a minimal loader on app routes only
+  // (public surfaces render immediately for a snappy first paint).
+  if (session.isPending && !SHELL_LESS.has(pathname)) {
     return (
-      <div className="flex items-center justify-center h-screen text-ink-500">
+      <div className="flex items-center justify-center h-screen text-muted-foreground">
         Loading…
       </div>
     )
   }
 
-  // Login + onboarding pages render WITHOUT the sidebar shell.
-  if (pathname === "/login" || pathname === "/onboarding") {
+  // Public + auth + onboarding pages render WITHOUT the sidebar shell.
+  if (SHELL_LESS.has(pathname)) {
     return <Outlet />
   }
 
-  // Not authenticated → just the outlet (the guard above redirects to /login).
+  // Not authenticated on a protected route → just the outlet (the guard above
+  // redirects to /login).
   if (!session.data) {
     return <Outlet />
   }
@@ -74,8 +78,8 @@ export function AppLayout() {
   return (
     <div className="flex h-screen">
       {/* Sidebar */}
-      <aside className="w-56 shrink-0 bg-ink-900 border-r border-ink-800 flex flex-col">
-        <div className="px-5 py-5 text-lg font-bold text-ink-100 border-b border-ink-800">
+      <aside className="w-56 shrink-0 bg-card border-r border-border flex flex-col">
+        <div className="px-5 py-5 text-lg font-bold text-foreground border-b border-border">
           Job Agent
         </div>
         <nav className="flex-1 py-3">
@@ -87,8 +91,8 @@ export function AppLayout() {
                 to={item.id}
                 className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
                   active
-                    ? "bg-ink-800 text-white border-l-2 border-accent"
-                    : "text-ink-300 hover:bg-ink-800/50 hover:text-ink-100 border-l-2 border-transparent"
+                    ? "bg-secondary text-foreground border-l-2 border-accent"
+                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground border-l-2 border-transparent"
                 }`}
               >
                 <span className="text-base">{item.icon}</span>
@@ -97,13 +101,13 @@ export function AppLayout() {
             )
           })}
         </nav>
-        <div className="p-4 border-t border-ink-800">
-          <div className="text-xs text-ink-500 mb-1 truncate">
+        <div className="p-4 border-t border-border">
+          <div className="text-xs text-muted-foreground mb-1 truncate">
             {session.data?.user?.email}
           </div>
           <button
             onClick={() => authClient.signOut().then(() => navigate({ to: "/login" }))}
-            className="text-xs text-ink-500 hover:text-red-400 transition-colors"
+            className="text-xs text-muted-foreground hover:text-destructive transition-colors"
           >
             Sign out
           </button>
@@ -111,7 +115,7 @@ export function AppLayout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto bg-background">
         <Outlet />
       </main>
     </div>

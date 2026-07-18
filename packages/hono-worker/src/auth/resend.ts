@@ -1,83 +1,68 @@
 // =============================================================================
-// Resend email transport for Better Auth magic links.
+// Resend email transport for Better Auth OTP verification codes.
 // =============================================================================
-// Thin wrapper so the sendMagicLink callback is mockable/testable and the dev
-// path (no RESEND_API_KEY) stays explicit: the link is logged to the console
-// and returned via an out-of-band channel the caller can surface for local dev.
+// Sends the 6-digit OTP code via Resend. There is NO dev-mode console fallback:
+// RESEND_API_KEY and MAIL_FROM MUST be set, otherwise this throws loudly so
+// misconfiguration surfaces immediately rather than silently swallowing codes.
+// (Verify your sending domain at https://resend.com/domains first.)
 // =============================================================================
 import { Resend } from "resend"
 
-export interface SendMagicLinkArgs {
+export interface SendOtpArgs {
   to: string
-  /** The absolute magic-link URL the user must click. */
-  url: string
-  /** The bare token (useful for a short "code" form factor). */
-  token: string
-}
-
-export interface SendMagicLinkResult {
-  sent: boolean
-  /** When sending was skipped (dev with no key), this carries the URL so the
-   * caller can surface it for click-through testing. Null when actually sent. */
-  devUrl: string | null
+  /** The 6-digit one-time code. */
+  otp: string
 }
 
 /**
- * Send a magic-link email via Resend. When `apiKey` is empty (local dev), this
- * does NOT send — it logs the link and returns it so the auth route can expose
- * it through a dev-only response header. This keeps the full flow testable with
- * zero provider setup.
+ * Send an OTP verification email via Resend. Throws if RESEND_API_KEY or
+ * MAIL_FROM is missing — by design, so a missing key is obvious at the first
+ * signup rather than a silent no-op.
  */
-export async function sendMagicLinkEmail(
-  args: SendMagicLinkArgs,
+export async function sendOtpEmail(
+  args: SendOtpArgs,
   opts: { apiKey?: string; from?: string },
-): Promise<SendMagicLinkResult> {
-  const { to, url } = args
+): Promise<void> {
+  const { to, otp } = args
   const { apiKey, from } = opts
 
-  if (!apiKey || !from) {
-    // Dev path — never send real email. The caller surfaces `devUrl`.
-    // Be explicit about WHICH value is missing so misconfiguration is obvious.
-    const missing = [
-      !apiKey && "RESEND_API_KEY",
-      !from && "MAIL_FROM",
-    ]
-      .filter(Boolean)
-      .join(" + ")
-    console.log(
-      `[auth][magic-link] dev mode (missing ${missing}). ` +
-        `Magic link for ${to}: ${url}`,
+  const missing = [!apiKey && "RESEND_API_KEY", !from && "MAIL_FROM"]
+    .filter(Boolean)
+    .join(" + ")
+  if (missing) {
+    throw new Error(
+      `[auth][otp] cannot send verification email to ${to}: missing ${missing}. ` +
+        `Set these in .dev.vars (local) or via \`wrangler secret put\` (prod), ` +
+        `and verify your sending domain at resend.com/domains.`,
     )
-    return { sent: false, devUrl: url }
   }
 
-  const resend = new Resend(apiKey)
+  const resend = new Resend(apiKey!)
   const { error } = await resend.emails.send({
-    from,
+    from: from!,
     to,
-    subject: "Your sign-in link",
-    html: magicLinkHtml(url),
-    text: `Sign in to your account:\n\n${url}\n\nThis link expires in 5 minutes.`,
+    subject: `Your verification code: ${otp}`,
+    html: otpHtml(otp),
+    text: `Your verification code is ${otp}. It expires in 5 minutes.`,
   })
   if (error) {
     // Surface the provider error so the auth callback fails loudly rather than
-    // silently swallowing a magic link that never arrived.
+    // silently swallowing a code that never arrived.
     throw new Error(`Resend send failed: ${error.message}`)
   }
-  return { sent: true, devUrl: null }
 }
 
-function magicLinkHtml(url: string): string {
+function otpHtml(otp: string): string {
+  // Large, scannable code. Branded to match the app's slate/indigo dark theme.
   return `<!DOCTYPE html>
 <html>
   <body style="font-family:-apple-system,Segoe UI,sans-serif;color:#0f172a;max-width:480px;margin:0 auto;padding:24px">
-    <h2 style="margin-top:0">Sign in</h2>
-    <p style="color:#475569">Click the button below to sign in to your account. This link expires in 5 minutes and can only be used once.</p>
-    <p style="margin:32px 0">
-      <a href="${url}" style="display:inline-block;background:#0f172a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:600">Sign in</a>
+    <h2 style="margin-top:0">Verify your email</h2>
+    <p style="color:#475569">Use the code below to finish setting up your account. It expires in 5 minutes.</p>
+    <p style="margin:32px 0;text-align:center">
+      <span style="display:inline-block;letter-spacing:0.5em;font-size:40px;font-weight:700;color:#3b82f6;background:#eff6ff;padding:20px 28px;border-radius:12px">${otp}</span>
     </p>
-    <p style="color:#94a3b8;font-size:13px">If you didn't request this link, you can ignore this email.</p>
-    <p style="color:#94a3b8;font-size:13px;word-break:break-all">Or paste this link: ${url}</p>
+    <p style="color:#94a3b8;font-size:13px">If you didn't create an account, you can ignore this email.</p>
   </body>
 </html>`
 }

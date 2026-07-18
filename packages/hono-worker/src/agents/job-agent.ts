@@ -287,6 +287,8 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
     const rows = execSql(this, `SELECT key, value FROM user_profile`)
 
     // All fields default to null; the kv table is sparse (only set keys exist).
+    // Keep this in sync with the UserProfile type (@agent-harness/shared-types)
+    // and the /api/onboarding allowlist in src/index.ts.
     const profile: Record<string, string | null> = {
       fullName: null,
       email: null,
@@ -294,10 +296,17 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
       location: null,
       links: null,
       workAuth: null,
+      seniority: null,
+      yearsExperience: null,
       targetRoles: null,
       targetLocations: null,
       skills: null,
       preferences: null,
+      workMode: null,
+      jobSearchStatus: null,
+      linkedinUrl: null,
+      githubUrl: null,
+      portfolioUrl: null,
       cv: null,
       cvFilename: null,
       cvContentType: null,

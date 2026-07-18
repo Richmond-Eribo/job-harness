@@ -8,12 +8,13 @@ import rateLimitsConfig from "../config/rate-limits.json"
  *
  * These are structural/config tests (the same pattern used by routes.test.ts)
  * because the full Better Auth + D1 stack needs the Workers runtime to
- * integration-test end-to-end. They verify:
- *   1. The magic-link endpoint is mounted at the correct path.
- *   2. The auth handler logs 5xx errors (not silent).
- *   3. The sendMagicLink callback has a try/catch (no raw throw → 500).
- *   4. The legacy login form posts to the correct Better Auth path.
- *   5. The rate-limits.json is well-formed and the rate-limiter reads it.
+ * integration-test end-to-end. They verify the email/password + email-OTP
+ * wiring is in place:
+ *   1. The auth handler is mounted on /api/auth/* and logs 5xx.
+ *   2. emailAndPassword is enabled + requires email verification.
+ *   3. The emailOTP plugin is wired (sendVerificationOTP → sendOtpEmail) with
+ *      hashed storage, 6-digit codes, and send-on-signup.
+ *   4. The rate-limits.json is well-formed and the rate-limiter reads it.
  */
 
 const src = readFileSync(join(__dirname, "..", "index.ts"), "utf-8")
@@ -38,44 +39,52 @@ describe("Better Auth mounting", () => {
   })
 })
 
-describe("Magic-link endpoint paths", () => {
-  it("the frontend uses signInMagicLink (not the wrong sendMagicLinkEmail)", () => {
-    // The frontend lives at packages/frontend (sibling of hono-worker). From
-    // this test file (packages/hono-worker/src/test/) that's three levels up
-    // to packages/, then into frontend/.
-    const loginSrc = readFileSync(
-      join(__dirname, "..", "..", "..", "frontend", "src", "routes", "LoginPage.tsx"),
+describe("Email/password + OTP wiring", () => {
+  it("enables email/password with email verification required", () => {
+    expect(authSrc).toMatch(/emailAndPassword:\s*\{/)
+    expect(authSrc).toContain("enabled: true")
+    expect(authSrc).toContain("requireEmailVerification: true")
+  })
+
+  it("uses the emailOTP plugin (not magic-link)", () => {
+    expect(authSrc).toMatch(/import\s*\{[^}]*emailOTP[^}]*\}\s*from\s*["']better-auth\/plugins["']/)
+    expect(authSrc).not.toContain("magicLink(")
+  })
+
+  it("wires sendVerificationOTP to sendOtpEmail with hashed storage + 6-digit codes", () => {
+    expect(authSrc).toContain("sendVerificationOTP")
+    expect(authSrc).toContain("sendOtpEmail")
+    expect(authSrc).toContain('storeOTP: "hashed"')
+    expect(authSrc).toMatch(/otpLength:\s*6/)
+  })
+
+  it("sends the OTP on signup and routes core verification through OTP", () => {
+    expect(authSrc).toContain("sendVerificationOnSignUp: true")
+    expect(authSrc).toContain("overrideDefaultEmailVerification: true")
+  })
+
+  it("the frontend uses email/password sign-up (not magic-link)", () => {
+    const signupSrc = readFileSync(
+      join(__dirname, "..", "..", "..", "frontend", "src", "routes", "SignupPage.tsx"),
       "utf-8",
     )
-    // The correct Better Auth client helper must be called.
-    expect(loginSrc).toContain(".signInMagicLink(")
-    // The wrong method that produced the 404 must NOT be CALLED (a comment
-    // mentioning it is fine — we check for the call syntax, not the word).
-    expect(loginSrc).not.toMatch(/\.magicLink\.sendMagicLinkEmail\s*\(/)
-  })
-
-  it("the legacy inline login form posts to /api/auth/sign-in/magic-link", () => {
-    expect(src).toContain("/api/auth/sign-in/magic-link")
-    // The old wrong path must not be present.
-    expect(src).not.toContain("/api/auth/magic-link/sign-in")
+    // The client helper for email/password sign-up. Cast-tolerant — the test
+    // checks for the call, not the typing.
+    expect(signupSrc).toMatch(/signUpEmail\s*\(/)
+    expect(signupSrc).not.toContain(".signInMagicLink(")
   })
 })
 
-describe("sendMagicLink error handling", () => {
-  it("wraps the Resend call in a try/catch (no raw throw → 500)", () => {
-    // Regression: without try/catch, a Resend failure (unverified domain, bad
-    // key) would crash the magic-link request into an empty 500.
-    expect(authSrc).toMatch(/try\s*{[\s\S]*sendMagicLinkEmail[\s\S]*}\s*catch/)
-  })
-})
-
-describe("Resend dev-fallback diagnostics", () => {
-  it("names the specific missing value (not a generic message)", () => {
-    // Regression: the old message was generic "no RESEND_API_KEY / MAIL_FROM".
-    // It should now say which one is missing so misconfiguration is obvious.
-    expect(resendSrc).toContain("RESEND_API_KEY")
-    expect(resendSrc).toContain("MAIL_FROM")
+describe("Resend OTP delivery", () => {
+  it("sendOtpEmail calls Resend with the code (no dev-mode console fallback)", () => {
+    // The old sendMagicLinkEmail had a console-log dev fallback; sendOtpEmail
+    // must NOT — it throws when the key/sender is missing, by design.
+    expect(resendSrc).toContain("sendOtpEmail")
+    expect(resendSrc).toMatch(/new Resend\(apiKey/)
+    // It surfaces missing-config loudly rather than silently logging.
     expect(resendSrc).toMatch(/missing/)
+    expect(resendSrc).toMatch(/throw new Error/)
+    expect(resendSrc).not.toMatch(/console\.log.*dev mode/)
   })
 })
 

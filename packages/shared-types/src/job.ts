@@ -61,7 +61,7 @@ export interface FollowUp {
 }
 
 export interface UserProfile {
-  // --- Personal info (collected during onboarding) ---
+  // --- Personal info (collected during onboarding/signup) ---
   fullName: string | null
   email: string | null
   phone: string | null
@@ -69,11 +69,24 @@ export interface UserProfile {
   links: string | null // JSON array: [{type:"linkedin"|"github"|"portfolio", url:string}]
   workAuth: string | null // visa/work-authorization status
 
+  // --- Career seniority & experience ---
+  // Free-text-as-string; the agent consumes these via getProfileString, so the
+  // raw value flows straight into the search + cover-letter prompts.
+  seniority: string | null // "Junior" | "Mid" | "Senior" | "Staff" | "Principal"
+  yearsExperience: string | null // number-as-string, e.g. "7"
+
   // --- Job-seeking preferences ---
   targetRoles: string | null
   targetLocations: string | null
   skills: string | null
   preferences: string | null
+  workMode: string | null // "remote" | "hybrid" | "onsite"
+  jobSearchStatus: string | null // "actively looking" | "open" | "passive"
+
+  // --- Dedicated profile links (also surfaced; `links` above is the JSON blob) ---
+  linkedinUrl: string | null
+  githubUrl: string | null
+  portfolioUrl: string | null
 
   // --- CV/résumé (bytes live in R2; this is a metadata pointer) ---
   cv: string | null // JSON: {r2Key, filename, contentType} — NOT base64

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { authClient } from "../lib/auth"
+import { Link } from "@tanstack/react-router"
 import {
   Button,
   Card,
@@ -10,38 +10,34 @@ import {
   Input,
   Label,
 } from "@agent-harness/ui"
+import { authClient } from "../lib/auth"
 
+// Email + password sign-in. (Signup with OTP verification is at /signup;
+// forgot-password will land in a follow-up.)
 export function LoginPage() {
   const [email, setEmail] = useState("")
-  const [status, setStatus] = useState<
-    | { kind: "idle" }
-    | { kind: "sending" }
-    | { kind: "sent"; devUrl?: string }
-    | { kind: "error"; message: string }
-  >({ kind: "idle" })
+  const [password, setPassword] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setStatus({ kind: "sending" })
+    setError(null)
+    setBusy(true)
     try {
-      // Better Auth magic-link sign-in. The documented client helper is
-      // `signInMagicLink` — the proxy maps it to POST /api/auth/sign-in/magic-link
-      // (the path the server registers at
-      // node_modules/better-auth/dist/plugins/magic-link/index.mjs:41).
-      // Do NOT use `magicLink.sendMagicLinkEmail` — the proxy kebab-cases that
-      // to /magic-link/send-magic-link-email, which doesn't exist → 404.
-      // Cast: TS can't infer the method without co-located server plugin types.
-      const { data, error } = await (authClient as any).signInMagicLink({
+      // Cast: signInEmail is a core email/password method (enabled server-side);
+      // the client's type inference only reflects plugin methods.
+      const { error: signInError } = await (authClient as any).signInEmail({
         email,
-        callbackURL: "/",
+        password,
       })
-      if (error) throw new Error(error.message ?? "Failed to send link")
-      // In dev (no Resend), the backend logs the link and may return it in the
-      // response. Surface it so local dev can click through.
-      const devUrl = (data as any)?.url
-      setStatus({ kind: "sent", devUrl })
+      if (signInError) throw new Error(signInError.message ?? "Sign-in failed")
+      // AppLayout's session watcher picks up the new session and routes to
+      // /dashboard (or /onboarding if not yet onboarded).
     } catch (err: any) {
-      setStatus({ kind: "error", message: err.message })
+      setError(err.message)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -49,10 +45,8 @@ export function LoginPage() {
     <div className="flex items-center justify-center min-h-screen bg-background p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-2xl">Sign in</CardTitle>
-          <CardDescription>
-            Enter your email and we'll send a magic link.
-          </CardDescription>
+          <CardTitle className="text-2xl">Welcome back</CardTitle>
+          <CardDescription>Sign in to your job-search agent.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="flex flex-col gap-4">
@@ -68,31 +62,34 @@ export function LoginPage() {
                 onChange={e => setEmail(e.target.value)}
               />
             </div>
-            <Button type="submit" disabled={status.kind === "sending"}>
-              {status.kind === "sending" ? "Sending…" : "Send magic link"}
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                required
+                autoComplete="current-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+            </div>
+            <Button type="submit" disabled={busy}>
+              {busy ? "Signing in…" : "Sign in"}
             </Button>
 
-            {status.kind === "sent" && (
-              <div className="p-3 rounded-lg bg-primary/10 text-primary text-sm break-all">
-                {status.devUrl ? (
-                  <>
-                    Dev mode —{" "}
-                    <a href={status.devUrl} className="underline">
-                      click this link
-                    </a>{" "}
-                    to sign in.
-                  </>
-                ) : (
-                  "Check your email for the sign-in link."
-                )}
-              </div>
-            )}
-            {status.kind === "error" && (
+            {error && (
               <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-                {status.message}
+                {error}
               </div>
             )}
           </form>
+
+          <p className="text-center text-sm text-muted-foreground mt-6">
+            New here?{" "}
+            <Link to="/signup" className="text-primary hover:underline">
+              Create an account
+            </Link>
+          </p>
         </CardContent>
       </Card>
     </div>

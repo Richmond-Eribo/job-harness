@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 /**
- * Unit tests for the Resend email wrapper (src/auth/resend.ts).
+ * Unit tests for the Resend OTP email wrapper (src/auth/resend.ts).
  *
- * These test the sendMagicLinkEmail function in isolation — no real network
- * calls, no Worker runtime. The Resend SDK uses global fetch internally, so we
- * mock fetch to assert:
- *   1. Dev mode (missing key OR missing from) → logs the link, never calls fetch.
- *   2. Prod mode (both set) → calls fetch with the right payload.
+ * These test the sendOtpEmail function in isolation — no real network calls,
+ * no Worker runtime. The Resend SDK uses global fetch internally, so we mock
+ * fetch to assert:
+ *   1. Missing RESEND_API_KEY or MAIL_FROM → throws loudly (NO dev fallback).
+ *   2. Both set → calls Resend with the OTP code in the payload.
  *   3. Resend API error → throws with a descriptive message.
- *   4. The diagnostic message names the SPECIFIC missing value.
+ *
+ * The old sendMagicLinkEmail had a console-log dev mode; sendOtpEmail does NOT
+ * — by design, missing config must surface immediately.
  */
 
 // Mock global fetch so Resend's SDK calls don't hit the network.
@@ -17,80 +19,74 @@ const fetchMock = vi.fn()
 vi.stubGlobal("fetch", fetchMock)
 
 // Import AFTER the fetch mock is in place.
-const { sendMagicLinkEmail } = await import("../auth/resend")
+const { sendOtpEmail } = await import("../auth/resend")
 
-describe("sendMagicLinkEmail — dev mode (no send)", () => {
-  beforeEach(() => {
-    fetchMock.mockReset()
-    vi.spyOn(console, "log").mockImplementation(() => {})
-  })
-  afterEach(() => vi.restoreAllMocks())
-
-  it("does not send when RESEND_API_KEY is missing", async () => {
-    const result = await sendMagicLinkEmail(
-      { to: "user@test.com", url: "https://app/sign-in?token=abc", token: "abc" },
-      { apiKey: undefined, from: "agent@test.com" },
-    )
-    expect(result.sent).toBe(false)
-    expect(result.devUrl).toBe("https://app/sign-in?token=abc")
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("does not send when MAIL_FROM is missing", async () => {
-    const result = await sendMagicLinkEmail(
-      { to: "user@test.com", url: "https://app/sign-in?token=abc", token: "abc" },
-      { apiKey: "re_test_key", from: undefined },
-    )
-    expect(result.sent).toBe(false)
-    expect(result.devUrl).toBe("https://app/sign-in?token=abc")
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("logs which specific value is missing", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
-    await sendMagicLinkEmail(
-      { to: "user@test.com", url: "https://app/x", token: "abc" },
-      { apiKey: "re_key", from: undefined },
-    )
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining("MAIL_FROM"),
-    )
-  })
-
-  it("logs both values when both are missing", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
-    await sendMagicLinkEmail(
-      { to: "user@test.com", url: "https://app/x", token: "abc" },
-      { apiKey: undefined, from: undefined },
-    )
-    const msg = logSpy.mock.calls[0][0] as string
-    expect(msg).toContain("RESEND_API_KEY")
-    expect(msg).toContain("MAIL_FROM")
-  })
-})
-
-describe("sendMagicLinkEmail — production mode (sends)", () => {
+describe("sendOtpEmail — missing config throws (no dev fallback)", () => {
   beforeEach(() => fetchMock.mockReset())
   afterEach(() => vi.restoreAllMocks())
 
-  it("calls Resend and returns sent=true on success", async () => {
+  it("throws when RESEND_API_KEY is missing", async () => {
+    await expect(
+      sendOtpEmail(
+        { to: "user@test.com", otp: "123456" },
+        { apiKey: undefined, from: "agent@test.com" },
+      ),
+    ).rejects.toThrow(/RESEND_API_KEY/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("throws when MAIL_FROM is missing", async () => {
+    await expect(
+      sendOtpEmail(
+        { to: "user@test.com", otp: "123456" },
+        { apiKey: "re_test_key", from: undefined },
+      ),
+    ).rejects.toThrow(/MAIL_FROM/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("names both values when both are missing", async () => {
+    await expect(
+      sendOtpEmail(
+        { to: "user@test.com", otp: "123456" },
+        { apiKey: undefined, from: undefined },
+      ),
+    ).rejects.toThrow(/RESEND_API_KEY.*MAIL_FROM|MAIL_FROM.*RESEND_API_KEY/)
+  })
+
+  it("never logs the code to the console (no dev-mode leak)", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    await expect(
+      sendOtpEmail(
+        { to: "user@test.com", otp: "123456" },
+        { apiKey: undefined, from: undefined },
+      ),
+    ).rejects.toThrow()
+    expect(logSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("sendOtpEmail — production mode (sends the code)", () => {
+  beforeEach(() => fetchMock.mockReset())
+  afterEach(() => vi.restoreAllMocks())
+
+  it("calls Resend with the OTP in the payload", async () => {
     // Resend's SDK POSTs to its API and expects { id } on success.
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ id: "email_123" }), { status: 200 }),
     )
-    const result = await sendMagicLinkEmail(
-      { to: "user@test.com", url: "https://app/sign-in?token=xyz", token: "xyz" },
+    await sendOtpEmail(
+      { to: "user@test.com", otp: "482910" },
       { apiKey: "re_test_key", from: "agent@test.com" },
     )
-    expect(result.sent).toBe(true)
-    expect(result.devUrl).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    // Verify the payload sent to Resend includes the magic-link URL.
+    // Verify the payload sent to Resend includes the OTP code.
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.to).toBe("user@test.com")
     expect(body.from).toBe("agent@test.com")
-    expect(body.html).toContain("https://app/sign-in?token=xyz")
+    expect(body.html).toContain("482910")
+    expect(body.subject).toContain("482910")
   })
 
   it("throws a descriptive error when Resend returns an error", async () => {
@@ -101,8 +97,8 @@ describe("sendMagicLinkEmail — production mode (sends)", () => {
       ),
     )
     await expect(
-      sendMagicLinkEmail(
-        { to: "user@test.com", url: "https://app/x", token: "x" },
+      sendOtpEmail(
+        { to: "user@test.com", otp: "482910" },
         { apiKey: "re_key", from: "unverified@test.com" },
       ),
     ).rejects.toThrow(/Resend send failed/)

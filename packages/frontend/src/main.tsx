@@ -11,7 +11,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import "./index.css"
 
 import { AppLayout } from "./components/AppLayout"
+import { LandingPage } from "./routes/LandingPage"
 import { LoginPage } from "./routes/LoginPage"
+import { SignupPage } from "./routes/SignupPage"
 import { OnboardingPage } from "./routes/OnboardingPage"
 import { OverviewPage } from "./routes/OverviewPage"
 import { JobsPage } from "./routes/JobsPage"
@@ -42,15 +44,29 @@ const loginRoute = createRoute({
   component: LoginPage,
 })
 
+const signupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/signup",
+  component: SignupPage,
+})
+
 const onboardingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/onboarding",
   component: OnboardingPage,
 })
 
+// `/` is the public marketing landing page. The dashboard (Overview) lives at
+// `/dashboard`; logged-in users hitting `/` are redirected there by AppLayout.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  component: LandingPage,
+})
+
+const dashboardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dashboard",
   component: OverviewPage,
 })
 
@@ -91,9 +107,11 @@ const settingsRoute = createRoute({
 })
 
 const routeTree = rootRoute.addChildren([
-  loginRoute,
-  onboardingRoute,
   indexRoute,
+  loginRoute,
+  signupRoute,
+  onboardingRoute,
+  dashboardRoute,
   jobsRoute,
   tracesRoute,
   traceDetailRoute,
