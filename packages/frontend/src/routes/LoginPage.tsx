@@ -1,5 +1,15 @@
 import { useState } from "react"
 import { authClient } from "../lib/auth"
+import {
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Input,
+  Label,
+} from "@agent-harness/ui"
 
 export function LoginPage() {
   const [email, setEmail] = useState("")
@@ -36,54 +46,55 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-ink-950">
-      <form
-        onSubmit={submit}
-        className="bg-ink-900 p-10 rounded-2xl w-full max-w-sm shadow-2xl"
-      >
-        <h1 className="text-2xl font-bold mb-2">Sign in</h1>
-        <p className="text-sm text-ink-500 mb-6">
-          Enter your email and we'll send a magic link.
-        </p>
-        <label className="block text-sm text-ink-300 mb-1.5">Email</label>
-        <input
-          type="email"
-          required
-          autoFocus
-          autoComplete="email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          className="w-full px-3 py-2.5 rounded-lg bg-ink-950 border border-ink-800 text-white mb-4 focus:outline-none focus:border-accent"
-        />
-        <button
-          type="submit"
-          disabled={status.kind === "sending"}
-          className="w-full py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-blue-600 disabled:opacity-50 transition-colors"
-        >
-          {status.kind === "sending" ? "Sending…" : "Send magic link"}
-        </button>
+    <div className="flex items-center justify-center min-h-screen bg-background p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle className="text-2xl">Sign in</CardTitle>
+          <CardDescription>
+            Enter your email and we'll send a magic link.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                required
+                autoFocus
+                autoComplete="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+              />
+            </div>
+            <Button type="submit" disabled={status.kind === "sending"}>
+              {status.kind === "sending" ? "Sending…" : "Send magic link"}
+            </Button>
 
-        {status.kind === "sent" && (
-          <div className="mt-4 p-3 rounded-lg bg-emerald-950 text-emerald-300 text-sm break-all">
-            {status.devUrl ? (
-              <>
-                Dev mode —{" "}
-                <a href={status.devUrl} className="underline">
-                  click this link
-                </a>{" "}
-                to sign in.
-              </>
-            ) : (
-              "Check your email for the sign-in link."
+            {status.kind === "sent" && (
+              <div className="p-3 rounded-lg bg-primary/10 text-primary text-sm break-all">
+                {status.devUrl ? (
+                  <>
+                    Dev mode —{" "}
+                    <a href={status.devUrl} className="underline">
+                      click this link
+                    </a>{" "}
+                    to sign in.
+                  </>
+                ) : (
+                  "Check your email for the sign-in link."
+                )}
+              </div>
             )}
-          </div>
-        )}
-        {status.kind === "error" && (
-          <div className="mt-4 p-3 rounded-lg bg-red-950 text-red-300 text-sm">
-            {status.message}
-          </div>
-        )}
-      </form>
+            {status.kind === "error" && (
+              <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
+                {status.message}
+              </div>
+            )}
+          </form>
+        </CardContent>
+      </Card>
     </div>
   )
 }

@@ -2,6 +2,43 @@
 @tailwind components;
 @tailwind utilities;
 
+/* shadcn/ui semantic tokens — mapped onto the existing slate-based "ink"
+ * dark palette so components from @agent-harness/ui match the app's look.
+ * The app is dark-first; the :root block carries the dark values directly
+ * (no light theme is shipped). Raw HSL channels let opacity modifiers
+ * (bg-primary/90) work via Tailwind's `<color>/<alpha>` syntax. */
+:root {
+  --background: 222 47% 11%; /* ink-950 #0f172a */
+  --foreground: 210 40% 90%; /* ink-100 #e2e8f0 */
+
+  --card: 222 47% 17%; /* ink-900 #1e293b */
+  --card-foreground: 210 40% 90%;
+
+  --popover: 222 47% 17%;
+  --popover-foreground: 210 40% 90%;
+
+  --primary: 217 91% 60%; /* accent #3b82f6 */
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 215 25% 27%; /* ink-800 #334155 */
+  --secondary-foreground: 210 40% 90%;
+
+  --muted: 215 25% 27%;
+  --muted-foreground: 215 16% 47%; /* ink-700 #475569 */
+
+  --accent: 215 25% 27%;
+  --accent-foreground: 210 40% 90%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 215 25% 27%; /* ink-800 */
+  --input: 215 25% 27%;
+  --ring: 217 91% 60%; /* accent */
+
+  --radius: 0.5rem;
+}
+
 /* Global resets + base styling for the dark SPA. */
 html,
 body,
