@@ -4,9 +4,32 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.workers.config.ts"
   },
   "dependencies": {
-    "@agent-harness/shared-types": "*"
+    "@agent-harness/shared-types": "*",
+    "@ai-sdk/anthropic": "^4.0.12",
+    "@ai-sdk/openai": "^4.0.11",
+    "agents": "^0.17.3",
+    "ai": "^7.0.22",
+    "better-auth": "^1.6.23",
+    "cron-parser": "^5.6.1",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.28",
+    "resend": "^6.17.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.0.0"
   }
 }

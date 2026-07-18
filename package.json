@@ -7,36 +7,19 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "concurrently -n worker,web -c blue,green \"npm --workspace @agent-harness/hono-worker run dev\" \"npm --prefix frontend run dev\"",
+    "dev:worker": "npm --workspace @agent-harness/hono-worker run dev",
     "dev:frontend": "npm --prefix frontend run dev",
     "build:frontend": "npm --prefix frontend run build",
-    "dev:all": "concurrently -n wrangler,vite -c blue,green \"wrangler dev\" \"npm --prefix frontend run dev\"",
-    "build": "npm run build:frontend && wrangler deploy --dry-run",
-    "deploy": "npm run build:frontend && wrangler deploy",
-    "tail": "wrangler tail",
-    "types": "wrangler types",
+    "build": "npm run build:frontend && npm --workspace @agent-harness/hono-worker run wrangler -- deploy --dry-run",
+    "deploy": "npm run build:frontend && npm --workspace @agent-harness/hono-worker run deploy",
+    "tail": "npm --workspace @agent-harness/hono-worker run tail",
+    "types": "npm --workspace @agent-harness/hono-worker run types",
     "test": "npm run test:unit",
-    "test:unit": "vitest run",
-    "test:integration": "vitest run --config vitest.workers.config.ts"
-  },
-  "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.12",
-    "@ai-sdk/openai": "^4.0.11",
-    "agents": "^0.17.3",
-    "ai": "^7.0.22",
-    "better-auth": "^1.6.23",
-    "cron-parser": "^5.6.1",
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.28",
-    "resend": "^6.17.2",
-    "zod": "^4.4.3"
+    "test:unit": "npm --workspace @agent-harness/hono-worker run test:unit",
+    "test:integration": "npm --workspace @agent-harness/hono-worker run test:integration"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.4",
-    "@cloudflare/workers-types": "^4.20250620.0",
-    "concurrently": "^10.0.3",
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.10",
-    "wrangler": "^4.0.0"
+    "concurrently": "^10.0.3"
   }
 }
