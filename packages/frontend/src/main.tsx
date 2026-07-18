@@ -11,9 +11,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import "./index.css"
 
 import { AppLayout } from "./components/AppLayout"
+import { ErrorBoundary } from "./components/ErrorBoundary"
+import { Toaster } from "@agent-harness/ui"
 import { LandingPage } from "./routes/LandingPage"
 import { LoginPage } from "./routes/LoginPage"
 import { SignupPage } from "./routes/SignupPage"
+import { ForgotPasswordPage } from "./routes/ForgotPasswordPage"
 import { OnboardingPage } from "./routes/OnboardingPage"
 import { OverviewPage } from "./routes/OverviewPage"
 import { JobsPage } from "./routes/JobsPage"
@@ -48,6 +51,12 @@ const signupRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/signup",
   component: SignupPage,
+})
+
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/forgot-password",
+  component: ForgotPasswordPage,
 })
 
 const onboardingRoute = createRoute({
@@ -110,6 +119,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
   signupRoute,
+  forgotPasswordRoute,
   onboardingRoute,
   dashboardRoute,
   jobsRoute,
@@ -135,8 +145,11 @@ declare module "@tanstack/react-router" {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+        <Toaster richColors position="top-right" />
+      </QueryClientProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 )

@@ -14,7 +14,7 @@ const NAV = [
 ] as const
 
 // Routes that render WITHOUT the sidebar shell (public/auth surfaces).
-const SHELL_LESS = new Set(["/", "/login", "/signup", "/onboarding"])
+const SHELL_LESS = new Set(["/", "/login", "/signup", "/forgot-password", "/onboarding"])
 
 export function AppLayout() {
   const session = authClient.useSession()
@@ -32,7 +32,10 @@ export function AppLayout() {
     const user = session.data?.user as any
     const onboardingDone = user?.onboardingComplete !== false
     const onPublicRoot = pathname === "/"
-    const onAuth = pathname === "/login" || pathname === "/signup"
+    const onAuth =
+      pathname === "/login" ||
+      pathname === "/signup" ||
+      pathname === "/forgot-password"
     const onOnboarding = pathname === "/onboarding"
 
     if (!session.data) {
