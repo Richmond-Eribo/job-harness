@@ -40,10 +40,11 @@ describe("Better Auth mounting", () => {
 
 describe("Magic-link endpoint paths", () => {
   it("the frontend uses signInMagicLink (not the wrong sendMagicLinkEmail)", () => {
-    // frontend/ lives at the monorepo root (sibling of packages/). From this
-    // test file (packages/hono-worker/src/test/) that's four levels up.
+    // The frontend lives at packages/frontend (sibling of hono-worker). From
+    // this test file (packages/hono-worker/src/test/) that's three levels up
+    // to packages/, then into frontend/.
     const loginSrc = readFileSync(
-      join(__dirname, "..", "..", "..", "..", "frontend", "src", "routes", "LoginPage.tsx"),
+      join(__dirname, "..", "..", "..", "frontend", "src", "routes", "LoginPage.tsx"),
       "utf-8",
     )
     // The correct Better Auth client helper must be called.

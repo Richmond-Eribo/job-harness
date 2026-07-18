@@ -31,11 +31,12 @@ export default defineConfig({
     },
   },
   build: {
-    // Output into the existing Workers Assets directory (./public) under an
-    // /app subpath so the Vite bundle coexists with the legacy dashboard's
-    // static files without clobbering them. Workers Assets serves from ./public,
-    // so both legacy (/css, /js) and new (/app/*) assets resolve from one place.
-    outDir: "../public/app",
+    // Output into the Hono worker's Workers Assets directory under an /app
+    // subpath so the Vite bundle coexists with the legacy dashboard's static
+    // files without clobbering them. Workers Assets serves from the worker's
+    // ./public, so both legacy (/css, /js) and new (/app/*) assets resolve
+    // from one place. Path is relative to this package (packages/frontend).
+    outDir: "../hono-worker/public/app",
     sourcemap: true,
   },
 })

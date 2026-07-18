@@ -1,5 +1,5 @@
 {
-  "name": "agent-harness-frontend",
+  "name": "@agent-harness/frontend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agent-harness/shared-types": "*",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.95.0",
     "better-auth": "^1.6.23",

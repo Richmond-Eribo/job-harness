@@ -7,10 +7,10 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n worker,web -c blue,green \"npm --workspace @agent-harness/hono-worker run dev\" \"npm --prefix frontend run dev\"",
+    "dev": "concurrently -n worker,web -c blue,green \"npm --workspace @agent-harness/hono-worker run dev\" \"npm --workspace @agent-harness/frontend run dev\"",
     "dev:worker": "npm --workspace @agent-harness/hono-worker run dev",
-    "dev:frontend": "npm --prefix frontend run dev",
-    "build:frontend": "npm --prefix frontend run build",
+    "dev:frontend": "npm --workspace @agent-harness/frontend run dev",
+    "build:frontend": "npm --workspace @agent-harness/frontend run build",
     "build": "npm run build:frontend && npm --workspace @agent-harness/hono-worker run wrangler -- deploy --dry-run",
     "deploy": "npm run build:frontend && npm --workspace @agent-harness/hono-worker run deploy",
     "tail": "npm --workspace @agent-harness/hono-worker run tail",
