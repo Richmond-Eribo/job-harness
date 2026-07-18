@@ -49,11 +49,6 @@ export interface Env {
   // stores only a pointer {r2Key, filename, contentType}; the bytes live here.
   CV_BUCKET: R2Bucket
 
-  // Workers Assets binding — serves static files from ./public (the legacy
-  // dashboard's CSS/JS) AND ./public/app (the built Vite SPA). Used by the
-  // /app route to serve the SPA shell.
-  ASSETS: Fetcher
-
   // Managed headless browser binding (@cloudflare/playwright). Optional — only
   // present on the paid Workers plan. When absent, the relay targets the
   // extension (live) target only. Typed as a bare Fetcher so tsc doesn't choke

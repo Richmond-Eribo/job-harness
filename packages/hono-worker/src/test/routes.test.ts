@@ -1,30 +1,23 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect } from "vitest"
 
 /**
  * Integration tests for the Hono routes in src/index.ts.
- * We test the route structure and auth middleware behavior.
+ *
+ * After the pure-REST cutover (TS-3), this worker serves NO HTML — the UI is a
+ * separate TanStack Start app. These tests verify the route surface is REST +
+ * WS + auth only, and that the HTML handlers + their imports are gone.
  */
 
-// Mock environment
-const createMockEnv = () => ({
-  HARNESS: {} as any,
-  JOB_AGENT: {} as any,
-  LLM_API_KEY: "test-key",
-  MAX_STEPS: "100",
-  DASHBOARD_TOKEN: "test-token",
-})
+function readSrc(): string {
+  const fs = require("fs")
+  const path = require("path")
+  return fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
+}
 
 describe("Route structure", () => {
   it("defines all expected API endpoints", () => {
-    // This test verifies the route structure by checking the source file
-    // contains the expected route definitions
-    const fs = require("fs")
-    const path = require("path")
-    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
-
-    // Verify all expected routes exist
+    const src = readSrc()
     const expectedRoutes = [
-      'app.get("/"',
       'app.get("/api/status"',
       'app.post("/api/start"',
       'app.post("/api/stop"',
@@ -48,90 +41,88 @@ describe("Route structure", () => {
       'app.put("/api/profile"',
       'app.get("/api/follow-ups"',
     ]
-
     for (const route of expectedRoutes) {
       expect(src).toContain(route)
     }
   })
 
   it("has session-cookie auth on all routes", () => {
-    const fs = require("fs")
-    const path = require("path")
-    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
-
-    // Stage 4 replaced the legacy shared bearer token with Better Auth session
-    // cookies. requireAuth runs on "*" and gates both HTML + /api/* routes.
+    const src = readSrc()
+    // requireAuth runs on "*" and gates the /api/* routes. Better Auth's own
+    // endpoints are mounted before the gate.
     expect(src).toContain('app.use("*", requireAuth)')
     expect(src).toContain("requireAuth")
-    // Better Auth's own endpoints are mounted before the gate.
     expect(src).toContain("/api/auth/")
     expect(src).toContain("getAuth(c)")
   })
 
-  it("has CORS middleware", () => {
-    const fs = require("fs")
-    const path = require("path")
-    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
-
-    expect(src).toContain("app.use(")
+  it("has CORS middleware with credentials", () => {
+    const src = readSrc()
+    // Cross-origin SPA needs credentials:true (can't use origin:"*").
     expect(src).toContain("cors(")
+    expect(src).toContain("credentials: true")
+  })
+})
+
+describe("Pure-REST cutover (no HTML)", () => {
+  it("does NOT serve any HTML pages or the SPA shell", () => {
+    const src = readSrc()
+    // The HTML handlers were removed in TS-3. If any of these reappear it means
+    // someone re-introduced server-rendered UI, which contradicts the
+    // standalone-frontend architecture.
+    expect(src).not.toContain('app.get("/",')
+    expect(src).not.toContain('app.get("/legacy"')
+    expect(src).not.toContain('app.get("/jobs"')
+    expect(src).not.toContain('app.get("/traces"')
+    expect(src).not.toContain('app.get("/logs"')
+    expect(src).not.toContain('app.get("/memory"')
+    expect(src).not.toContain('app.get("/settings"')
+    expect(src).not.toContain('app.get("/login"')
+    expect(src).not.toContain('app.get("/onboarding"')
+    expect(src).not.toContain('app.get("/app"')
+  })
+
+  it("does NOT import the SSR page components or renderer", () => {
+    const src = readSrc()
+    // The views/ SSR imports are dead after the cutover.
+    expect(src).not.toContain('from "./views/Layout"')
+    expect(src).not.toContain('from "./views/renderDashboard"')
+    expect(src).not.toContain('from "./views/pages/')
+    expect(src).not.toContain("renderPage")
+  })
+
+  it("does NOT reference the ASSETS binding", () => {
+    const src = readSrc()
+    // No static-file serving — the frontend is a separate deploy.
+    expect(src).not.toContain("c.env.ASSETS")
+    expect(src).not.toContain("env.ASSETS")
   })
 })
 
 describe("Auth middleware logic", () => {
-  it("rejects requests without Bearer token", async () => {
-    // Simulate the auth check logic
-    const DASHBOARD_TOKEN = "test-token"
-    const authHeader: string | undefined = undefined
-    const token = authHeader?.replace("Bearer ", "")
-    const isUnauthorized = !token || token !== DASHBOARD_TOKEN
-    expect(isUnauthorized).toBe(true)
-  })
-
-  it("rejects requests with wrong token", async () => {
-    const DASHBOARD_TOKEN = "test-token"
-    const authHeader = "Bearer wrong-token"
-    const token = authHeader?.replace("Bearer ", "")
-    const isUnauthorized = !token || token !== DASHBOARD_TOKEN
-    expect(isUnauthorized).toBe(true)
-  })
-
-  it("accepts requests with correct token", async () => {
-    const DASHBOARD_TOKEN = "test-token"
-    const authHeader = "Bearer test-token"
-    const token = authHeader?.replace("Bearer ", "")
-    const isUnauthorized = !token || token !== DASHBOARD_TOKEN
-    expect(isUnauthorized).toBe(false)
-  })
-})
-
-describe("Dashboard route", () => {
-  it("serves dashboard at root path", () => {
+  it("rejects requests without a session (401 JSON, no HTML redirect)", () => {
+    // requireAuth lives in src/auth/require-auth.ts. After the pure-REST cutover
+    // there are no HTML redirects — the frontend handles routing on 401/428.
     const fs = require("fs")
     const path = require("path")
-    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
-
-    // Pages-as-routes: one route per page, all going through renderPage.
-    expect(src).toContain('app.get("/"')
-    expect(src).toContain("renderPage")
-    expect(src).toContain('app.get("/jobs"')
-    expect(src).toContain('app.get("/traces"')
-    expect(src).toContain('app.get("/logs"')
-    expect(src).toContain('app.get("/memory"')
-    expect(src).toContain('app.get("/settings"')
+    const authSrc = fs.readFileSync(
+      path.join(__dirname, "..", "auth", "require-auth.ts"),
+      "utf-8",
+    )
+    expect(authSrc).toContain("{ error: \"Unauthorized\" }, 401")
+    expect(authSrc).toContain("{ error: \"Onboarding required\" }, 428")
+    // No HTML redirects remain.
+    expect(authSrc).not.toContain('c.redirect("/login")')
+    expect(authSrc).not.toContain('c.redirect("/onboarding")')
   })
 })
 
 describe("Cron scheduled handler", () => {
   it("has a scheduled handler that forwards to harness.wake()", () => {
-    const fs = require("fs")
-    const path = require("path")
-    const src = fs.readFileSync(path.join(__dirname, "..", "index.ts"), "utf-8")
-
+    const src = readSrc()
     expect(src).toContain("async scheduled(")
-    // The watchdog is now a thin forwarder. The decision logic (schedule check,
-    // start) lives INSIDE harness.wake() — not in the Worker — so we assert
-    // the new contract rather than the old three-RPC sequence.
+    // The watchdog is a thin forwarder. The decision logic (schedule check,
+    // start) lives INSIDE harness.wake() — not in the Worker.
     expect(src).toContain("harness.wake()")
     // The old chatty sequence must be gone from the Worker.
     expect(src).not.toContain("harness.checkSchedulesDue()")

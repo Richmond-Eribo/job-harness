@@ -65,7 +65,7 @@ describe("Email/password + OTP wiring", () => {
 
   it("the frontend uses email/password sign-up (not magic-link)", () => {
     const signupSrc = readFileSync(
-      join(__dirname, "..", "..", "..", "frontend", "src", "routes", "SignupPage.tsx"),
+      join(__dirname, "..", "..", "..", "frontend", "src", "pages", "SignupPage.tsx"),
       "utf-8",
     )
     // The client helper for email/password sign-up. Cast-tolerant — the test

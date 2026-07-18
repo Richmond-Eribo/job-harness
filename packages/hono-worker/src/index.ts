@@ -1,12 +1,14 @@
 // =============================================================================
-// Worker Entry Point — Hono router + scheduled watchdog
+// Worker Entry Point — pure REST API + WebSocket relay + scheduled watchdog
 // =============================================================================
-// All HTTP is served by a single Hono app:
-//   GET  /                 → dashboard HTML (public)
-//   /api/*                 → JSON API (CORS + Bearer-token auth via middleware)
-//   WebSocket upgrades     → routed to Durable Object agents (routeAgentRequest)
+// This worker is the BACKEND. It serves NO HTML — the UI is a standalone
+// TanStack Start app on a separate origin that calls these endpoints over CORS
+// (see packages/frontend). HTTP surface:
+//   /api/auth/*  → Better Auth (sign-up/in/out, OTP, session)
+//   /api/*       → JSON REST API (CORS + session-cookie auth via requireAuth)
+//   /browser/relay → WebSocket upgrade routed to the user's BROWSER_RELAY DO
 //
-// scheduled() is the cron watchdog that self-heals the Harness.
+// scheduled() is the cron watchdog that self-heals each user's Harness.
 //
 // v1 (Cloudflare FREE plan): Durable Objects + cron only — NO container/sandbox.
 // =============================================================================
@@ -25,15 +27,6 @@ import {
   issueExtensionTokenRoute,
   userIdFromRelayRequest,
 } from "./auth/extension-token"
-import { renderer } from "./views/Layout"
-import { renderPage } from "./views/renderDashboard"
-import OverviewPage from "./views/pages/Overview"
-import JobsPage from "./views/pages/Jobs"
-import TracesPage from "./views/pages/Traces"
-import TracePage from "./views/pages/Trace"
-import LogsPage from "./views/pages/Logs"
-import MemoryPage from "./views/pages/Memory"
-import SettingsPage from "./views/pages/Settings"
 import { getAgents, getHarnessForUser } from "./utils/get-agents"
 
 // Re-export all Durable Object classes (required by Cloudflare)
@@ -104,95 +97,10 @@ app.on(["GET", "POST"], "/api/auth/*", async c => {
 // /login, /signup, static assets, /browser/relay (auth'd via extension token).
 app.use("*", requireAuth)
 
-// ── Login page ───────────────────────────────────────────────────────────
-// Minimal email → magic-link form. Exempt from requireAuth (see above). The
-// form POSTs to Better Auth's magic-link endpoint (/api/auth/magic-link/sign-
-// in) which sends the link and returns here. The full login UI ships with the
-// Vite frontend in Stage 8; this is the functional placeholder.
-app.get("/login", c =>
-  c.html(LOGIN_PAGE_HTML),
-)
-
-// ── Vite SPA entry point ─────────────────────────────────────────────────
-// The new Vite + @tanstack/react-router frontend. Built into ./public/app/
-// (see frontend/vite.config.ts) and served via the ASSETS binding. The SPA
-// uses hash-based routing, so this single entry covers all client routes
-// (#/jobs, #/traces, etc.). Exempt from requireAuth (the SPA does its own
-// auth guards client-side; the /api calls it makes are still session-gated).
-app.get("/app", async c => {
-  const asset = await c.env.ASSETS.fetch(new URL("/app/index.html", c.req.url))
-  return new Response(asset.body, asset)
-})
-app.get("/app/*splat", async c => {
-  // Serve any built asset under /app/ (JS/CSS chunks) directly from ASSETS.
-  const asset = await c.env.ASSETS.fetch(new URL(c.req.path, c.req.url))
-  return new Response(asset.body, asset)
-})
-const LOGIN_PAGE_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sign in</title>
-<style>
-  body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-  .card{background:#1e293b;padding:40px;border-radius:16px;max-width:380px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
-  h1{margin:0 0 8px;font-size:24px;font-weight:700}
-  p{color:#94a3b8;margin:0 0 24px;font-size:14px}
-  label{display:block;font-size:13px;color:#cbd5e1;margin-bottom:6px}
-  input{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:15px;margin-bottom:16px}
-  button{width:100%;padding:12px;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
-  button:hover{background:#2563eb}
-  .msg{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;display:none}
-  .msg.ok{background:#064e3b;color:#6ee7b7;display:block}
-  .msg.err{background:#7f1d1d;color:#fca5a5;display:block}
-</style>
-</head>
-<body>
-<form class="card" id="login-form">
-  <h1>Sign in</h1>
-  <p>Enter your email and we'll send a magic link.</p>
-  <label for="email">Email</label>
-  <input type="email" id="email" name="email" required autocomplete="email" autofocus />
-  <button type="submit">Send magic link</button>
-  <div class="msg" id="msg"></div>
-</form>
-<script>
-const form = document.getElementById('login-form');
-const msg = document.getElementById('msg');
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const email = document.getElementById('email').value;
-  msg.className = 'msg';
-  msg.textContent = 'Sending...';
-  try {
-    const res = await fetch('/api/auth/sign-in/magic-link', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ email, callbackURL: '/' })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.message || 'Failed');
-    msg.className = 'msg ok';
-    // Better Auth returns the link in dev (no email provider). Show it.
-    msg.textContent = data?.url
-      ? 'Dev mode — click this link: ' + data.url
-      : 'Check your email for the sign-in link.';
-  } catch (err) {
-    msg.className = 'msg err';
-    msg.textContent = err.message;
-  }
-});
-</script>
-</body>
-</html>`
-
-// ── Onboarding page + completion endpoint ────────────────────────────────
-// A user who hasn't completed profile + CV setup is redirected here by the
-// onboarding gate. This is the functional placeholder; the full onboarding UI
-// ships with the Vite frontend in Stage 8. The completion endpoint writes the
-// profile + marks onboarding_complete = 1 in D1.
-app.get("/onboarding", c => c.html(ONBOARDING_PAGE_HTML))
+// ── Onboarding completion endpoint ───────────────────────────────────────
+// A user who hasn't completed profile + CV setup is redirected to /onboarding
+// by the frontend (the gate lives client-side now). This endpoint writes the
+// profile fields + marks onboarding_complete = 1 in D1.
 
 app.post("/api/onboarding", async c => {
   const userId = c.var.userId
@@ -240,215 +148,7 @@ app.post("/api/onboarding", async c => {
     return c.json({ error: `Failed to mark onboarding: ${error.message}` }, 500)
   }
 
-  return c.json({ message: "Onboarding complete", redirect: "/" })
-})
-
-const ONBOARDING_PAGE_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Complete your profile</title>
-<style>
-  body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
-  .wrap{max-width:560px;margin:0 auto}
-  h1{font-size:24px;margin:0 0 8px}
-  p.sub{color:#94a3b8;margin:0 0 24px;font-size:14px}
-  .field{margin-bottom:16px}
-  label{display:block;font-size:13px;color:#cbd5e1;margin-bottom:6px}
-  input,textarea{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:14px}
-  textarea{min-height:60px;resize:vertical}
-  button{padding:12px 24px;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
-  button:hover{background:#2563eb}
-  .msg{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;display:none}
-  .msg.ok{background:#064e3b;color:#6ee7b7;display:block}
-  .msg.err{background:#7f1d1d;color:#fca5a5;display:block}
-</style>
-</head>
-<body>
-<form class="wrap" id="ob-form">
-  <h1>Complete your profile</h1>
-  <p class="sub">This info powers your job search agent. You can edit it later in Settings.</p>
-  <div class="field"><label>Full name</label><input id="fullName" required /></div>
-  <div class="field"><label>Email</label><input id="email" type="email" required /></div>
-  <div class="field"><label>Phone</label><input id="phone" /></div>
-  <div class="field"><label>Location</label><input id="location" /></div>
-  <div class="field"><label>Target roles</label><input id="targetRoles" placeholder="e.g. Senior TypeScript Engineer" /></div>
-  <div class="field"><label>Target locations</label><input id="targetLocations" placeholder="e.g. Remote, London" /></div>
-  <div class="field"><label>Skills (comma-separated)</label><textarea id="skills"></textarea></div>
-  <div class="field"><label>Work authorization</label><input id="workAuth" placeholder="e.g. EU citizen, requires sponsorship" /></div>
-  <div class="field"><label>CV upload (PDF/DOCX)</label><input id="cv-file" type="file" accept=".pdf,.doc,.docx" /></div>
-  <button type="submit">Complete setup</button>
-  <div class="msg" id="msg"></div>
-</form>
-<script>
-const form = document.getElementById('ob-form');
-const msg = document.getElementById('msg');
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  msg.className = 'msg';
-  msg.textContent = 'Saving...';
-  try {
-    // 1. Upload CV if selected (R2).
-    const fileInput = document.getElementById('cv-file');
-    if (fileInput.files[0]) {
-      const f = fileInput.files[0];
-      const upRes = await fetch('/api/profile/cv?filename=' + encodeURIComponent(f.name), {
-        method: 'POST',
-        headers: {'Content-Type': f.type},
-        body: f
-      });
-      if (!upRes.ok) throw new Error('CV upload failed');
-    }
-    // 2. Save profile fields + mark onboarding complete.
-    const body = {
-      fullName: document.getElementById('fullName').value,
-      email: document.getElementById('email').value,
-      phone: document.getElementById('phone').value,
-      location: document.getElementById('location').value,
-      targetRoles: document.getElementById('targetRoles').value,
-      targetLocations: document.getElementById('targetLocations').value,
-      skills: document.getElementById('skills').value,
-      workAuth: document.getElementById('workAuth').value,
-    };
-    const res = await fetch('/api/onboarding', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || 'Failed');
-    window.location.href = '/';
-  } catch (err) {
-    msg.className = 'msg err';
-    msg.textContent = err.message;
-  }
-});
-</script>
-</body>
-</html>`
-
-// =============================================================================
-// Pages — each route is its own URL, server-renders only what that page needs.
-// The browser's back/forward + Cmd-click-into-new-tab work for free because
-// these are real HTTP routes with real URLs (Vercel Web Interface Guidelines:
-// "links use <a>/<Link>", "URL reflects state").
-//
-// ROUTE SHAPE NOTE: Each page route is `app.get(path, renderer, handler)`.
-// Hono's jsxRenderer is a route-level middleware — it MUST be attached inline
-// per route (or to a sub-app via app.route()) to set up `c.render()`. Putting
-// it on `app.use()` does NOT reliably fire for GET handlers in current Hono
-// version — the renderer must run before the handler so c.render exists,
-// and the per-route `app.get(path, renderer, handler)` form is the
-// documented pattern (cf. https://hono.dev/docs/middleware/builtin/jsx-renderer).
-// =============================================================================
-
-// ── Public marketing landing page (SPA shell) ────────────────────────────
-// `/` is the front door: it serves the Vite SPA's index.html via the ASSETS
-// binding. The SPA's hash router shows the public LandingPage at `#/` for
-// logged-out visitors and redirects to `#/dashboard` for logged-in ones.
-// Auth-gating happens client-side; the Worker keeps `/` public (see
-// require-auth.ts PUBLIC_PREFIXES) so unauthenticated visitors see marketing.
-app.get("/", async c => {
-  const asset = await c.env.ASSETS.fetch(new URL("/app/index.html", c.req.url))
-  return new Response(asset.body, asset)
-})
-
-// ── Legacy SSR dashboard (Overview) ──────────────────────────────────────
-// The server-rendered overview moved off `/` (now the marketing page) to
-// `/legacy` so the SPA is the primary UI. Kept for reference/fallback; the
-// other SSR pages (/jobs, /traces, …) stay at their original paths.
-app.get("/legacy", renderer, async c => {
-  const { harness, jobAgent } = await getAgents(c.env, c.var.userId)
-  // The overview is job-first: pipeline stats + listings + follow-ups are the
-  // primary data; agent status + token trend are demoted to the bottom. Each
-  // fetch is independently guarded so one slow/failing DO call doesn't blank
-  // the whole page.
-  const [status, turns, tokensByDay, summaries, pipeline, followUps] =
-    await Promise.all([
-      harness.getFullStatus().catch(() => null),
-      harness.getTurnTokenStats().catch(() => null),
-      harness.getTokensByDay(14).catch(() => []),
-      harness.getDailySummaries(5).catch(() => []),
-      jobAgent.getPipeline().catch(() => ({
-        listings: [],
-        stats: { total: 0, byStatus: {}, dueFollowUps: 0 },
-      })),
-      jobAgent.getDueFollowUps().catch(() => []),
-    ])
-  return renderPage(c, "overview", OverviewPage, {
-    status,
-    turns,
-    tokensByDay,
-    summaries,
-    pipeline,
-    followUps,
-  })
-})
-
-app.get("/jobs", renderer, async c => {
-  const { jobAgent } = await getAgents(c.env, c.var.userId)
-  let pipeline: {
-    listings: any[]
-    stats: { total: number; byStatus: Record<string, number> }
-  } = { listings: [], stats: { total: 0, byStatus: {} } }
-  try {
-    pipeline = await jobAgent.getPipeline()
-  } catch (_) {}
-  return renderPage(c, "jobs", JobsPage, {
-    listings: pipeline.listings ?? [],
-    stats: pipeline.stats,
-  })
-})
-
-app.get("/traces", renderer, async c => {
-  const { harness } = await getAgents(c.env, c.var.userId)
-  let runs: any[] = []
-  try {
-    runs = await harness.listRuns(30)
-  } catch (_) {}
-  return renderPage(c, "traces", TracesPage, { runs })
-})
-
-// Deep-linkable single-run transcript. A real route (not a JS-only sheet) so
-// Cmd-click opens a new tab and the back button returns to the run list. The
-// page server-renders the run header; the heavy event stream is hydrated
-// client-side from /api/runs/:runId (which returns run + events in one call).
-app.get("/traces/:runId", renderer, async c => {
-  const runId = c.req.param("runId")
-  const { harness } = await getAgents(c.env, c.var.userId)
-  let run: any = null
-  try {
-    run = await harness.getRun(runId)
-  } catch (_) {}
-  return renderPage(c, "traces", TracePage, { runId, run })
-})
-
-app.get("/logs", renderer, async c => {
-  const { harness } = await getAgents(c.env, c.var.userId)
-  let log: any[] = []
-  try {
-    log = await harness.getLog(50)
-  } catch (_) {}
-  return renderPage(c, "logs", LogsPage, { log })
-})
-
-app.get("/memory", renderer, async c => {
-  const { harness } = await getAgents(c.env, c.var.userId)
-  const [userMemory, agentMemory] = await Promise.all([
-    harness.getAllUserMemory().catch(() => []),
-    harness.getAllMemory().catch(() => []),
-  ])
-  return renderPage(c, "memory", MemoryPage, { userMemory, agentMemory })
-})
-
-app.get("/settings", renderer, async c => {
-  const { harness } = await getAgents(c.env, c.var.userId)
-  const [config, schedules] = await Promise.all([
-    harness.getConfig().catch(() => ({})),
-    harness.listAppSchedules().catch(() => []),
-  ])
-  return renderPage(c, "settings", SettingsPage, { config, schedules })
+  return c.json({ message: "Onboarding complete", redirect: "/dashboard" })
 })
 
 // =============================================================================

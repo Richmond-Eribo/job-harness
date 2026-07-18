@@ -39,12 +39,9 @@
     },
   },
 
-  // Static dashboard assets (CSS + client JS) served by the platform from ./public.
-  // Keeps HTML payload small and lets browsers cache the assets independently.
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-  },
+  // NOTE: no `assets` binding — this worker serves NO static files. The UI is a
+  // separate TanStack Start app (packages/frontend). Any legacy ./public assets
+  // are unused after the pure-REST cutover.
 
   // D1 — global auth/user directory (Better Auth tables). A relational,
   // queryable store is required for the user/session/verification registry
