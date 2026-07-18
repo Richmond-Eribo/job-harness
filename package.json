@@ -11,7 +11,7 @@
     "dev:worker": "npm --workspace @agent-harness/hono-worker run dev",
     "dev:frontend": "npm --workspace @agent-harness/frontend run dev",
     "build:frontend": "npm --workspace @agent-harness/frontend run build",
-    "build": "npm run build:frontend && npm --workspace @agent-harness/hono-worker run wrangler -- deploy --dry-run",
+    "build": "npm run build:frontend && npm --workspace @agent-harness/hono-worker exec wrangler -- deploy --dry-run",
     "deploy": "npm run build:frontend && npm --workspace @agent-harness/hono-worker run deploy",
     "tail": "npm --workspace @agent-harness/hono-worker run tail",
     "types": "npm --workspace @agent-harness/hono-worker run types",

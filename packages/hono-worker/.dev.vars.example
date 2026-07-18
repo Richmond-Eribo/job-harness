@@ -6,14 +6,14 @@
 # environment-specific.
 #
 # Non-secret knobs live in:
-#   - src/llm-config.json              (provider, model, generation params)
-#   - src/observability-config.json    (trace capture toggles)
-#   - wrangler.jsonc vars              (MAX_STEPS, CAPTURE_TRACE)
+#   - src/config/llm-config.json           (provider, model, generation params)
+#   - src/config/observability-config.json (trace capture toggles)
+#   - wrangler.jsonc vars                  (MAX_STEPS, CAPTURE_TRACE)
 # =========================================================================
 
 # --- LLM ---
-# Secret only. Provider/model/url + generation params live in src/llm-config.json.
-# Get a key from https://z.ai/ (GLM) or swap provider in llm-config.json + key here.
+# Secret only. Provider/model/url + generation params live in src/config/llm-config.json.
+# Get a key from https://z.ai.com/ (GLM) or swap provider in llm-config.json + key here.
 LLM_API_KEY=""
 
 # --- Dashboard ---
