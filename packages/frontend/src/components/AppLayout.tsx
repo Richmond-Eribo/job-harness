@@ -1,17 +1,28 @@
 import { useEffect } from "react"
 import { Link, Outlet, useRouterState, useNavigate } from "@tanstack/react-router"
+import {
+  LayoutDashboard,
+  Briefcase,
+  Search,
+  ScrollText,
+  Brain,
+  Settings,
+  LogOut,
+  type LucideIcon,
+} from "lucide-react"
 import { authClient } from "../lib/auth"
+import { Skeleton } from "@agent-harness/ui"
 
 // The nav entries. `/` (marketing) is public; the app shell routes start at
-// /dashboard.
-const NAV = [
-  { id: "/dashboard", label: "Overview", icon: "📊" },
-  { id: "/jobs", label: "Jobs", icon: "💼" },
-  { id: "/traces", label: "Traces", icon: "🔍" },
-  { id: "/logs", label: "Logs", icon: "📋" },
-  { id: "/memory", label: "Memory", icon: "🧠" },
-  { id: "/settings", label: "Settings", icon: "⚙️" },
-] as const
+// /dashboard. Icons are lucide components (consistent, scalable, themeable).
+const NAV: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { id: "/jobs", label: "Jobs", icon: Briefcase },
+  { id: "/traces", label: "Traces", icon: Search },
+  { id: "/logs", label: "Logs", icon: ScrollText },
+  { id: "/memory", label: "Memory", icon: Brain },
+  { id: "/settings", label: "Settings", icon: Settings },
+]
 
 // Routes that render WITHOUT the sidebar shell (public/auth surfaces).
 const SHELL_LESS = new Set(["/", "/login", "/signup", "/forgot-password", "/onboarding"])
@@ -57,12 +68,23 @@ export function AppLayout() {
     }
   }, [session.isPending, session.data, pathname, navigate])
 
-  // While the session is loading, show a minimal loader on app routes only
+  // While the session is loading, show a minimal skeleton on app routes only
   // (public surfaces render immediately for a snappy first paint).
   if (session.isPending && !SHELL_LESS.has(pathname)) {
     return (
-      <div className="flex items-center justify-center h-screen text-muted-foreground">
-        Loading…
+      <div className="flex h-screen bg-background">
+        <div className="w-56 shrink-0 bg-card border-r border-border flex flex-col gap-2 p-4">
+          <Skeleton className="h-6 w-24" />
+          <div className="flex flex-col gap-2 mt-4">
+            {NAV.map(n => (
+              <Skeleton key={n.id} className="h-8 w-full" />
+            ))}
+          </div>
+        </div>
+        <div className="flex-1 p-6 flex flex-col gap-4">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-32 w-full" />
+        </div>
       </div>
     )
   }
@@ -88,30 +110,32 @@ export function AppLayout() {
         <nav className="flex-1 py-3">
           {NAV.map(item => {
             const active = pathname === item.id
+            const Icon = item.icon
             return (
               <Link
                 key={item.id}
                 to={item.id}
                 className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
                   active
-                    ? "bg-secondary text-foreground border-l-2 border-accent"
+                    ? "bg-secondary text-foreground border-l-2 border-primary"
                     : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground border-l-2 border-transparent"
                 }`}
               >
-                <span className="text-base">{item.icon}</span>
+                <Icon className="size-4" />
                 {item.label}
               </Link>
             )
           })}
         </nav>
         <div className="p-4 border-t border-border">
-          <div className="text-xs text-muted-foreground mb-1 truncate">
+          <div className="text-xs text-muted-foreground mb-2 truncate">
             {session.data?.user?.email}
           </div>
           <button
             onClick={() => authClient.signOut().then(() => navigate({ to: "/login" }))}
-            className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+            className="flex items-center gap-2 text-xs text-muted-foreground hover:text-destructive transition-colors"
           >
+            <LogOut className="size-3.5" />
             Sign out
           </button>
         </div>
