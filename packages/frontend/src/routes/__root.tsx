@@ -2,6 +2,7 @@ import { useState } from "react"
 import {
   createRootRouteWithContext,
   Outlet,
+  useRouter,
   useRouterState,
   useNavigate,
   Link,
@@ -27,7 +28,7 @@ import {
   Command,
   type LucideIcon,
 } from "lucide-react"
-import { authClient } from "../lib/auth"
+import { authClient, signOutClient } from "../lib/auth"
 import { ApiError } from "../lib/api"
 import { Button, Skeleton, Toaster } from "@agent-harness/ui"
 import { ErrorBoundary } from "../components/ErrorBoundary"
@@ -52,6 +53,7 @@ const SHELL_LESS = new Set([
 function Shell() {
   const session = authClient.useSession()
   const navigate = useNavigate()
+  const router = useRouter()
   const pathname = useRouterState({ select: s => s.location.pathname })
 
   if (SHELL_LESS.has(pathname)) {
@@ -122,7 +124,9 @@ function Shell() {
           {/* Navigation Links */}
           <nav className="px-3 py-2 flex flex-col gap-1">
             {NAV.map(item => {
-              const active = pathname === item.id || (item.id === "/traces" && pathname.startsWith("/traces"))
+              const active =
+                pathname === item.id ||
+                (item.id === "/traces" && pathname.startsWith("/traces"))
               const Icon = item.icon
               return (
                 <Link
@@ -165,9 +169,29 @@ function Shell() {
             variant="ghost"
             size="sm"
             className="w-full justify-start text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            onClick={() =>
-              authClient.signOut().then(() => navigate({ to: "/login" }))
-            }
+            // LOGOUT FLOW (post-rewrite 2026-07-19):
+            //   1. Call the worker's /api/auth/sign-out via signOutClient()
+            //      which calls authClient.signOut() under the hood.
+            //   2. On success: router.invalidate() forces every beforeLoad
+            //      (including the fetchSession server fn) to re-run, so the
+            //      authed context is gone before we navigate.
+            //   3. navigate to /login with replace:true so the back button
+            //      doesn't return into the authed app.
+            //   4. On failure: still navigate to /login — better to strand
+            //      the user on the login screen than leave a stale session
+            //      visible. The QueryClient cache is cleared so the dashboard
+            //      pollers can't write into it during the brief window.
+            onClick={async () => {
+              const result = await signOutClient()
+              // Always clear React Query cache so any in-flight dashboard
+              // request can't repopulate auth-gated data post-sign-out.
+              queryClient.clear()
+              if (!result.ok) {
+                console.warn("[sign-out] failed:", result.error)
+              }
+              await router.invalidate()
+              await navigate({ to: "/login", replace: true })
+            }}
           >
             <LogOut className="size-3.5 mr-2" />
             Sign out
