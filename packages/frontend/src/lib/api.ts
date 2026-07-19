@@ -55,9 +55,13 @@ async function request<T = any>(
 export const api = {
   get: <T = any>(path: string, signal?: AbortSignal) =>
     request<T>(path, { signal }),
-  post: <T = any>(path: string, body?: unknown) =>
-    request<T>(path, { method: "POST", body }),
-  put: <T = any>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PUT", body }),
-  del: <T = any>(path: string) => request<T>(path, { method: "DELETE" }),
+  // L5: accept an AbortSignal on the mutating verbs too. Without this, a slow
+  // /api/profile or /api/onboarding request lingers in-flight after the user
+  // navigates away (and burns the deprecated `pending` state on the old page).
+  post: <T = any>(path: string, body?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: "POST", body, signal }),
+  put: <T = any>(path: string, body?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: "PUT", body, signal }),
+  del: <T = any>(path: string, signal?: AbortSignal) =>
+    request<T>(path, { method: "DELETE", signal }),
 }

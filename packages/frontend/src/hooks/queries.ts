@@ -143,9 +143,16 @@ export function useUserMemory() {
 export function useStartRun() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (goal?: string) => api.post<{ message: string }>("/start", goal ? { goal } : {}),
+    mutationFn: (goal?: string) =>
+      api.post<{ message: string }>("/start", goal ? { goal } : {}),
     onSuccess: () => {
+      // M10: invalidate all queries that depend on run state. The previous
+      // code only invalidated ["status"], leaving the Jobs Kanban, the run
+      // history list, and the live activity panel stale for up to 10s until
+      // their own poll intervals caught up.
       qc.invalidateQueries({ queryKey: ["status"] })
+      qc.invalidateQueries({ queryKey: ["pipeline"] })
+      qc.invalidateQueries({ queryKey: ["runs"] })
     },
   })
 }
@@ -154,7 +161,11 @@ export function useStopRun() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () => api.post<{ message: string }>("/stop"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["status"] })
+      qc.invalidateQueries({ queryKey: ["pipeline"] })
+      qc.invalidateQueries({ queryKey: ["runs"] })
+    },
   })
 }
 
