@@ -21,3 +21,6 @@ packages/frontend/src/routeTree.gen.ts
 packages/hono-worker/public/app/
 public/app/
 tsconfig.tsbuildinfo
+
+docs/
+prompts/
