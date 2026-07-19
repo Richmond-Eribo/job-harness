@@ -10,7 +10,10 @@
     "types": "wrangler types",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
-    "test:integration": "vitest run --config vitest.workers.config.ts"
+    "test:integration": "vitest run --config vitest.workers.config.ts",
+    "db:generate": "better-auth generate --config src/auth/auth.cli.ts --output ./migrations/cli-schema.ts --yes",
+    "db:migrate:local": "wrangler d1 migrations apply agent-harness-auth --local",
+    "db:migrate:remote": "wrangler d1 migrations apply agent-harness-auth --remote"
   },
   "dependencies": {
     "@agent-harness/shared-types": "*",
@@ -26,6 +29,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@better-auth/cli": "^1.4.21",
     "@cloudflare/vitest-pool-workers": "^0.18.4",
     "@cloudflare/workers-types": "^4.20250620.0",
     "typescript": "^5.7.0",

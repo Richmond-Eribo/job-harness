@@ -15,5 +15,13 @@
   // Test files use Node globals (require/__dirname) that vitest provides at
   // runtime. They're type-checked & run by vitest, not tsc, so exclude them
   // here to keep `tsc --noEmit` focused on the Workers app source only.
-  "exclude": ["node_modules", "src/test"]
+  // auth.cli.ts + cli-schema.ts are dev tooling for @better-auth/cli (Node-only
+  // imports like better-sqlite3); excluded from the Worker typecheck for the
+  // same reason — they're never bundled into the Worker.
+  "exclude": [
+    "node_modules",
+    "src/test",
+    "src/auth/auth.cli.ts",
+    "migrations/cli-schema.ts"
+  ]
 }
