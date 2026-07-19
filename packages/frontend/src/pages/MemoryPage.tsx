@@ -1,12 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Brain, User, Plus, Search } from "lucide-react"
 import { useState } from "react"
 import { api } from "../lib/api"
-import { Button, Card, CardContent, Input, Label, Textarea } from "@agent-harness/ui"
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Input,
+  Label,
+  Textarea,
+} from "@agent-harness/ui"
 import { toast } from "sonner"
 
 export function MemoryPage() {
   const qc = useQueryClient()
-  // Use the shared hooks for consistency with the rest of the app.
   const { data: memory } = useQuery({
     queryKey: ["user-memory"],
     queryFn: () => api.get("/user-memory"),
@@ -15,8 +25,10 @@ export function MemoryPage() {
     queryKey: ["memory"],
     queryFn: () => api.get("/memory"),
   })
+
   const [key, setKey] = useState("")
   const [value, setValue] = useState("")
+  const [search, setSearch] = useState("")
 
   const save = useMutation({
     mutationFn: () => api.put("/user-memory", { key, value }),
@@ -24,90 +36,165 @@ export function MemoryPage() {
       qc.invalidateQueries({ queryKey: ["user-memory"] })
       setKey("")
       setValue("")
-      toast.success("Memory saved")
+      toast.success("Memory entry saved")
     },
     onError: (e: any) => toast.error("Couldn't save memory", { description: e?.message }),
   })
 
-  const entries = Array.isArray(memory) ? memory : memory?.entries ?? Object.entries(memory ?? {})
+  const rawEntries = Array.isArray(memory) ? memory : memory?.entries ?? Object.entries(memory ?? {})
+  const agentEntries = agentMemory ?? []
+
+  const userEntries = rawEntries.filter((e: any) => {
+    if (!search) return true
+    const q = search.toLowerCase()
+    const k = String(e.key ?? e[0]).toLowerCase()
+    const v = String(e.value ?? e[1]).toLowerCase()
+    return k.includes(q) || v.includes(q)
+  })
 
   return (
-    <div className="p-6 max-w-3xl">
-      <h1 className="text-2xl font-bold mb-6">Memory</h1>
-
-      <Card className="mb-8">
-        <CardHeaderLight title="Add a memory" />
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex gap-2">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="mem-key" className="sr-only">Key</Label>
-              <Input
-                id="mem-key"
-                placeholder="key"
-                value={key}
-                onChange={e => setKey(e.target.value)}
-                className="w-36"
-              />
-            </div>
-            <div className="flex flex-col gap-2 flex-1">
-              <Label htmlFor="mem-value" className="sr-only">Value</Label>
-              <Textarea
-                id="mem-value"
-                placeholder="value"
-                value={value}
-                onChange={e => setValue(e.target.value)}
-                rows={1}
-                className="min-h-9 resize-y"
-              />
-            </div>
-            <Button onClick={() => save.mutate()} disabled={!key || !value || save.isPending} className="self-end">
-              {save.isPending ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid grid-cols-2 gap-6">
+    <div className="p-8 max-w-6xl mx-auto space-y-6 animate-fade-in">
+      {/* Header Banner */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
         <div>
-          <h2 className="text-sm font-semibold text-foreground mb-3">Your memories</h2>
-          <div className="flex flex-col gap-2">
-            {entries.length === 0 ? (
-              <div className="text-xs text-muted-foreground">None yet.</div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Agent Memory Bank</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Configure preference constraints and view learned context stored in agent memory.
+          </p>
+        </div>
+      </div>
+
+      {/* Split Layout: Left Form & Right Store */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left Column: Add Memory & Search */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <Plus className="size-4 text-primary" />
+                Store New Memory Entry
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="mem-key" className="text-xs text-muted-foreground">Memory Key</Label>
+                <Input
+                  id="mem-key"
+                  placeholder="e.g. preferred_stack"
+                  value={key}
+                  onChange={e => setKey(e.target.value)}
+                  className="text-xs"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="mem-value" className="text-xs text-muted-foreground">Memory Value</Label>
+                <Textarea
+                  id="mem-value"
+                  placeholder="e.g. TypeScript, React, Cloudflare Workers"
+                  value={value}
+                  onChange={e => setValue(e.target.value)}
+                  rows={3}
+                  className="text-xs resize-y"
+                />
+              </div>
+
+              <Button
+                onClick={() => save.mutate()}
+                disabled={!key || !value || save.isPending}
+                className="w-full"
+                size="sm"
+              >
+                {save.isPending ? "Saving entry…" : "Save Memory Entry"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Search Filter */}
+          <div className="relative">
+            <Search className="size-3.5 absolute left-3 top-2.5 text-muted-foreground" />
+            <Input
+              placeholder="Search memory keys or values…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="pl-8 h-8 text-xs bg-card"
+            />
+          </div>
+        </div>
+
+        {/* Right Column: Tabbed Memory Store Cards */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* User Memory Section */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <User className="size-4 text-primary" />
+                Your Defined Memories
+              </h2>
+              <Badge variant="secondary" className="font-mono text-xs">
+                {userEntries.length} entries
+              </Badge>
+            </div>
+
+            {userEntries.length === 0 ? (
+              <div className="p-8 text-center text-xs text-muted-foreground border border-dashed border-border rounded-xl">
+                No user memory entries found. Add a key-value pair using the form on the left.
+              </div>
             ) : (
-              entries.map((e: any, i: number) => (
-                <Card key={i} className="py-3">
-                  <CardContent className="px-3">
-                    <div className="text-xs text-primary font-mono mb-1">{e.key ?? e[0]}</div>
-                    <div className="text-sm text-foreground">{e.value ?? e[1]}</div>
-                  </CardContent>
-                </Card>
-              ))
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {userEntries.map((e: any, i: number) => (
+                  <Card
+                    key={i}
+                    className="py-3 px-3.5 border-l-4 border-l-primary transition-all hover:border-primary"
+                  >
+                    <div className="text-xs font-mono font-semibold text-primary mb-1">
+                      {e.key ?? e[0]}
+                    </div>
+                    <div className="text-xs text-foreground leading-relaxed">
+                      {e.value ?? e[1]}
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Agent Learned Memory Section */}
+          <div className="space-y-3 pt-4 border-t border-border">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Brain className="size-4 text-violet-400" />
+                Agent Learned Memories
+              </h2>
+              <Badge variant="secondary" className="font-mono text-xs">
+                {agentEntries.length} entries
+              </Badge>
+            </div>
+
+            {agentEntries.length === 0 ? (
+              <div className="p-8 text-center text-xs text-muted-foreground border border-dashed border-border rounded-xl">
+                The agent hasn't generated any learned memories yet.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {agentEntries.map((e: any, i: number) => (
+                  <Card
+                    key={i}
+                    className="py-3 px-3.5 border-l-4 border-l-violet-400/60"
+                  >
+                    <div className="text-xs font-mono font-semibold text-violet-400 mb-1">
+                      {e.key ?? e[0]}
+                    </div>
+                    <div className="text-xs text-foreground leading-relaxed">
+                      {e.value ?? e[1]}
+                    </div>
+                  </Card>
+                ))}
+              </div>
             )}
           </div>
         </div>
-        <div>
-          <h2 className="text-sm font-semibold text-foreground mb-3">Agent memories</h2>
-          <div className="flex flex-col gap-2">
-            {(agentMemory ?? []).map((e: any, i: number) => (
-              <Card key={i} className="py-3">
-                <CardContent className="px-3">
-                  <div className="text-xs text-primary font-mono mb-1">{e.key ?? e[0]}</div>
-                  <div className="text-sm text-foreground">{e.value ?? e[1]}</div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
       </div>
-    </div>
-  )
-}
-
-// Small helper so we don't repeat CardHeader boilerplate for a single title.
-function CardHeaderLight({ title }: { title: string }) {
-  return (
-    <div className="px-4 pt-4">
-      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
     </div>
   )
 }

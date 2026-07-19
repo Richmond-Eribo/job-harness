@@ -1,52 +1,66 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Scan the shared @agent-harness/ui package source so utility classes inside
-   its components are preserved (monorepo safety net — the Vite plugin's
-   module-graph detection covers most cases, but this is explicit). */
-@source "../ui/src";
+/* In a pnpm/npm-workspace monorepo the global CSS lives in packages/frontend,
+   so the shared ui package source is two levels up. This explicit scan is a
+   safety net on top of @tailwindcss/vite's module-graph detection. */
+@source "../../packages/ui/src";
 
-/* shadcn/ui semantic tokens for Tailwind v4. The app is dark-first: the dark
-   values live directly in :root (no .dark class toggling). hsl() is wrapped
-   INTO the variable values so @theme inline can reference them bare and
-   opacity modifiers (bg-primary/90) resolve correctly via color-mix(). */
-:root {
+/* Map the `dark:` variant onto the `.dark` class on <html>. shadcn components
+   ship `dark:*` utilities (e.g. `dark:bg-input/30`); without this they would
+   key off prefers-color-scheme instead of the class. */
+@custom-variant dark (&:is(.dark *));
+
+/* ─────────────────────────────────────────────────────────────────────────
+   shadcn/ui semantic tokens (Tailwind v4). The app is dark-first: the dark
+   values live directly in :root so there's no theme toggle, and the same
+   values are mirrored under .dark so dark:-scoped utilities resolve to them.
+   Each value already includes hsl() so @theme inline can reference the bare
+   variable and opacity modifiers (bg-primary/90) resolve via color-mix().
+   ───────────────────────────────────────────────────────────────────────── */
+:root,
+.dark {
   --background: hsl(222 47% 11%); /* ink-950 #0f172a */
-  --foreground: hsl(210 40% 90%); /* ink-100 #e2e8f0 */
+  --foreground: hsl(213 31% 92%); /* soft slate-100 */
 
-  --card: hsl(222 47% 17%); /* ink-900 #1e293b */
-  --card-foreground: hsl(210 40% 90%);
+  --card: hsl(222 44% 15%); /* slightly lighter than bg for layering */
+  --card-foreground: hsl(213 31% 92%);
 
-  --popover: hsl(222 47% 17%);
-  --popover-foreground: hsl(210 40% 90%);
+  --popover: hsl(222 47% 14%);
+  --popover-foreground: hsl(213 31% 92%);
 
-  --primary: hsl(217 91% 60%); /* accent #3b82f6 */
+  --primary: hsl(217 91% 60%); /* blue-500 */
   --primary-foreground: hsl(0 0% 100%);
 
-  --secondary: hsl(215 25% 27%); /* ink-800 #334155 */
-  --secondary-foreground: hsl(210 40% 90%);
+  --secondary: hsl(215 28% 24%); /* raised slate surface */
+  --secondary-foreground: hsl(213 31% 92%);
 
-  --muted: hsl(215 25% 27%);
-  --muted-foreground: hsl(215 16% 47%); /* ink-700 #475569 */
+  --muted: hsl(215 25% 22%);
+  --muted-foreground: hsl(215 20% 60%); /* softer, more legible than before */
 
-  --accent: hsl(215 25% 27%);
-  --accent-foreground: hsl(210 40% 90%);
+  --accent: hsl(217 35% 26%);
+  --accent-foreground: hsl(213 31% 92%);
 
   --destructive: hsl(0 72% 51%);
   --destructive-foreground: hsl(0 0% 100%);
 
-  --border: hsl(215 25% 27%); /* ink-800 */
-  --input: hsl(215 25% 27%);
-  --ring: hsl(217 91% 60%); /* accent */
+  --success: hsl(152 56% 48%);
+  --success-foreground: hsl(0 0% 100%);
 
-  --radius: 0.5rem;
+  --warning: hsl(38 92% 55%);
+  --warning-foreground: hsl(0 0% 100%);
+
+  --border: hsl(215 25% 26%);
+  --input: hsl(215 25% 24%);
+  --ring: hsl(217 91% 60%);
+
+  --radius: 0.625rem;
 }
 
-/* Map the CSS variables onto Tailwind utility names (--color-* -> bg-*,
-   text-*, border-*). `inline` substitutes the var reference directly so
-   runtime theme switching + alpha modifiers work. The `ink` slate palette is
-   kept as literal colors for the legacy pages still using ink-* classes
-   during the restyle. */
+/* Map CSS variables onto Tailwind utility names (--color-* → bg-*, text-*,
+   border-*). `inline` substitutes the var reference directly so runtime
+   alpha modifiers work via color-mix(). The `ink` slate palette is kept as
+   literal colors for the few legacy pages still using ink-* classes. */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -64,6 +78,10 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -77,9 +95,10 @@
   --color-ink-300: #cbd5e1;
   --color-ink-100: #e2e8f0;
 
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
@@ -102,6 +121,76 @@
   }
 }
 
+/* Caret blink for the OTP input's fake caret (shadcn input-otp). Reduced-motion
+   users get the global clamp. */
+@keyframes caret-blink {
+  0%,
+  70%,
+  100% {
+    opacity: 0;
+  }
+  20%,
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Landing page — scoped tokens & type.
+   The marketing surface uses a black/zinc ground with blue reserved as the
+   accent (never a surface). These are namespaced under --landing-* and mapped
+   to Tailwind via @theme inline below, so they don't disturb the dashboard's
+   dark-first token system.
+   ───────────────────────────────────────────────────────────────────────── */
+:root,
+.dark {
+  --landing-ground: #0a0a0b; /* near-black, slightly warm */
+  --landing-surface: #141416; /* raised cards */
+  --landing-surface-2: #1c1c20; /* the trace card */
+  --landing-hairline: #27272a; /* zinc-800 */
+  --landing-ink: #fafafa; /* zinc-50 */
+  --landing-ink-muted: #a1a1aa; /* zinc-400 */
+  --landing-ink-faint: #71717a; /* zinc-500 */
+  --landing-accent: #3b82f6; /* blue-500 — accent text on dark */
+  --landing-accent-soft: #60a5fa; /* blue-400 */
+  --landing-accent-strong: #2563eb; /* blue-600 — button fill so white text clears AA */
+}
+
+@theme inline {
+  --color-landing-ground: var(--landing-ground);
+  --color-landing-surface: var(--landing-surface);
+  --color-landing-surface-2: var(--landing-surface-2);
+  --color-landing-hairline: var(--landing-hairline);
+  --color-landing-ink: var(--landing-ink);
+  --color-landing-ink-muted: var(--landing-ink-muted);
+  --color-landing-ink-faint: var(--landing-ink-faint);
+  --color-landing-accent: var(--landing-accent);
+  --color-landing-accent-soft: var(--landing-accent-soft);
+  --color-landing-accent-strong: var(--landing-accent-strong);
+
+  /* Display + mono faces for the landing page. The display is Inter — a
+     neo-grotesque — driven hard at large sizes with tight tracking. One
+     family carries the whole design; JetBrains Mono is the "data voice"
+     for eyebrows, labels, numerals, and the trace card. */
+  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+}
+
+/* Trace-card event entrance. Each row fades + lifts in on load, staggered by
+   inline --trace-i. Reduced-motion users see the final state instantly. */
+@keyframes trace-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Global resets + base styling for the dark SPA. */
 html,
 body,
@@ -110,22 +199,154 @@ body,
 }
 
 body {
-  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* tabular-nums by default — the dashboard shows a lot of numbers/scores. */
+  font-variant-numeric: tabular-nums;
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+/* ─── Landing typography ─────────────────────────────────────────────────
+   One neo-grotesque (Inter) drives the whole design. The display scale uses
+   fluid clamps so the headline spans the viewport on desktop and stays
+   controlled on mobile. Tracking tightens as size grows (standard grotesque
+   practice). Tabular numerals everywhere there's data.
+   ─────────────────────────────────────────────────────────────────────── */
+.font-display {
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* The hero statement. Spans the viewport on desktop, breathes on mobile.
+   ~88px → ~112px between the common breakpoints. */
+.text-display-1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+  font-size: clamp(2.75rem, 9vw, 7rem);
+  font-feature-settings: "ss01" 1, "cv11" 1; /* alt single-story a, etc. */
+}
+
+/* Section titles. */
+.text-display-2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  font-size: clamp(2rem, 5.5vw, 3.5rem);
+}
+
+/* Oversized mono numerals used as section markers (01 / 02 / 03). These are
+   typographic architecture, not decoration — the number IS the divider. */
+.text-numeral {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* Monospace eyebrow / label. The "data voice" of the page. */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Monospace helper for the trace card + numeric readouts. */
+.font-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* The trace card's ambient blue glow — placed behind the card, not the page.
+   Scoped to .trace-glow so it only appears on the landing hero. */
+.trace-glow::before {
+  content: "";
+  position: absolute;
+  inset: -20% -10% auto auto;
+  width: 80%;
+  height: 80%;
+  pointer-events: none;
+  background: radial-gradient(
+    60% 60% at 70% 30%,
+    color-mix(in oklab, var(--landing-accent) 22%, transparent),
+    transparent 70%
+  );
+  filter: blur(20px);
+  z-index: 0;
+}
+
+/* ── Entrance animations ─────────────────────────────────────────────────
+   Reusable keyframes for page/element entrances. Each page applies these
+   on mount for a subtle, alive feel. Reduced-motion users see the final
+   state instantly via the global prefers-reduced-motion rule below.       */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Named animation classes — compose in JSX via className. */
+.animate-fade-in   { animation: fade-in 350ms ease-out both; }
+.animate-slide-up  { animation: slide-up 400ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-slide-in  { animation: slide-in-left 350ms ease-out both; }
+
+/* Stagger children — set --stagger-i on each child for cascade entrance. */
+.stagger-child { animation-delay: calc(var(--stagger-i, 0) * 60ms); }
+
+/* ── Focus-visible ──────────────────────────────────────────────────────
+   Consistent keyboard-focus ring across all interactive elements.         */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 /* Thin scrollbars to match the dark theme. */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 4px;
+  background: var(--secondary);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: var(--muted-foreground);
+  background-clip: padding-box;
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

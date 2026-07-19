@@ -1,61 +1,106 @@
+import { useState } from "react"
+import { ArrowRight, ExternalLink, Inbox, Search } from "lucide-react"
 import { usePipeline, useSetJobStatus } from "../hooks/queries"
 import type { JobListing, JobStatus } from "@/types"
-import { Badge, Button, Card, CardContent, Skeleton } from "@agent-harness/ui"
+import { Badge, Button, Card, CardContent, Input, Skeleton } from "@agent-harness/ui"
 import { toast } from "sonner"
 
-const COLUMNS: { id: JobStatus; label: string; accent: string }[] = [
-  { id: "discovered", label: "Discovered", accent: "border-t-slate-500" },
-  { id: "draft", label: "Draft", accent: "border-t-blue-500" },
-  { id: "applied", label: "Applied", accent: "border-t-amber-500" },
-  { id: "interview", label: "Interview", accent: "border-t-purple-500" },
-  { id: "offer", label: "Offer", accent: "border-t-emerald-500" },
-  { id: "rejected", label: "Rejected", accent: "border-t-red-500" },
+const COLUMNS: { id: JobStatus; label: string; accent: string; dotColor: string }[] = [
+  { id: "discovered", label: "Discovered", accent: "border-t-muted-foreground/40", dotColor: "bg-muted-foreground" },
+  { id: "draft", label: "Draft", accent: "border-t-primary", dotColor: "bg-primary" },
+  { id: "applied", label: "Applied", accent: "border-t-warning", dotColor: "bg-warning" },
+  { id: "interview", label: "Interview", accent: "border-t-violet-400", dotColor: "bg-violet-400" },
+  { id: "offer", label: "Offer", accent: "border-t-success", dotColor: "bg-success" },
+  { id: "rejected", label: "Rejected", accent: "border-t-destructive/60", dotColor: "bg-destructive" },
 ]
 
 export function JobsPage() {
   const { data: pipeline, isLoading } = usePipeline()
   const setJobStatus = useSetJobStatus()
+  const [searchQuery, setSearchQuery] = useState("")
 
   const listings = pipeline?.listings ?? []
-  const byStage = (stage: JobStatus) => listings.filter(j => j.status === stage)
+  
+  const filteredListings = listings.filter(j => {
+    if (!searchQuery) return true
+    const q = searchQuery.toLowerCase()
+    return j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q)
+  })
+
+  const byStage = (stage: JobStatus) => filteredListings.filter(j => j.status === stage)
 
   const advance = (job: JobListing, status: JobStatus) =>
     setJobStatus.mutate(
       { jobId: job.id, status },
       {
-        onSuccess: () => toast.success(`Moved to ${status}`),
-        onError: (e: any) => toast.error("Couldn't update job", { description: e?.message }),
+        onSuccess: () => toast.success(`Moved job to ${status}`),
+        onError: (e: any) => toast.error("Couldn't update job status", { description: e?.message }),
       },
     )
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold mb-6">Jobs pipeline</h1>
+    <div className="p-8 space-y-6 animate-fade-in flex flex-col h-full">
+      {/* Header & Filter Toolbar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 border-b border-border pb-5">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Jobs Kanban Pipeline</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Manage your application stages and move positions through the funnel.
+          </p>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center gap-3">
+          <div className="relative w-64">
+            <Search className="size-4 absolute left-3 top-2.5 text-muted-foreground" />
+            <Input
+              placeholder="Search title or company…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="pl-9 h-9 text-xs"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Kanban Board Columns */}
       {isLoading ? (
-        <div className="flex gap-4 overflow-x-auto pb-4">
+        <div className="flex gap-4 overflow-x-auto pb-4 flex-1">
           {COLUMNS.map(col => (
-            <Skeleton key={col.id} className="w-72 shrink-0 h-64 rounded-xl" />
+            <Skeleton key={col.id} className="w-80 shrink-0 h-96 rounded-xl" />
           ))}
         </div>
       ) : (
-        <div className="flex gap-4 overflow-x-auto pb-4">
-          {COLUMNS.map(col => {
+        <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start">
+          {COLUMNS.map((col, colIdx) => {
             const jobs = byStage(col.id)
             return (
               <div
                 key={col.id}
-                className={`w-72 shrink-0 bg-card rounded-xl border-t-4 ${col.accent} border border-border`}
+                className={`w-80 shrink-0 bg-card rounded-xl border-t-2 ${col.accent} border border-border flex flex-col max-h-full animate-slide-up stagger-child`}
+                style={{ "--stagger-i": colIdx } as React.CSSProperties}
               >
-                <div className="px-4 py-3 flex items-center justify-between border-b border-border">
-                  <span className="text-sm font-semibold">{col.label}</span>
-                  <Badge variant="secondary">{jobs.length}</Badge>
+                {/* Column Sticky Header */}
+                <div className="bg-card px-4 py-3.5 flex items-center justify-between border-b border-border rounded-t-xl shrink-0">
+                  <span className="text-sm font-semibold flex items-center gap-2">
+                    <span className={`size-2 rounded-full ${col.dotColor}`} />
+                    {col.label}
+                  </span>
+                  <Badge variant="secondary" className="font-mono text-xs px-2 py-0.5">
+                    {jobs.length}
+                  </Badge>
                 </div>
-                <div className="p-3 flex flex-col gap-2 min-h-[100px]">
+
+                {/* Cards Container */}
+                <div className="p-3 flex flex-col gap-2.5 overflow-y-auto min-h-[160px]">
                   {jobs.map((job: JobListing) => (
                     <JobCard key={job.id} job={job} onAdvance={status => advance(job, status)} />
                   ))}
                   {jobs.length === 0 && (
-                    <div className="text-xs text-muted-foreground/60 text-center py-4">Empty</div>
+                    <div className="flex-1 flex flex-col items-center justify-center py-12 text-muted-foreground/40 border border-dashed border-border/60 rounded-lg">
+                      <Inbox className="size-6 mb-2" />
+                      <span className="text-xs">No positions</span>
+                    </div>
                   )}
                 </div>
               </div>
@@ -74,36 +119,50 @@ function JobCard({
   job: JobListing
   onAdvance: (status: JobStatus) => void
 }) {
-  // Determine the next stage for the "advance" quick action.
   const order: JobStatus[] = ["discovered", "draft", "applied", "interview", "offer"]
   const idx = order.indexOf(job.status)
   const next: JobStatus | null = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null
+  const score = job.matchScore != null ? Math.round(job.matchScore * 100) : null
 
   return (
-    <Card className="py-3 hover:border-primary/40 transition-colors">
-      <CardContent className="px-3">
-        <div className="font-medium text-sm leading-tight mb-1">{job.title}</div>
-        <div className="text-xs text-muted-foreground mb-2">{job.company}</div>
-        {job.matchScore != null && (
-          <div className="text-xs text-muted-foreground mb-2">
-            Match: {(job.matchScore * 100).toFixed(0)}%
-          </div>
-        )}
-        {job.url && (
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-primary hover:underline block mb-2"
-          >
-            View posting ↗
-          </a>
-        )}
-        {next && (
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onAdvance(next)}>
-            → Move to {next}
-          </Button>
-        )}
+    <Card className="py-3 px-3.5 transition-all duration-150 hover:border-primary/40 shadow-sm">
+      <CardContent className="p-0 space-y-2.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="font-semibold text-sm leading-snug text-foreground">{job.title}</div>
+          {score != null && (
+            <Badge variant="secondary" className="font-mono text-[11px] shrink-0 bg-primary/10 text-primary border-primary/20">
+              {score}%
+            </Badge>
+          )}
+        </div>
+
+        <div className="text-xs text-muted-foreground font-medium">{job.company}</div>
+
+        <div className="flex items-center justify-between pt-1 border-t border-border/60">
+          {job.url ? (
+            <a
+              href={job.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+            >
+              Link <ExternalLink className="size-3" />
+            </a>
+          ) : (
+            <span />
+          )}
+
+          {next && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => onAdvance(next)}
+            >
+              Advance <ArrowRight className="size-3 ml-1" />
+            </Button>
+          )}
+        </div>
       </CardContent>
     </Card>
   )

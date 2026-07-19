@@ -23,11 +23,14 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
           <div className="max-w-md text-center">
-            <h1 className="text-xl font-bold mb-2">Something went wrong</h1>
-            <p className="text-sm text-muted-foreground mb-6">
+            <div className="text-6xl font-mono font-bold leading-none text-destructive/30 select-none mb-4">
+              ERR
+            </div>
+            <h1 className="text-xl font-semibold mb-2">Something went wrong</h1>
+            <p className="text-sm text-muted-foreground mb-4">
               An unexpected error occurred while rendering this page.
             </p>
-            <pre className="text-xs text-left bg-secondary/50 border border-border rounded-md p-3 mb-6 overflow-auto max-h-40">
+            <pre className="text-xs text-left bg-secondary/50 border border-border rounded-md p-3 mb-6 overflow-auto max-h-40 font-mono">
               {this.state.error.message}
             </pre>
             <button

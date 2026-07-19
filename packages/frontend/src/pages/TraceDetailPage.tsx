@@ -1,95 +1,226 @@
 import { useParams, Link } from "@tanstack/react-router"
+import { ArrowLeft, ChevronDown, ChevronUp, Cpu, Terminal } from "lucide-react"
+import { useState } from "react"
 import { useRunTrace } from "../hooks/queries"
-import { Badge, Card, CardContent, Skeleton } from "@agent-harness/ui"
+import {
+  Badge,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Skeleton,
+} from "@agent-harness/ui"
 
-// The transcript view — renders the step-grouped trace events.
+const EVENT_BADGE: Record<string, string> = {
+  reasoning: "bg-violet-400/10 text-violet-400 border-violet-400/20",
+  text: "bg-foreground/5 text-foreground border-border",
+  tool_call: "bg-warning/10 text-warning border-warning/20",
+  tool_result: "bg-success/10 text-success border-success/20",
+  step_end: "bg-muted text-muted-foreground border-border",
+  error: "bg-destructive/10 text-destructive border-destructive/20",
+  system: "bg-muted text-muted-foreground border-border",
+}
+
 export function TraceDetailPage() {
   const { runId } = useParams({ from: "/traces/$runId" })
   const { data, isLoading } = useRunTrace(runId)
+  const [eventFilter, setEventFilter] = useState<string>("all")
 
   const events = data?.events ?? data?.trace ?? []
   const run = data?.run
 
-  // Group events by stepNumber for display.
+  // Group events by stepNumber
   const steps = new Map<string, any[]>()
   for (const ev of events) {
+    if (eventFilter !== "all" && ev.eventType !== eventFilter) continue
     const key = String(ev.stepNumber ?? "_pre")
     if (!steps.has(key)) steps.set(key, [])
     steps.get(key)!.push(ev)
   }
 
+  const stepCount = steps.size
+
   return (
-    <div className="p-6 max-w-4xl">
-      <Link to="/traces" className="text-sm text-primary hover:underline mb-4 inline-block">
-        ← All traces
-      </Link>
-      <div className="flex items-center gap-3 mb-6">
-        <h1 className="text-xl font-mono">{runId}</h1>
-        {run?.status && (
-          <Badge variant="secondary" className="capitalize">{run.status}</Badge>
-        )}
+    <div className="p-8 max-w-7xl mx-auto space-y-6 animate-fade-in">
+      {/* Breadcrumb Navigation */}
+      <div className="flex items-center justify-between border-b border-border pb-4">
+        <Link
+          to="/traces"
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors font-medium"
+        >
+          <ArrowLeft className="size-3.5" />
+          Back to all traces
+        </Link>
+        <span className="font-mono text-xs text-muted-foreground">Trace ID: {runId}</span>
       </div>
 
-      {isLoading ? (
-        <div className="flex flex-col gap-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-32 w-full" />
-          ))}
+      {/* Main Split Inspector View */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left Column: Run Metadata Sidebar */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <Terminal className="size-4 text-primary" />
+                Run Metadata Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 text-xs">
+              <div className="flex items-center justify-between p-2.5 bg-secondary/40 rounded-lg border border-border">
+                <span className="text-muted-foreground">Execution Status</span>
+                <Badge variant={run?.status === "running" ? "default" : run?.status === "error" ? "destructive" : "secondary"} className="capitalize">
+                  {run?.status ?? "Completed"}
+                </Badge>
+              </div>
+
+              <div className="space-y-2.5">
+                <div>
+                  <span className="text-muted-foreground block mb-1">Goal Statement</span>
+                  <p className="font-medium text-foreground bg-background p-2.5 rounded-lg border border-border leading-relaxed">
+                    {run?.goal || "Automated search and profile evaluation run"}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-border">
+                  <span className="text-muted-foreground">Total Steps Recorded</span>
+                  <span className="font-mono font-semibold text-foreground">{stepCount}</span>
+                </div>
+
+                {run?.startedAt && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Started Time</span>
+                    <span className="font-mono text-foreground">{new Date(run.startedAt).toLocaleTimeString()}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-2 border-t border-border">
+                  <span className="text-muted-foreground">Agent Engine</span>
+                  <span className="inline-flex items-center gap-1 font-mono text-primary">
+                    <Cpu className="size-3" /> Harness Agent
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {Array.from(steps.entries()).map(([stepNum, evs]) => (
-            <StepCard key={stepNum} stepNum={stepNum} events={evs} />
-          ))}
+
+        {/* Right Column: Interactive Transcript Inspector */}
+        <div className="lg:col-span-2 space-y-4">
+          {/* Filter Bar */}
+          <div className="flex items-center justify-between bg-card p-2 rounded-xl border border-border">
+            <div className="flex items-center gap-1">
+              {["all", "reasoning", "tool_call", "tool_result", "error"].map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setEventFilter(tab)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg capitalize transition-colors ${
+                    eventFilter === tab
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                  }`}
+                >
+                  {tab.replace("_", " ")}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-muted-foreground font-mono px-2">
+              {events.length} events
+            </span>
+          </div>
+
+          {/* Transcript Timeline Steps */}
+          {isLoading ? (
+            <div className="flex flex-col gap-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-36 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : (
+            <div className="relative flex flex-col gap-4">
+              {/* Vertical Timeline Bar */}
+              <div className="absolute left-[18px] top-6 bottom-6 w-px bg-border" aria-hidden />
+
+              {Array.from(steps.entries()).map(([stepNum, evs], i) => (
+                <StepCard
+                  key={stepNum}
+                  stepNum={stepNum}
+                  events={evs}
+                  index={i}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   )
 }
 
-function StepCard({ stepNum, events }: { stepNum: string; events: any[] }) {
+function StepCard({ stepNum, events, index }: { stepNum: string; events: any[]; index: number }) {
   const agent = events[0]?.agent ?? "harness"
   return (
-    <Card className="overflow-hidden py-0">
-      <div className="px-4 py-2.5 flex items-center gap-3 border-b border-border bg-secondary/40">
-        <span className="text-xs font-mono font-bold text-foreground">
-          {stepNum === "_pre" ? "RUN" : `STEP ${stepNum}`}
-        </span>
-        <span className="text-xs text-primary">{agent}</span>
-      </div>
-      <CardContent className="p-4 flex flex-col gap-3">
-        {events.map((ev, i) => (
-          <EventRow key={i} ev={ev} />
-        ))}
-      </CardContent>
-    </Card>
+    <div
+      className="relative pl-10 animate-slide-up stagger-child"
+      style={{ "--stagger-i": index } as React.CSSProperties}
+    >
+      {/* Timeline Dot */}
+      <div className="absolute left-3 top-4 size-3 rounded-full bg-primary/20 border-2 border-primary z-10" />
+
+      <Card className="overflow-hidden py-0 gap-0">
+        <CardHeader className="px-4 py-3 flex-row items-center justify-between border-b border-border bg-secondary/30">
+          <span className="text-xs font-mono font-bold text-foreground">
+            {stepNum === "_pre" ? "INITIALIZATION" : `STEP ${stepNum}`}
+          </span>
+          <span className="text-xs text-primary font-mono bg-primary/10 px-2 py-0.5 rounded border border-primary/20">
+            {agent}
+          </span>
+        </CardHeader>
+        <CardContent className="p-4 space-y-3">
+          {events.map((ev, i) => (
+            <EventRow key={i} ev={ev} />
+          ))}
+        </CardContent>
+      </Card>
+    </div>
   )
 }
 
 function EventRow({ ev }: { ev: any }) {
   const label = ev.eventType?.toUpperCase()
-  // Role-based accents via semantic tokens (no raw colors except where a
-  // distinct hue aids scanning — tool/result/errors keep amber/emerald/red).
-  const colors: Record<string, string> = {
-    reasoning: "text-purple-400",
-    text: "text-foreground",
-    tool_call: "text-amber-400",
-    tool_result: "text-emerald-400",
-    step_end: "text-muted-foreground",
-    error: "text-destructive",
-    system: "text-muted-foreground",
-  }
+  const badgeClass = EVENT_BADGE[ev.eventType] ?? "bg-muted text-muted-foreground border-border"
+  const [expanded, setExpanded] = useState(false)
+
+  const payload = ev.payload
+  const isLong = typeof payload === "string" && payload.length > 500
+
   return (
-    <div>
-      <div className={`text-xs font-mono mb-1 ${colors[ev.eventType] ?? "text-muted-foreground"}`}>
-        {label} {ev.label ? `· ${ev.label}` : ""}
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold ${badgeClass}`}>
+          {label}
+        </span>
+        {ev.label && (
+          <span className="text-xs text-muted-foreground font-mono">{ev.label}</span>
+        )}
       </div>
-      {ev.payload && (
-        <pre className="text-xs text-muted-foreground bg-background border border-border rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-60">
-          {typeof ev.payload === "string" && ev.payload.length > 1000
-            ? ev.payload.slice(0, 1000) + "…"
-            : ev.payload}
-        </pre>
+      {payload && (
+        <div className="relative">
+          <pre className="text-xs text-muted-foreground bg-background border border-border rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words font-mono max-h-60 leading-relaxed">
+            {isLong && !expanded
+              ? payload.slice(0, 500) + "…"
+              : payload}
+          </pre>
+          {isLong && (
+            <button
+              type="button"
+              onClick={() => setExpanded(!expanded)}
+              className="flex items-center gap-1 text-[11px] text-primary hover:underline mt-1 font-mono"
+            >
+              {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+              {expanded ? "Collapse payload" : `Expand full payload (${payload.length} characters)`}
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
