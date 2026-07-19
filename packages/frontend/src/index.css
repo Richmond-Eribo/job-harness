@@ -102,6 +102,11 @@
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  /* Fake caret blink for shadcn input-otp (the slot uses animate-caret-blink).
+     Without this --animate-* entry the keyframes below never wire up and the
+     active slot shows no blinking caret. */
+  --animate-caret-blink: caret-blink 1.25s ease-out infinite;
 }
 
 @keyframes accordion-down {

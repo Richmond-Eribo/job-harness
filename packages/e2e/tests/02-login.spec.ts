@@ -42,7 +42,13 @@ test.describe("login", () => {
     await page.getByRole("button", { name: /sign in/i }).click()
 
     // Better Auth surfaces a credentials error → the form shows the Alert.
-    await expect(page.locator("[role='alert']")).toBeVisible({ timeout: 15_000 })
+    const alert = page.locator("[role='alert']")
+    await expect(alert).toBeVisible({ timeout: 15_000 })
+
+    // P4-4/G4: assert the actual error copy so a regression that shows a
+    // misleading message (or no message at all) is caught. Better Auth uses
+    // "Invalid email or password" for the anti-enumeration credentials error.
+    await expect(alert).toContainText(/invalid email or password/i)
 
     // We did NOT navigate away.
     await expect(page).toHaveURL(/\/login/)
