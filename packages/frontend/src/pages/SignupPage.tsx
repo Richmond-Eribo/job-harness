@@ -1,14 +1,24 @@
-import { useState } from "react"
+import { useActionState, useState } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
+import { Check, CircleAlert } from "lucide-react"
 import {
+  Alert,
+  AlertDescription,
   Button,
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
+  FileInput,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Textarea,
 } from "@agent-harness/ui"
 import { authClient } from "../lib/auth"
 import { api } from "../lib/api"
@@ -19,109 +29,108 @@ import { api } from "../lib/api"
 //   3. Profile  — career fields + CV → POST /api/onboarding (flips onboardingComplete)
 //   4. Done     → navigate to /dashboard
 //
-// Steps 2 and 3 are revealed progressively; the user can't reach them until the
-// prior step succeeds. All auth goes through the Better Auth client (same-origin),
-// so the session cookie is set automatically on verify.
+// React 19 form actions: each step's <form action={...}> drives a useActionState.
+// `email` persists across steps in React state; the profile step's many fields
+// stay controlled in a `profile` object (read on submit, not from FormData, so
+// the Select/Textarea helpers keep their controlled value/onValueChange API).
 type Step = "account" | "verify" | "profile"
+
+// Sentinel value for the "no selection" item in each Select. Radix Select
+// requires non-empty item values, so we map "" (the field's unselected state)
+// ↔ "__none__" (the item the user picks to leave it blank).
+const NONE = "__none__"
+
+type SignupState = { error?: string }
 
 export function SignupPage() {
   const navigate = useNavigate()
   const [step, setStep] = useState<Step>("account")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
-  // Account fields
+  // Account fields — email persists across all steps; password/confirm are
+  // step-1-only but kept here for validation.
   const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [confirm, setConfirm] = useState("")
 
-  // OTP field
-  const [otp, setOtp] = useState("")
-
-  // Profile fields (kept in one object so submit is a single POST)
+  // Profile fields (kept in one object so submit is a single POST).
   const [profile, setProfile] = useState<Record<string, string>>({})
   const [cvFile, setCvFile] = useState<File | null>(null)
 
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+  const setText = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setProfile(p => ({ ...p, [k]: e.target.value }))
+  const setSelect = (k: string) => (v: string) =>
+    setProfile(p => ({ ...p, [k]: v === NONE ? "" : v }))
 
   // ── Step 1: create account → triggers OTP email ────────────────────────
-  const submitAccount = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
+  const [accountState, accountAction, accountPending] = useActionState<
+    SignupState,
+    FormData
+  >(async (_prev, fd) => {
+    const e = String(fd.get("email") ?? "")
+    const password = String(fd.get("password") ?? "")
+    const confirm = String(fd.get("confirm") ?? "")
     if (password.length < 8) {
-      setError("Password must be at least 8 characters.")
-      return
+      return { error: "Password must be at least 8 characters." }
     }
     if (password !== confirm) {
-      setError("Passwords don't match.")
-      return
+      return { error: "Passwords don't match." }
     }
-    setBusy(true)
     try {
       // sendVerificationOnSignUp + requireEmailVerification: this creates the
       // user (unverified) and emails a 6-digit code. emailVerified stays false
       // until step 2, so sign-in is blocked until the OTP is confirmed.
-      // Cast: signUpEmail is a core email/password method (enabled server-side)
-      // but the client's type inference only reflects plugin methods.
       const { error: signUpError } = await (authClient as any).signUpEmail({
-        email,
+        email: e,
         password,
-        name: email.split("@")[0], // Better Auth requires `name`; derive a default.
+        name: e.split("@")[0], // Better Auth requires `name`; derive a default.
       })
-      if (signUpError) throw new Error(signUpError.message ?? "Sign-up failed")
+      if (signUpError) {
+        throw new Error(signUpError.message ?? "Sign-up failed")
+      }
+      setEmail(e)
       setStep("verify")
+      return {}
     } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
+      return { error: err.message }
     }
-  }
+  }, {})
 
   // ── Step 2: verify the OTP ─────────────────────────────────────────────
-  const submitOtp = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    if (otp.trim().length !== 6) {
-      setError("Enter the 6-digit code from your email.")
-      return
-    }
-    setBusy(true)
-    try {
-      const { error: verifyError } = await (authClient as any).emailOtp.verifyEmail({
-        email,
-        otp: otp.trim(),
-      })
-      if (verifyError) throw new Error(verifyError.message ?? "Verification failed")
-      setStep("profile")
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
+  const [otpState, otpAction, otpPending] = useActionState<SignupState, FormData>(
+    async (_prev, fd) => {
+      const otp = String(fd.get("otp") ?? "").trim()
+      if (otp.length !== 6) {
+        return { error: "Enter the 6-digit code from your email." }
+      }
+      try {
+        const { error: verifyError } = await (authClient as any).emailOtp
+          .verifyEmail({ email, otp })
+        if (verifyError) {
+          throw new Error(verifyError.message ?? "Verification failed")
+        }
+        setStep("profile")
+        return {}
+      } catch (err: any) {
+        return { error: err.message }
+      }
+    },
+    {},
+  )
 
   const resendOtp = async () => {
-    setError(null)
-    setBusy(true)
+    if (!email) return
     try {
-      const { error: sendError } = await (authClient as any).emailOtp.sendVerificationOtp({
-        email,
-        type: "email-verification",
-      })
+      const { error: sendError } = await (authClient as any).emailOtp
+        .sendVerificationOtp({ email, type: "email-verification" })
       if (sendError) throw new Error(sendError.message ?? "Couldn't resend code")
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
+    } catch {
+      // best-effort; user can retry
     }
   }
 
   // ── Step 3: career profile + CV → finish ───────────────────────────────
-  const submitProfile = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    setError(null)
-    setBusy(true)
+  const [profileState, profileAction, profilePending] = useActionState<
+    SignupState,
+    FormData
+  >(async () => {
     try {
       // 1. Upload CV to R2 if selected (reuses the existing onboarding-exempt route).
       if (cvFile) {
@@ -134,17 +143,17 @@ export function SignupPage() {
 
       // 2. Save profile + flip onboardingComplete. The endpoint allowlists the
       //    keys it accepts; extras are dropped server-side.
-      await api.post("/onboarding", {
-        email,
-        ...profile,
-      })
-      navigate({ to: "/dashboard" })
+      await api.post("/onboarding", { email, ...profile })
+      await navigate({ to: "/dashboard" })
+      return {}
     } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
+      return { error: err.message }
     }
-  }
+  }, {})
+
+  const busy = accountPending || otpPending || profilePending
+  const error =
+    accountState.error ?? otpState.error ?? profileState.error
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center px-4 py-10">
@@ -165,7 +174,7 @@ export function SignupPage() {
                         : "border-border"
                   }`}
                 >
-                  {done ? "✓" : i + 1}
+                  {done ? <Check className="size-3.5" /> : i + 1}
                 </span>
                 <span className={active ? "text-foreground" : ""}>{LABELS[s]}</span>
                 {i < 2 && <span className="w-8 h-px bg-border" />}
@@ -184,27 +193,26 @@ export function SignupPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={submitAccount} className="flex flex-col gap-4">
+              <form action={accountAction} className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="su-email">Email</Label>
                   <Input
                     id="su-email"
+                    name="email"
                     type="email"
                     required
                     autoComplete="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
+                    defaultValue={email}
                   />
                 </div>
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="su-pw">Password</Label>
                   <Input
                     id="su-pw"
+                    name="password"
                     type="password"
                     required
                     autoComplete="new-password"
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
                     placeholder="At least 8 characters"
                   />
                 </div>
@@ -212,15 +220,14 @@ export function SignupPage() {
                   <Label htmlFor="su-confirm">Confirm password</Label>
                   <Input
                     id="su-confirm"
+                    name="confirm"
                     type="password"
                     required
                     autoComplete="new-password"
-                    value={confirm}
-                    onChange={e => setConfirm(e.target.value)}
                   />
                 </div>
-                <Button type="submit" disabled={busy}>
-                  {busy ? "Creating…" : "Continue"}
+                <Button type="submit" disabled={accountPending}>
+                  {accountPending ? "Creating…" : "Continue"}
                 </Button>
               </form>
             </CardContent>
@@ -238,22 +245,21 @@ export function SignupPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={submitOtp} className="flex flex-col gap-4">
+              <form action={otpAction} className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="su-otp">Verification code</Label>
                   <Input
                     id="su-otp"
+                    name="otp"
                     inputMode="numeric"
                     autoComplete="one-time-code"
                     required
-                    value={otp}
-                    onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
                     placeholder="123456"
                     className="text-lg tracking-[0.5em] text-center"
                   />
                 </div>
-                <Button type="submit" disabled={busy}>
-                  {busy ? "Verifying…" : "Verify & continue"}
+                <Button type="submit" disabled={otpPending}>
+                  {otpPending ? "Verifying…" : "Verify & continue"}
                 </Button>
                 <button
                   type="button"
@@ -279,12 +285,12 @@ export function SignupPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={submitProfile} className="flex flex-col gap-6">
+              <form action={profileAction} className="flex flex-col gap-6">
                 {/* Basics */}
                 <Section title="Basics">
-                  <Field label="Full name" name="fullName" value={profile.fullName} onChange={set("fullName")} required />
-                  <Field label="Phone (optional)" name="phone" value={profile.phone} onChange={set("phone")} />
-                  <Field label="Location" name="location" value={profile.location} onChange={set("location")} placeholder="e.g. London, UK" />
+                  <Field label="Full name" name="fullName" value={profile.fullName} onChange={setText("fullName")} required />
+                  <Field label="Phone (optional)" name="phone" value={profile.phone} onChange={setText("phone")} />
+                  <Field label="Location" name="location" value={profile.location} onChange={setText("location")} placeholder="e.g. London, UK" />
                 </Section>
 
                 {/* Seniority */}
@@ -293,28 +299,28 @@ export function SignupPage() {
                     label="Seniority"
                     name="seniority"
                     value={profile.seniority ?? ""}
-                    onChange={set("seniority")}
+                    onChange={setSelect("seniority")}
                     options={["", "Junior", "Mid", "Senior", "Staff", "Principal"]}
                   />
-                  <Field label="Years of experience" name="yearsExperience" value={profile.yearsExperience} onChange={set("yearsExperience")} placeholder="e.g. 7" type="number" />
+                  <Field label="Years of experience" name="yearsExperience" value={profile.yearsExperience} onChange={setText("yearsExperience")} placeholder="e.g. 7" type="number" />
                 </Section>
 
                 {/* Target role */}
                 <Section title="What you're looking for">
-                  <Field label="Target roles" name="targetRoles" value={profile.targetRoles} onChange={set("targetRoles")} placeholder="e.g. Senior TypeScript Engineer" />
-                  <Field label="Target locations" name="targetLocations" value={profile.targetLocations} onChange={set("targetLocations")} placeholder="e.g. Remote, London" />
+                  <Field label="Target roles" name="targetRoles" value={profile.targetRoles} onChange={setText("targetRoles")} placeholder="e.g. Senior TypeScript Engineer" />
+                  <Field label="Target locations" name="targetLocations" value={profile.targetLocations} onChange={setText("targetLocations")} placeholder="e.g. Remote, London" />
                   <SelectField
                     label="Work mode"
                     name="workMode"
                     value={profile.workMode ?? ""}
-                    onChange={set("workMode")}
+                    onChange={setSelect("workMode")}
                     options={["", "remote", "hybrid", "onsite"]}
                   />
                   <SelectField
                     label="Job-search status"
                     name="jobSearchStatus"
                     value={profile.jobSearchStatus ?? ""}
-                    onChange={set("jobSearchStatus")}
+                    onChange={setSelect("jobSearchStatus")}
                     options={["", "actively looking", "open", "passive"]}
                   />
                 </Section>
@@ -323,44 +329,43 @@ export function SignupPage() {
                 <Section title="Skills & links">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="skills">Skills (comma-separated)</Label>
-                    <textarea
+                    <Textarea
                       id="skills"
                       name="skills"
                       rows={2}
                       value={profile.skills ?? ""}
-                      onChange={set("skills")}
+                      onChange={e => setProfile(p => ({ ...p, skills: e.target.value }))}
                       placeholder="e.g. TypeScript, React, distributed systems"
-                      className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring resize-y"
                     />
                   </div>
-                  <Field label="LinkedIn URL" name="linkedinUrl" value={profile.linkedinUrl} onChange={set("linkedinUrl")} placeholder="https://linkedin.com/in/you" />
-                  <Field label="GitHub URL" name="githubUrl" value={profile.githubUrl} onChange={set("githubUrl")} placeholder="https://github.com/you" />
-                  <Field label="Portfolio URL" name="portfolioUrl" value={profile.portfolioUrl} onChange={set("portfolioUrl")} placeholder="https://you.dev" />
+                  <Field label="LinkedIn URL" name="linkedinUrl" value={profile.linkedinUrl} onChange={setText("linkedinUrl")} placeholder="https://linkedin.com/in/you" />
+                  <Field label="GitHub URL" name="githubUrl" value={profile.githubUrl} onChange={setText("githubUrl")} placeholder="https://github.com/you" />
+                  <Field label="Portfolio URL" name="portfolioUrl" value={profile.portfolioUrl} onChange={setText("portfolioUrl")} placeholder="https://you.dev" />
                 </Section>
 
                 {/* Work auth + CV */}
                 <Section title="Work authorization & CV">
-                  <Field label="Work authorization" name="workAuth" value={profile.workAuth} onChange={set("workAuth")} placeholder="e.g. EU citizen, needs sponsorship" />
+                  <Field label="Work authorization" name="workAuth" value={profile.workAuth} onChange={setText("workAuth")} placeholder="e.g. EU citizen, needs sponsorship" />
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="cv">CV / Résumé (PDF or DOCX)</Label>
-                    <input
+                    <FileInput
                       id="cv"
                       type="file"
                       accept=".pdf,.doc,.docx"
                       onChange={e => setCvFile(e.target.files?.[0] ?? null)}
-                      className="w-full text-sm text-muted-foreground file:mr-3 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-secondary file:text-secondary-foreground file:cursor-pointer hover:file:bg-secondary/80"
                     />
                   </div>
                 </Section>
 
-                {error && (
-                  <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-                    {error}
-                  </div>
+                {profileState.error && (
+                  <Alert variant="destructive">
+                    <CircleAlert />
+                    <AlertDescription>{profileState.error}</AlertDescription>
+                  </Alert>
                 )}
 
-                <Button type="submit" size="lg" disabled={busy}>
-                  {busy ? "Saving…" : "Finish setup"}
+                <Button type="submit" size="lg" disabled={profilePending}>
+                  {profilePending ? "Saving…" : "Finish setup"}
                 </Button>
               </form>
             </CardContent>
@@ -369,9 +374,10 @@ export function SignupPage() {
 
         {/* Errors for steps 1 & 2 */}
         {error && step !== "profile" && (
-          <div className="mt-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-            {error}
-          </div>
+          <Alert variant="destructive" className="mt-4">
+            <CircleAlert />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
 
         <p className="text-center text-sm text-muted-foreground mt-6">
@@ -445,25 +451,24 @@ function SelectField({
   label: string
   name: string
   value: string
-  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
+  onChange: (value: string) => void
   options: string[]
 }) {
   return (
     <div className="flex flex-col gap-2">
       <Label htmlFor={name}>{label}</Label>
-      <select
-        id={name}
-        name={name}
-        value={value}
-        onChange={onChange}
-        className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        {options.map(o => (
-          <option key={o} value={o} className="bg-background">
-            {o === "" ? "— Select —" : o}
-          </option>
-        ))}
-      </select>
+      <Select value={value || NONE} onValueChange={onChange}>
+        <SelectTrigger id={name} className="w-full">
+          <SelectValue placeholder="— Select —" />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map(o => (
+            <SelectItem key={o || NONE} value={o || NONE}>
+              {o === "" ? "— Select —" : o}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   )
 }

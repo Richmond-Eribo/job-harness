@@ -1,6 +1,9 @@
-import { useState } from "react"
-import { Link } from "@tanstack/react-router"
+import { useActionState } from "react"
+import { Link, useNavigate } from "@tanstack/react-router"
+import { CircleAlert } from "lucide-react"
 import {
+  Alert,
+  AlertDescription,
   Button,
   Card,
   CardContent,
@@ -12,34 +15,40 @@ import {
 } from "@agent-harness/ui"
 import { authClient } from "../lib/auth"
 
-// Email + password sign-in. (Signup with OTP verification is at /signup;
-// forgot-password will land in a follow-up.)
-export function LoginPage() {
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+// Email + password sign-in, as a React 19 form action. The action reads fields
+// from FormData (uncontrolled inputs), calls signInEmail, and on success
+// navigates to /dashboard — the beforeLoad guard there will bounce to
+// /onboarding if the user hasn't completed setup. (Signup with OTP is /signup;
+// forgot-password is /forgot-password.)
+type LoginState = { error?: string }
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    setBusy(true)
-    try {
-      // Cast: signInEmail is a core email/password method (enabled server-side);
-      // the client's type inference only reflects plugin methods.
-      const { error: signInError } = await (authClient as any).signInEmail({
-        email,
-        password,
-      })
-      if (signInError) throw new Error(signInError.message ?? "Sign-in failed")
-      // AppLayout's session watcher picks up the new session and routes to
-      // /dashboard (or /onboarding if not yet onboarded).
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
+export function LoginPage() {
+  const navigate = useNavigate()
+
+  const [state, action, pending] = useActionState<LoginState, FormData>(
+    async (_prev, fd) => {
+      const email = String(fd.get("email") ?? "")
+      const password = String(fd.get("password") ?? "")
+      try {
+        // Cast: signInEmail is a core email/password method (enabled server-
+        // side); the client's type inference only reflects plugin methods.
+        const { error: signInError } = await (authClient as any).signInEmail({
+          email,
+          password,
+        })
+        if (signInError) {
+          throw new Error(signInError.message ?? "Sign-in failed")
+        }
+        // Navigate to /dashboard; the route's beforeLoad guard will send a
+        // not-yet-onboarded user to /onboarding.
+        await navigate({ to: "/dashboard" })
+        return {}
+      } catch (err: any) {
+        return { error: err.message }
+      }
+    },
+    {},
+  )
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-background p-4">
@@ -49,17 +58,16 @@ export function LoginPage() {
           <CardDescription>Sign in to your job-search agent.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={submit} className="flex flex-col gap-4">
+          <form action={action} className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
+                name="email"
                 type="email"
                 required
                 autoFocus
                 autoComplete="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-2">
@@ -74,21 +82,21 @@ export function LoginPage() {
               </div>
               <Input
                 id="password"
+                name="password"
                 type="password"
                 required
                 autoComplete="current-password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
               />
             </div>
-            <Button type="submit" disabled={busy}>
-              {busy ? "Signing in…" : "Sign in"}
+            <Button type="submit" disabled={pending}>
+              {pending ? "Signing in…" : "Sign in"}
             </Button>
 
-            {error && (
-              <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-                {error}
-              </div>
+            {state.error && (
+              <Alert variant="destructive">
+                <CircleAlert />
+                <AlertDescription>{state.error}</AlertDescription>
+              </Alert>
             )}
           </form>
 

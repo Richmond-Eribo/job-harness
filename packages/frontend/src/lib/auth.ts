@@ -23,4 +23,25 @@ export const authClient = createAuthClient({
   },
 })
 
+/**
+ * The session shape the app can rely on. Adds `onboardingComplete` (set by the
+ * backend's additionalFields) to the standard Better Auth user. Used by the
+ * route guards in src/lib/guards.ts. The inferred client type doesn't surface
+ * custom additionalFields, so we declare the full shape explicitly here and
+ * cast to it at the call sites.
+ */
+export type AppSession = {
+  session: { id: string; token: string; userId: string; expiresAt: Date }
+  user: {
+    id: string
+    email: string
+    name: string
+    image: string | null
+    emailVerified: boolean
+    onboardingComplete: boolean
+    createdAt: Date
+    updatedAt: Date
+  }
+}
+
 export type Session = Awaited<ReturnType<typeof authClient.useSession>>["data"]

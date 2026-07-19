@@ -1,14 +1,24 @@
-import { useState } from "react"
+import { useActionState, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
+import { CircleAlert } from "lucide-react"
 import {
+  Alert,
+  AlertDescription,
   Button,
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
+  FileInput,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Textarea,
 } from "@agent-harness/ui"
 import { api } from "../lib/api"
 
@@ -16,58 +26,70 @@ import { api } from "../lib/api"
 // (New users go through the full signup at /signup; this is the re-entry point
 // the onboarding gate sends them to.) Field set mirrors SignupPage's profile
 // section so both paths capture the same career data.
+//
+// React 19 form action: the <form action={...}> drives a useActionState. Text
+// fields are uncontrolled (read from FormData in the action); the Select-driven
+// + number fields stay controlled in `p` state and are merged in the action.
+//
+// Sentinel value for the "no selection" item in each Select. Radix Select
+// requires non-empty item values, so we map "" (the field's unselected state)
+// ↔ "__none__" (the item the user picks to leave it blank).
+const NONE = "__none__"
+
+type OnboardingState = { error?: string }
+
 export function OnboardingPage() {
   const navigate = useNavigate()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [cvFile, setCvFile] = useState<File | null>(null)
   const [p, setP] = useState<Record<string, string>>({})
 
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+  const setSelect = (k: string) => (v: string) =>
+    setP(prev => ({ ...prev, [k]: v === NONE ? "" : v }))
+  const setText = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setP(prev => ({ ...prev, [k]: e.target.value }))
 
-  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      const form = e.currentTarget
-      const fd = new FormData(form)
+  const [state, action, pending] = useActionState<OnboardingState, FormData>(
+    async (_prev, fd) => {
+      try {
+        // 1. Upload CV to R2 if selected.
+        if (cvFile) {
+          const upRes = await fetch(
+            `/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": cvFile.type },
+              body: cvFile,
+            },
+          )
+          if (!upRes.ok) throw new Error("CV upload failed")
+        }
 
-      // 1. Upload CV to R2 if selected.
-      if (cvFile) {
-        const upRes = await fetch(
-          `/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
-          { method: "POST", headers: { "Content-Type": cvFile.type }, body: cvFile },
-        )
-        if (!upRes.ok) throw new Error("CV upload failed")
+        // 2. Save profile + mark onboarding complete. Merge FormData (text
+        //    fields) with the select/number-driven fields tracked in state.
+        await api.post("/onboarding", {
+          fullName: fd.get("fullName"),
+          phone: fd.get("phone"),
+          location: fd.get("location") ?? p.location,
+          seniority: p.seniority,
+          yearsExperience: p.yearsExperience,
+          targetRoles: fd.get("targetRoles"),
+          targetLocations: fd.get("targetLocations") ?? p.targetLocations,
+          workMode: p.workMode,
+          jobSearchStatus: p.jobSearchStatus,
+          skills: fd.get("skills"),
+          linkedinUrl: fd.get("linkedinUrl"),
+          githubUrl: fd.get("githubUrl"),
+          portfolioUrl: fd.get("portfolioUrl"),
+          workAuth: fd.get("workAuth"),
+        })
+        await navigate({ to: "/dashboard" })
+        return {}
+      } catch (err: any) {
+        return { error: err.message }
       }
-
-      // 2. Save profile + mark onboarding complete. Merge form data with the
-      //    select-driven fields tracked in React state.
-      await api.post("/onboarding", {
-        fullName: fd.get("fullName"),
-        phone: fd.get("phone"),
-        location: fd.get("location") ?? p.location,
-        seniority: p.seniority,
-        yearsExperience: p.yearsExperience,
-        targetRoles: fd.get("targetRoles"),
-        targetLocations: fd.get("targetLocations") ?? p.targetLocations,
-        workMode: p.workMode,
-        jobSearchStatus: p.jobSearchStatus,
-        skills: fd.get("skills"),
-        linkedinUrl: fd.get("linkedinUrl"),
-        githubUrl: fd.get("githubUrl"),
-        portfolioUrl: fd.get("portfolioUrl"),
-        workAuth: fd.get("workAuth"),
-      })
-      navigate({ to: "/dashboard" })
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
+    },
+    {},
+  )
 
   return (
     <div className="min-h-screen bg-background py-10 px-4">
@@ -81,61 +103,118 @@ export function OnboardingPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={submit} className="flex flex-col gap-6">
+            <form action={action} className="flex flex-col gap-6">
               <Section title="Basics">
                 <Field label="Full name" name="fullName" required />
                 <Field label="Phone (optional)" name="phone" />
-                <Field label="Location" name="location" placeholder="e.g. London, UK" />
+                <Field
+                  label="Location"
+                  name="location"
+                  placeholder="e.g. London, UK"
+                  value={p.location}
+                  onChange={setText("location")}
+                />
               </Section>
 
               <Section title="Experience">
-                <SelectField label="Seniority" name="seniority" value={p.seniority ?? ""} onChange={set("seniority")} options={["", "Junior", "Mid", "Senior", "Staff", "Principal"]} />
-                <Field label="Years of experience" name="yearsExperience" type="number" value={p.yearsExperience} onChange={set("yearsExperience")} placeholder="e.g. 7" />
+                <SelectField
+                  label="Seniority"
+                  name="seniority"
+                  value={p.seniority ?? ""}
+                  onChange={setSelect("seniority")}
+                  options={["", "Junior", "Mid", "Senior", "Staff", "Principal"]}
+                />
+                <Field
+                  label="Years of experience"
+                  name="yearsExperience"
+                  type="number"
+                  value={p.yearsExperience}
+                  onChange={setText("yearsExperience")}
+                  placeholder="e.g. 7"
+                />
               </Section>
 
               <Section title="What you're looking for">
-                <Field label="Target roles" name="targetRoles" placeholder="e.g. Senior TypeScript Engineer" />
-                <Field label="Target locations" name="targetLocations" placeholder="e.g. Remote, London" />
-                <SelectField label="Work mode" name="workMode" value={p.workMode ?? ""} onChange={set("workMode")} options={["", "remote", "hybrid", "onsite"]} />
-                <SelectField label="Job-search status" name="jobSearchStatus" value={p.jobSearchStatus ?? ""} onChange={set("jobSearchStatus")} options={["", "actively looking", "open", "passive"]} />
+                <Field
+                  label="Target roles"
+                  name="targetRoles"
+                  placeholder="e.g. Senior TypeScript Engineer"
+                />
+                <Field
+                  label="Target locations"
+                  name="targetLocations"
+                  placeholder="e.g. Remote, London"
+                  value={p.targetLocations}
+                  onChange={setText("targetLocations")}
+                />
+                <SelectField
+                  label="Work mode"
+                  name="workMode"
+                  value={p.workMode ?? ""}
+                  onChange={setSelect("workMode")}
+                  options={["", "remote", "hybrid", "onsite"]}
+                />
+                <SelectField
+                  label="Job-search status"
+                  name="jobSearchStatus"
+                  value={p.jobSearchStatus ?? ""}
+                  onChange={setSelect("jobSearchStatus")}
+                  options={["", "actively looking", "open", "passive"]}
+                />
               </Section>
 
               <Section title="Skills & links">
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="skills">Skills (comma-separated)</Label>
-                  <textarea
+                  <Textarea
                     id="skills"
                     name="skills"
                     rows={2}
                     placeholder="e.g. TypeScript, React, distributed systems"
-                    className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring resize-y"
                   />
                 </div>
-                <Field label="LinkedIn URL" name="linkedinUrl" placeholder="https://linkedin.com/in/you" />
-                <Field label="GitHub URL" name="githubUrl" placeholder="https://github.com/you" />
-                <Field label="Portfolio URL" name="portfolioUrl" placeholder="https://you.dev" />
+                <Field
+                  label="LinkedIn URL"
+                  name="linkedinUrl"
+                  placeholder="https://linkedin.com/in/you"
+                />
+                <Field
+                  label="GitHub URL"
+                  name="githubUrl"
+                  placeholder="https://github.com/you"
+                />
+                <Field
+                  label="Portfolio URL"
+                  name="portfolioUrl"
+                  placeholder="https://you.dev"
+                />
               </Section>
 
               <Section title="Work authorization & CV">
-                <Field label="Work authorization" name="workAuth" placeholder="e.g. EU citizen, needs sponsorship" />
+                <Field
+                  label="Work authorization"
+                  name="workAuth"
+                  placeholder="e.g. EU citizen, needs sponsorship"
+                />
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="cv">CV / Résumé (PDF or DOCX)</Label>
-                  <input
+                  <FileInput
                     id="cv"
-                    type="file"
                     accept=".pdf,.doc,.docx"
                     onChange={e => setCvFile(e.target.files?.[0] ?? null)}
-                    className="w-full text-sm text-muted-foreground file:mr-3 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-secondary file:text-secondary-foreground file:cursor-pointer hover:file:bg-secondary/80"
                   />
                 </div>
               </Section>
 
-              {error && (
-                <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">{error}</div>
+              {state.error && (
+                <Alert variant="destructive">
+                  <CircleAlert />
+                  <AlertDescription>{state.error}</AlertDescription>
+                </Alert>
               )}
 
-              <Button type="submit" size="lg" disabled={busy}>
-                {busy ? "Saving…" : "Complete setup"}
+              <Button type="submit" size="lg" disabled={pending}>
+                {pending ? "Saving…" : "Complete setup"}
               </Button>
             </form>
           </CardContent>
@@ -200,25 +279,24 @@ function SelectField({
   label: string
   name: string
   value: string
-  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
+  onChange: (value: string) => void
   options: string[]
 }) {
   return (
     <div className="flex flex-col gap-2">
       <Label htmlFor={name}>{label}</Label>
-      <select
-        id={name}
-        name={name}
-        value={value}
-        onChange={onChange}
-        className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        {options.map(o => (
-          <option key={o} value={o} className="bg-background">
-            {o === "" ? "— Select —" : o}
-          </option>
-        ))}
-      </select>
+      <Select value={value || NONE} onValueChange={onChange}>
+        <SelectTrigger id={name} className="w-full">
+          <SelectValue placeholder="— Select —" />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map(o => (
+            <SelectItem key={o || NONE} value={o || NONE}>
+              {o === "" ? "— Select —" : o}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   )
 }

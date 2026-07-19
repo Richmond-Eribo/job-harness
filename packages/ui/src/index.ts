@@ -18,6 +18,7 @@ export {
   CardContent,
 } from "./components/card"
 export { Input } from "./components/input"
+export { FileInput } from "./components/file-input"
 export { Label } from "./components/label"
 export { Textarea } from "./components/textarea"
 export {
@@ -45,6 +46,7 @@ export {
   SelectScrollDownButton,
 } from "./components/select"
 export { Badge, badgeVariants } from "./components/badge"
+export { Alert, AlertTitle, AlertDescription } from "./components/alert"
 export { Skeleton } from "./components/skeleton"
 export { Separator } from "./components/separator"
 export { Toaster } from "./components/sonner"

@@ -1,6 +1,9 @@
-import { useState } from "react"
+import { useActionState, useState } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
+import { CircleAlert } from "lucide-react"
 import {
+  Alert,
+  AlertDescription,
   Button,
   Card,
   CardContent,
@@ -18,77 +21,72 @@ import { authClient } from "../lib/auth"
 //   2. Reset: enter the code + a new password → POST /email-otp/reset-password
 //      → on success, go to /login.
 // All helpers come from the emailOTPClient plugin (mounted in lib/auth.ts).
+//
+// React 19 form actions: a single useActionState branches on the current step.
+// `email` stays in React state because both steps + the resend button need it
+// and it must persist across the step transition; the OTP/password/confirm
+// fields are read from FormData (uncontrolled).
 type Step = "request" | "reset"
+type ResetState = { error?: string; step: Step; email: string }
 
 export function ForgotPasswordPage() {
   const navigate = useNavigate()
-  const [step, setStep] = useState<Step>("request")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
   const [email, setEmail] = useState("")
-  const [otp, setOtp] = useState("")
-  const [password, setPassword] = useState("")
-  const [confirm, setConfirm] = useState("")
 
-  // ── Step 1: request the reset OTP ──────────────────────────────────────
-  const submitRequest = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    setBusy(true)
-    try {
-      // Cast: the emailOTP client methods aren't reflected in the inferred
-      // type (same situation as signUpEmail / signInEmail).
-      const { error: reqError } = await (
-        authClient as any
-      ).emailOtp.requestPasswordReset({ email })
-      if (reqError) throw new Error(reqError.message ?? "Request failed")
-      setStep("reset")
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
+  const [state, action, pending] = useActionState<ResetState, FormData>(
+    async (prev, fd) => {
+      // Step 1 (request) and step 2 (reset) share this action; branch on the
+      // step carried in the previous state.
+      if (prev.step !== "reset") {
+        const e = String(fd.get("email") ?? "")
+        try {
+          const { error: reqError } = await (authClient as any).emailOtp
+            .requestPasswordReset({ email: e })
+          if (reqError) {
+            throw new Error(reqError.message ?? "Request failed")
+          }
+          setEmail(e)
+          return { step: "reset", email: e }
+        } catch (err: any) {
+          return { step: "request", email: e, error: err.message }
+        }
+      }
 
-  // ── Step 2: reset the password with the OTP ────────────────────────────
-  const submitReset = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.")
-      return
-    }
-    if (password !== confirm) {
-      setError("Passwords don't match.")
-      return
-    }
-    setBusy(true)
-    try {
-      const { error: resetError } = await (
-        authClient as any
-      ).emailOtp.resetPassword({ email, otp: otp.trim(), password })
-      if (resetError) throw new Error(resetError.message ?? "Reset failed")
-      navigate({ to: "/login" })
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
+      // Step 2 (reset)
+      const otp = String(fd.get("otp") ?? "").trim()
+      const password = String(fd.get("password") ?? "")
+      const confirm = String(fd.get("confirm") ?? "")
+      if (password.length < 8) {
+        return { ...prev, error: "Password must be at least 8 characters." }
+      }
+      if (password !== confirm) {
+        return { ...prev, error: "Passwords don't match." }
+      }
+      try {
+        const { error: resetError } = await (authClient as any).emailOtp
+          .resetPassword({ email: prev.email, otp, password })
+        if (resetError) {
+          throw new Error(resetError.message ?? "Reset failed")
+        }
+        await navigate({ to: "/login" })
+        return { ...prev }
+      } catch (err: any) {
+        return { ...prev, error: err.message }
+      }
+    },
+    { step: "request", email: "" },
+  )
 
+  const step = state.step
+  const error = state.error
   const resend = async () => {
-    setError(null)
-    setBusy(true)
+    if (!email) return
     try {
-      const { error: reqError } = await (
-        authClient as any
-      ).emailOtp.requestPasswordReset({ email })
+      const { error: reqError } = await (authClient as any).emailOtp
+        .requestPasswordReset({ email })
       if (reqError) throw new Error(reqError.message ?? "Couldn't resend code")
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
+    } catch {
+      // best-effort; the user can retry
     }
   }
 
@@ -104,39 +102,34 @@ export function ForgotPasswordPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {/* ── Step 1: request ───────────────────────────────────────── */}
           {step === "request" ? (
-            <form onSubmit={submitRequest} className="flex flex-col gap-4">
+            <form action={action} className="flex flex-col gap-4">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="fp-email">Email</Label>
                 <Input
                   id="fp-email"
+                  name="email"
                   type="email"
                   required
                   autoFocus
                   autoComplete="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
+                  defaultValue={email}
                 />
               </div>
-              <Button type="submit" disabled={busy}>
-                {busy ? "Sending…" : "Send reset code"}
+              <Button type="submit" disabled={pending}>
+                {pending ? "Sending…" : "Send reset code"}
               </Button>
             </form>
           ) : (
-            // ── Step 2: reset ────────────────────────────────────────
-            <form onSubmit={submitReset} className="flex flex-col gap-4">
+            <form action={action} className="flex flex-col gap-4">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="fp-otp">Verification code</Label>
                 <Input
                   id="fp-otp"
+                  name="otp"
                   inputMode="numeric"
                   autoComplete="one-time-code"
                   required
-                  value={otp}
-                  onChange={e =>
-                    setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))
-                  }
                   placeholder="123456"
                   className="text-lg tracking-[0.5em] text-center"
                 />
@@ -145,11 +138,10 @@ export function ForgotPasswordPage() {
                 <Label htmlFor="fp-pw">New password</Label>
                 <Input
                   id="fp-pw"
+                  name="password"
                   type="password"
                   required
                   autoComplete="new-password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
                   placeholder="At least 8 characters"
                 />
               </div>
@@ -157,20 +149,19 @@ export function ForgotPasswordPage() {
                 <Label htmlFor="fp-confirm">Confirm new password</Label>
                 <Input
                   id="fp-confirm"
+                  name="confirm"
                   type="password"
                   required
                   autoComplete="new-password"
-                  value={confirm}
-                  onChange={e => setConfirm(e.target.value)}
                 />
               </div>
-              <Button type="submit" disabled={busy}>
-                {busy ? "Resetting…" : "Reset password"}
+              <Button type="submit" disabled={pending}>
+                {pending ? "Resetting…" : "Reset password"}
               </Button>
               <button
                 type="button"
                 onClick={resend}
-                disabled={busy}
+                disabled={pending}
                 className="text-xs text-muted-foreground hover:text-foreground transition-colors"
               >
                 Didn't get the code? Resend
@@ -179,9 +170,10 @@ export function ForgotPasswordPage() {
           )}
 
           {error && (
-            <div className="mt-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-              {error}
-            </div>
+            <Alert variant="destructive" className="mt-4">
+              <CircleAlert />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
 
           <p className="text-center text-sm text-muted-foreground mt-6">

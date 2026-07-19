@@ -8,7 +8,17 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router"
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+// Global stylesheet. Importing it here pulls it into Vite's module graph so
+// @tailwindcss/vite compiles it and TanStack Start hoists the resulting
+// <link rel="stylesheet"> into the SSR <head>. Without this import the whole
+// app renders unstyled.
+import "../index.css"
+import {
+  QueryClient,
+  QueryCache,
+  MutationCache,
+  QueryClientProvider,
+} from "@tanstack/react-query"
 import {
   LayoutDashboard,
   Briefcase,
@@ -20,7 +30,8 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { authClient } from "../lib/auth"
-import { Skeleton, Toaster } from "@agent-harness/ui"
+import { ApiError } from "../lib/api"
+import { Button, Skeleton, Toaster } from "@agent-harness/ui"
 import { ErrorBoundary } from "../components/ErrorBoundary"
 
 // Root route (file-based). Owns:
@@ -53,16 +64,23 @@ function Shell() {
   const navigate = useNavigate()
   const pathname = useRouterState({ select: s => s.location.pathname })
 
-  // While the session is loading, show a minimal skeleton on app routes only
-  // (public surfaces render immediately for a snappy first paint).
-  if (session.isPending && !SHELL_LESS.has(pathname)) {
+  // Public + auth + onboarding pages render WITHOUT the sidebar shell.
+  // (Access control itself is handled by each route's beforeLoad guard —
+  // see src/lib/guards.ts. This is purely presentational.)
+  if (SHELL_LESS.has(pathname)) {
+    return <Outlet />
+  }
+
+  // Brief skeleton while the session resolves on an app route. The beforeLoad
+  // guard already ensured a session exists; this just smooths the first paint.
+  if (session.isPending) {
     return (
       <div className="flex h-screen bg-background">
-        <div className="w-56 shrink-0 bg-card border-r border-border flex flex-col gap-2 p-4">
-          <Skeleton className="h-6 w-24" />
-          <div className="flex flex-col gap-2 mt-4">
+        <div className="w-60 shrink-0 bg-card/60 border-r border-border flex flex-col gap-2 p-3">
+          <Skeleton className="h-8 w-32 m-2" />
+          <div className="flex flex-col gap-1 mt-4">
             {NAV.map(n => (
-              <Skeleton key={n.id} className="h-8 w-full" />
+              <Skeleton key={n.id} className="h-9 w-full" />
             ))}
           </div>
         </div>
@@ -74,23 +92,21 @@ function Shell() {
     )
   }
 
-  // Public + auth + onboarding pages render WITHOUT the sidebar shell.
-  if (SHELL_LESS.has(pathname)) {
-    return <Outlet />
-  }
-
-  // Not authenticated on a protected route → bare outlet (the guard redirects).
-  if (!session.data) {
-    return <Outlet />
-  }
-
   return (
     <div className="flex h-screen">
-      <aside className="w-56 shrink-0 bg-card border-r border-border flex flex-col">
-        <div className="px-5 py-5 text-lg font-bold text-foreground border-b border-border">
-          Job Agent
+      <aside className="w-60 shrink-0 bg-card/60 backdrop-blur-sm border-r border-border flex flex-col">
+        <div className="px-5 py-5 flex items-center gap-2.5 border-b border-border">
+          <span
+            className="size-7 rounded-lg bg-primary grid place-items-center text-primary-foreground shadow-sm"
+            aria-hidden
+          >
+            <Briefcase className="size-4" />
+          </span>
+          <span className="text-base font-semibold tracking-tight text-foreground">
+            Job Agent
+          </span>
         </div>
-        <nav className="flex-1 py-3">
+        <nav className="flex-1 px-3 py-4 flex flex-col gap-1">
           {NAV.map(item => {
             const active = pathname === item.id
             const Icon = item.icon
@@ -98,31 +114,33 @@ function Shell() {
               <Link
                 key={item.id}
                 to={item.id}
-                className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
+                className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                   active
-                    ? "bg-secondary text-foreground border-l-2 border-primary"
-                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground border-l-2 border-transparent"
+                    ? "bg-primary/15 text-primary font-medium"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
                 }`}
               >
-                <Icon className="size-4" />
+                <Icon className="size-4 shrink-0" />
                 {item.label}
               </Link>
             )
           })}
         </nav>
-        <div className="p-4 border-t border-border">
-          <div className="text-xs text-muted-foreground mb-2 truncate">
+        <div className="p-3 border-t border-border flex flex-col gap-2">
+          <div className="px-3 text-xs text-muted-foreground truncate">
             {session.data?.user?.email}
           </div>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            className="justify-start text-muted-foreground hover:text-destructive"
             onClick={() =>
               authClient.signOut().then(() => navigate({ to: "/login" }))
             }
-            className="flex items-center gap-2 text-xs text-muted-foreground hover:text-destructive transition-colors"
           >
-            <LogOut className="size-3.5" />
+            <LogOut className="size-4" />
             Sign out
-          </button>
+          </Button>
         </div>
       </aside>
 
@@ -133,11 +151,29 @@ function Shell() {
   )
 }
 
+// Global listener for auth-state errors. Any ApiError from a react-query query
+// or mutation is intercepted here: 401 (session expired) → hard-navigate to
+// /login; 428 (onboarding incomplete) → /onboarding. We use window.location
+// (not router.navigate) on 401 because the session is gone and a router-level
+// transition could trigger more 401s during the cutover. SSR-guarded — on the
+// server these surface via the route errorComponent instead.
+function onQueryError(err: unknown): void {
+  if (typeof window === "undefined") return
+  if (!(err instanceof ApiError)) return
+  if (err.status === 401) {
+    window.location.assign("/login")
+  } else if (err.status === 428) {
+    window.location.assign("/onboarding")
+  }
+}
+
 // Single QueryClient. On the client this is a singleton (useState guards the
 // reference so it survives re-renders); on the server Start manages per-request
 // instances. staleTime 0 = queries refetch on focus — good for a live dashboard.
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 0 } },
+  queryCache: new QueryCache({ onError: onQueryError }),
+  mutationCache: new MutationCache({ onError: onQueryError }),
 })
 
 export const Route = createRootRouteWithContext()({
@@ -147,6 +183,27 @@ export const Route = createRootRouteWithContext()({
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "Job Agent" },
+      {
+        name: "description",
+        content:
+          "An AI agent that finds jobs, scores them, and writes the cover letters.",
+      },
+      { name: "color-scheme", content: "dark light" },
+    ],
+    links: [
+      // Landing typography: Inter (display + body neo-grotesque) and JetBrains
+      // Mono (eyebrows, trace card, numerals). display=swap so the system
+      // fallback renders immediately and swaps in once loaded (no FOIT).
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      {
+        rel: "preconnect",
+        href: "https://fonts.gstatic.com",
+        crossOrigin: "anonymous",
+      },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap",
+      },
     ],
   }),
   // shellComponent: the HTML document wrapper. Start renders this on the server
