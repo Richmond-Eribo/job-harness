@@ -1,15 +1,10 @@
 import { useActionState, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { CircleAlert } from "lucide-react"
+import { CircleAlert, Sparkles } from "lucide-react"
 import {
   Alert,
   AlertDescription,
   Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
   FileInput,
   Input,
   Label,
@@ -20,22 +15,11 @@ import {
   SelectValue,
   Textarea,
 } from "@agent-harness/ui"
+import { API_URL } from "../lib/auth"
 import { api } from "../lib/api"
+import { AuthShowcase } from "../components/AuthShowcase"
 
-// Onboarding for an existing user who hasn't completed their profile yet.
-// (New users go through the full signup at /signup; this is the re-entry point
-// the onboarding gate sends them to.) Field set mirrors SignupPage's profile
-// section so both paths capture the same career data.
-//
-// React 19 form action: the <form action={...}> drives a useActionState. Text
-// fields are uncontrolled (read from FormData in the action); the Select-driven
-// + number fields stay controlled in `p` state and are merged in the action.
-//
-// Sentinel value for the "no selection" item in each Select. Radix Select
-// requires non-empty item values, so we map "" (the field's unselected state)
-// ↔ "__none__" (the item the user picks to leave it blank).
 const NONE = "__none__"
-
 type OnboardingState = { error?: string }
 
 export function OnboardingPage() {
@@ -51,10 +35,9 @@ export function OnboardingPage() {
   const [state, action, pending] = useActionState<OnboardingState, FormData>(
     async (_prev, fd) => {
       try {
-        // 1. Upload CV to R2 if selected.
         if (cvFile) {
           const upRes = await fetch(
-            `/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
+            `${API_URL}/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
             {
               method: "POST",
               headers: { "Content-Type": cvFile.type },
@@ -64,8 +47,6 @@ export function OnboardingPage() {
           if (!upRes.ok) throw new Error("CV upload failed")
         }
 
-        // 2. Save profile + mark onboarding complete. Merge FormData (text
-        //    fields) with the select/number-driven fields tracked in state.
         await api.post("/onboarding", {
           fullName: fd.get("fullName"),
           phone: fd.get("phone"),
@@ -92,144 +73,98 @@ export function OnboardingPage() {
   )
 
   return (
-    <div className="min-h-screen bg-background py-10 px-4">
-      <div className="max-w-xl mx-auto">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-2xl">Complete your profile</CardTitle>
-            <CardDescription>
-              This powers your job-search agent. The richer the profile, the
-              better the targeting. Editable later in Settings.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form action={action} className="flex flex-col gap-6">
-              <Section title="Basics">
-                <Field label="Full name" name="fullName" required />
-                <Field label="Phone (optional)" name="phone" />
-                <Field
-                  label="Location"
-                  name="location"
-                  placeholder="e.g. London, UK"
-                  value={p.location}
-                  onChange={setText("location")}
-                />
-              </Section>
+    <div className="flex min-h-screen bg-background text-foreground animate-fade-in">
+      {/* Left 50% Showcase Panel */}
+      <AuthShowcase />
 
-              <Section title="Experience">
-                <SelectField
-                  label="Seniority"
-                  name="seniority"
-                  value={p.seniority ?? ""}
-                  onChange={setSelect("seniority")}
-                  options={["", "Junior", "Mid", "Senior", "Staff", "Principal"]}
-                />
-                <Field
-                  label="Years of experience"
-                  name="yearsExperience"
-                  type="number"
-                  value={p.yearsExperience}
-                  onChange={setText("yearsExperience")}
-                  placeholder="e.g. 7"
-                />
-              </Section>
+      {/* Right 50% Form Area */}
+      <div className="flex-1 flex flex-col justify-between p-6 sm:p-10 lg:p-12 overflow-y-auto">
+        <div className="w-full max-w-md mx-auto my-auto py-4">
+          <div className="mb-6">
+            <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 grid place-items-center text-primary mb-4">
+              <Sparkles className="size-5" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight">Complete your profile</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Configure your preferences so the agent targets the right job listings.
+            </p>
+          </div>
 
-              <Section title="What you're looking for">
-                <Field
-                  label="Target roles"
-                  name="targetRoles"
-                  placeholder="e.g. Senior TypeScript Engineer"
-                />
-                <Field
-                  label="Target locations"
-                  name="targetLocations"
-                  placeholder="e.g. Remote, London"
-                  value={p.targetLocations}
-                  onChange={setText("targetLocations")}
-                />
-                <SelectField
-                  label="Work mode"
-                  name="workMode"
-                  value={p.workMode ?? ""}
-                  onChange={setSelect("workMode")}
-                  options={["", "remote", "hybrid", "onsite"]}
-                />
-                <SelectField
-                  label="Job-search status"
-                  name="jobSearchStatus"
-                  value={p.jobSearchStatus ?? ""}
-                  onChange={setSelect("jobSearchStatus")}
-                  options={["", "actively looking", "open", "passive"]}
-                />
-              </Section>
+          <form action={action} className="flex flex-col gap-5">
+            <div className="text-sm font-semibold text-foreground border-l-2 border-primary pl-2.5">
+              Personal Basics
+            </div>
+            <Field label="Full name" name="fullName" required />
+            <Field
+              label="Location"
+              name="location"
+              placeholder="e.g. London, UK"
+              value={p.location}
+              onChange={setText("location")}
+            />
 
-              <Section title="Skills & links">
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="skills">Skills (comma-separated)</Label>
-                  <Textarea
-                    id="skills"
-                    name="skills"
-                    rows={2}
-                    placeholder="e.g. TypeScript, React, distributed systems"
-                  />
-                </div>
-                <Field
-                  label="LinkedIn URL"
-                  name="linkedinUrl"
-                  placeholder="https://linkedin.com/in/you"
-                />
-                <Field
-                  label="GitHub URL"
-                  name="githubUrl"
-                  placeholder="https://github.com/you"
-                />
-                <Field
-                  label="Portfolio URL"
-                  name="portfolioUrl"
-                  placeholder="https://you.dev"
-                />
-              </Section>
+            <div className="text-sm font-semibold text-foreground border-l-2 border-primary pl-2.5">
+              Experience & Target Roles
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <SelectField
+                label="Seniority"
+                name="seniority"
+                value={p.seniority ?? ""}
+                onChange={setSelect("seniority")}
+                options={["", "Junior", "Mid", "Senior", "Staff", "Principal"]}
+              />
+              <SelectField
+                label="Work mode"
+                name="workMode"
+                value={p.workMode ?? ""}
+                onChange={setSelect("workMode")}
+                options={["", "remote", "hybrid", "onsite"]}
+              />
+            </div>
+            <Field
+              label="Target roles"
+              name="targetRoles"
+              placeholder="e.g. Senior TypeScript Engineer"
+            />
 
-              <Section title="Work authorization & CV">
-                <Field
-                  label="Work authorization"
-                  name="workAuth"
-                  placeholder="e.g. EU citizen, needs sponsorship"
-                />
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="cv">CV / Résumé (PDF or DOCX)</Label>
-                  <FileInput
-                    id="cv"
-                    accept=".pdf,.doc,.docx"
-                    onChange={e => setCvFile(e.target.files?.[0] ?? null)}
-                  />
-                </div>
-              </Section>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="skills" className="text-xs text-muted-foreground">Skills (comma-separated)</Label>
+              <Textarea
+                id="skills"
+                name="skills"
+                rows={2}
+                placeholder="e.g. TypeScript, React, Cloudflare Workers"
+              />
+            </div>
 
-              {state.error && (
-                <Alert variant="destructive">
-                  <CircleAlert />
-                  <AlertDescription>{state.error}</AlertDescription>
-                </Alert>
-              )}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="cv" className="text-xs text-muted-foreground">CV / Résumé (PDF or DOCX)</Label>
+              <FileInput
+                id="cv"
+                accept=".pdf,.doc,.docx"
+                onChange={e => setCvFile(e.target.files?.[0] ?? null)}
+              />
+            </div>
 
-              <Button type="submit" size="lg" disabled={pending}>
-                {pending ? "Saving…" : "Complete setup"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+            {state.error && (
+              <Alert variant="destructive">
+                <CircleAlert className="size-4" />
+                <AlertDescription>{state.error}</AlertDescription>
+              </Alert>
+            )}
+
+            <Button type="submit" size="lg" disabled={pending} className="w-full mt-2">
+              {pending ? "Saving profile…" : "Complete Setup & Launch Dashboard"}
+            </Button>
+          </form>
+        </div>
+
+        <div className="w-full max-w-md mx-auto text-center text-xs text-muted-foreground py-4">
+          Isolated workspace · Job Agent
+        </div>
       </div>
     </div>
-  )
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <fieldset className="flex flex-col gap-4">
-      <legend className="text-sm font-semibold text-foreground">{title}</legend>
-      {children}
-    </fieldset>
   )
 }
 
@@ -250,12 +185,9 @@ function Field({
   value?: string
   onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void
 }) {
-  // When `value`/`onChange` are provided, treat as controlled (for fields that
-  // need React state, e.g. number/select-driven). Otherwise uncontrolled
-  // (reads from FormData on submit, like the original onboarding form).
   return (
-    <div className="flex flex-col gap-2">
-      <Label htmlFor={name}>{label}</Label>
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={name} className="text-xs text-muted-foreground">{label}</Label>
       <Input
         id={name}
         name={name}
@@ -283,8 +215,8 @@ function SelectField({
   options: string[]
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <Label htmlFor={name}>{label}</Label>
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={name} className="text-xs text-muted-foreground">{label}</Label>
       <Select value={value || NONE} onValueChange={onChange}>
         <SelectTrigger id={name} className="w-full">
           <SelectValue placeholder="— Select —" />

@@ -19,6 +19,12 @@ export {
 } from "./components/card"
 export { Input } from "./components/input"
 export { FileInput } from "./components/file-input"
+export {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSlot,
+  InputOTPSeparator,
+} from "./components/input-otp"
 export { Label } from "./components/label"
 export { Textarea } from "./components/textarea"
 export {
