@@ -290,6 +290,8 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
     // Keep this in sync with the UserProfile type (@agent-harness/shared-types)
     // and the /api/onboarding allowlist in src/index.ts.
     const profile: Record<string, string | null> = {
+      firstName: null,
+      lastName: null,
       fullName: null,
       email: null,
       phone: null,

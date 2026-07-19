@@ -139,5 +139,35 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
         secure: !isLocalDev,
       },
     },
+
+    databaseHooks: {
+      user: {
+        // When a user verifies their email (the OTP step), Better Auth UPDATEs
+        // the user row with emailVerified=true. We piggyback on that update's
+        // `after` hook to also flip onboardingComplete = 1. The new signup
+        // flow no longer goes through POST /api/onboarding — it goes OTP-verify
+        // → /dashboard — so without this hook, onboardingComplete would stay
+        // false forever and the requireAuth guard would strand new users at
+        // /onboarding. The finer "has first/last name" gate is enforced
+        // separately client-side by requireProfile (lib/guards.ts) against the
+        // profile KV, not this flag.
+        update: {
+          async after(user) {
+            if (user?.emailVerified) {
+              try {
+                await env.DB.prepare(
+                  `UPDATE "user" SET onboardingComplete = 1 WHERE id = ?`,
+                )
+                  .bind(user.id)
+                  .run()
+              } catch {
+                // Non-fatal: the worst case is the user re-runs the OTP verify,
+                // which is idempotent. The surrounding error wrapper logs 5xx.
+              }
+            }
+          },
+        },
+      },
+    },
   })
 }

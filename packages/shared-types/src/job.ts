@@ -61,7 +61,14 @@ export interface FollowUp {
 }
 
 export interface UserProfile {
-  // --- Personal info (collected during onboarding/signup) ---
+  // --- Personal info (collected on the profile page after signup) ---
+  // firstName + lastName are the canonical name fields. The requireProfile
+  // client guard requires both to be non-empty before the user can leave
+  // /settings/profile. `fullName` is kept in sync as "firstName lastName" by
+  // the worker (PUT /api/profile + POST /api/onboarding) so legacy code that
+  // reads the single field still sees the right value.
+  firstName: string | null
+  lastName: string | null
   fullName: string | null
   email: string | null
   phone: string | null

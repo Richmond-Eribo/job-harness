@@ -53,21 +53,19 @@ const app = new Hono<AppEnv>()
 // Access-Control-Allow-Credentials so the cookie rides along cross-origin.
 app.use(
   "*",
-  async (c, next) => {
-    const allowed = new Set(
-      [c.env.FRONTEND_URL, c.env.BETTER_AUTH_URL].filter(
-        (o): o is string => typeof o === "string" && o.length > 0,
-      ),
-    )
-    const corsMiddleware = cors({
-      origin: (origin) => (origin && allowed.has(origin) ? origin : null),
-      credentials: true,
-      allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization"],
-      exposeHeaders: ["Set-Cookie"],
-    })
-    return corsMiddleware(c, next)
-  },
+  cors({
+    origin: (origin, c) => {
+      const allowed = new Set(
+        [c.env.FRONTEND_URL, c.env.BETTER_AUTH_URL].filter(
+          (o): o is string => typeof o === "string" && o.length > 0,
+        ),
+      )
+      return origin && allowed.has(origin) ? origin : null
+    },
+    credentials: true,
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    exposeHeaders: ["Set-Cookie"],
+  }),
 )
 
 // ── Better Auth handler ──────────────────────────────────────────────────
@@ -81,10 +79,26 @@ app.use(
 // is logged with the route for visibility in `wrangler tail` / the dev console.
 app.on(["GET", "POST"], "/api/auth/*", async c => {
   const auth = getAuth(c)
-  const res = await auth.handler(c.req.raw)
+  let res: Response
+  try {
+    res = await auth.handler(c.req.raw)
+  } catch (err) {
+    // Better Auth's handler should never throw (better-call wraps errors into
+    // Responses), but if it does we log the real error here.
+    console.error(
+      `[auth] ${c.req.method} ${c.req.path} THREW:`,
+      err instanceof Error ? `${err.message}\n${err.stack}` : err,
+    )
+    throw err
+  }
   if (res.status >= 500) {
+    // Clone + read the body so we can see Better Auth's error message (it's
+    // usually an empty body, but when it isn't, the message is the diagnosis).
+    const cloned = res.clone()
+    const body = await cloned.text().catch(() => "<unreadable>")
     console.error(
       `[auth] ${c.req.method} ${c.req.path} → ${res.status}`,
+      body ? `body=${body}` : "(empty body)",
     )
   }
   return res
@@ -110,6 +124,8 @@ app.post("/api/onboarding", async c => {
   const { jobAgent } = await getAgents(c.env, userId)
   const profilePatch: Record<string, string> = {}
   for (const k of [
+    "firstName",
+    "lastName",
     "fullName",
     "email",
     "phone",
@@ -129,6 +145,17 @@ app.post("/api/onboarding", async c => {
     "portfolioUrl",
   ]) {
     if (typeof (body as any)[k] === "string") profilePatch[k] = (body as any)[k]
+  }
+  // Keep the D1 `name` column (the session display name) in sync with
+  // firstName/lastName so the app shell shows the right thing without an
+  // extra fetch.
+  if (profilePatch.firstName || profilePatch.lastName) {
+    profilePatch.fullName = [
+      profilePatch.firstName,
+      profilePatch.lastName,
+    ]
+      .filter(Boolean)
+      .join(" ")
   }
   if (Object.keys(profilePatch).length > 0) {
     await jobAgent.setProfile(profilePatch)
@@ -658,6 +685,18 @@ app.get("/api/profile", async c => {
 app.put("/api/profile", async c => {
   const body = await c.req.json()
   const { jobAgent } = await getAgents(c.env, c.var.userId)
+  // Keep `fullName` in sync with firstName/lastName so any code reading the
+  // legacy single-name field (and the session display name) stays correct
+  // when the user edits their name on the profile page.
+  if (
+    typeof body.firstName === "string" ||
+    typeof body.lastName === "string"
+  ) {
+    const merged = { ...(await jobAgent.getProfile()), ...body }
+    body.fullName = [merged.firstName, merged.lastName]
+      .filter(Boolean)
+      .join(" ")
+  }
   return c.json({ message: await jobAgent.setProfile(body) })
 })
 
