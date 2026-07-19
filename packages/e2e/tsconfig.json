@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    "types": ["node", "@playwright/test"],
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022"
+  },
+  "include": [
+    "playwright.config.ts",
+    "global-setup.ts",
+    "fixtures/**/*.ts",
+    "tests/**/*.ts"
+  ]
+}
