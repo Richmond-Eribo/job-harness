@@ -1,13 +1,10 @@
 import { useState, useEffect } from "react"
-import { Download, FileText, User, Briefcase, Link2, AlertCircle } from "lucide-react"
+import { Download, FileText, User, Briefcase, Link2 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
-import { Link, useSearch } from "@tanstack/react-router"
 import { api } from "../lib/api"
+import { API_URL } from "../lib/auth"
 import { useProfile } from "../hooks/queries"
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
   Button,
   Card,
   CardContent,
@@ -32,9 +29,6 @@ const NONE = "__none__"
 export function ProfilePage() {
   const qc = useQueryClient()
   const { data: profile, isLoading } = useProfile()
-  // ?required=1 is set by the requireProfile gate when the user was redirected
-  // here because they're missing a first/last name. Drives the banner.
-  const { required } = useSearch({ from: "/settings/profile" })
 
   const [form, setForm] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
@@ -44,9 +38,21 @@ export function ProfilePage() {
     if (profile) {
       const f: Record<string, string> = {}
       const keys = [
-        "firstName", "lastName", "email", "phone", "location", "yearsExperience",
-        "targetRoles", "targetLocations", "linkedinUrl", "githubUrl",
-        "portfolioUrl", "workAuth", "seniority", "workMode", "jobSearchStatus",
+        "firstName",
+        "lastName",
+        "email",
+        "phone",
+        "location",
+        "yearsExperience",
+        "targetRoles",
+        "targetLocations",
+        "linkedinUrl",
+        "githubUrl",
+        "portfolioUrl",
+        "workAuth",
+        "seniority",
+        "workMode",
+        "jobSearchStatus",
       ]
       for (const k of keys) {
         if (profile[k as keyof typeof profile] != null) {
@@ -59,13 +65,6 @@ export function ProfilePage() {
   }, [profile])
 
   const save = async () => {
-    // The profile gate requires both names — block the save (with a clear
-    // message) if either is empty so the user can't leave the page in a state
-    // that would re-trigger the redirect.
-    if (!form.firstName?.trim() || !form.lastName?.trim()) {
-      toast.error("First name and last name are required.")
-      return
-    }
     setSaving(true)
     try {
       await api.put("/profile", { ...form, skills })
@@ -85,9 +84,18 @@ export function ProfilePage() {
     if (!cvFile) return
     setCvUploading(true)
     try {
+      // C1/P1-1: same-as-OnboardingPage — explicit credentials:"include" so
+      // the cross-origin session cookie is attached. (Also using the
+      // absolute API_URL rather than a relative path so this works in both
+      // same-origin legacy mode and the standalone-frontend mode.)
       const res = await fetch(
-        `/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
-        { method: "POST", headers: { "Content-Type": cvFile.type }, body: cvFile },
+        `${API_URL}/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": cvFile.type },
+          body: cvFile,
+        },
       )
       if (!res.ok) throw new Error("Upload failed")
       const data = await res.json()
@@ -106,30 +114,18 @@ export function ProfilePage() {
       {/* Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Your Profile</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            Your Profile
+          </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Configure candidate preferences, career targeting parameters, and CV files.
+            Configure candidate preferences, career targeting parameters, and CV
+            files.
           </p>
         </div>
         <Button onClick={save} disabled={saving} size="sm">
           {saving ? "Saving Changes…" : "Save All Settings"}
         </Button>
       </div>
-
-      {/* Required-name banner — shown only when the gate redirected here */}
-      {required === "1" && (
-        <Alert>
-          <AlertCircle />
-          <AlertTitle>Finish setting up your account</AlertTitle>
-          <AlertDescription>
-            Add your first and last name to unlock the rest of the dashboard. You
-            can fill in the other fields now or come back to them later.{" "}
-            <Link to="/dashboard" className="font-medium underline-offset-4 hover:underline">
-              Go to dashboard
-            </Link>
-          </AlertDescription>
-        </Alert>
-      )}
 
       {isLoading ? (
         <div className="flex flex-col gap-4">
@@ -139,16 +135,28 @@ export function ProfilePage() {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           {/* Left Sub-Nav */}
           <div className="lg:col-span-1 space-y-1">
-            <a href="#personal" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary">
+            <a
+              href="#personal"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary"
+            >
               <User className="size-4" /> Personal Details
             </a>
-            <a href="#preferences" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground">
+            <a
+              href="#preferences"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+            >
               <Briefcase className="size-4" /> Preferences & Targets
             </a>
-            <a href="#links" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground">
+            <a
+              href="#links"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+            >
               <Link2 className="size-4" /> Links & Authorization
             </a>
-            <a href="#cv" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground">
+            <a
+              href="#cv"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+            >
               <FileText className="size-4" /> CV & Résumé
             </a>
           </div>
@@ -162,32 +170,42 @@ export function ProfilePage() {
                   <User className="size-4 text-primary" />
                   Personal Information
                 </CardTitle>
-                <CardDescription className="text-xs">Basic profile information for applications.</CardDescription>
+                <CardDescription className="text-xs">
+                  Basic profile information for applications.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* First + last name — the fields the gate requires */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="firstName" className="text-xs text-muted-foreground">
-                      First name <span className="text-destructive">*</span>
+                    <Label
+                      htmlFor="firstName"
+                      className="text-xs text-muted-foreground"
+                    >
+                      First name
                     </Label>
                     <Input
                       id="firstName"
-                      required
                       value={form.firstName ?? ""}
-                      onChange={e => setForm({ ...form, firstName: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, firstName: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="lastName" className="text-xs text-muted-foreground">
-                      Last name <span className="text-destructive">*</span>
+                    <Label
+                      htmlFor="lastName"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Last name
                     </Label>
                     <Input
                       id="lastName"
-                      required
                       value={form.lastName ?? ""}
-                      onChange={e => setForm({ ...form, lastName: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, lastName: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
@@ -195,33 +213,54 @@ export function ProfilePage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="email" className="text-xs text-muted-foreground">Email Address</Label>
+                    <Label
+                      htmlFor="email"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Email Address
+                    </Label>
                     <Input
                       id="email"
                       type="email"
                       value={form.email ?? ""}
-                      onChange={e => setForm({ ...form, email: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, email: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="phone" className="text-xs text-muted-foreground">Phone Number</Label>
+                    <Label
+                      htmlFor="phone"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Phone Number
+                    </Label>
                     <Input
                       id="phone"
                       value={form.phone ?? ""}
-                      onChange={e => setForm({ ...form, phone: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, phone: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="location" className="text-xs text-muted-foreground">Current Location</Label>
+                  <Label
+                    htmlFor="location"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Current Location
+                  </Label>
                   <Input
                     id="location"
                     placeholder="e.g. London, UK"
                     value={form.location ?? ""}
-                    onChange={e => setForm({ ...form, location: e.target.value })}
+                    onChange={e =>
+                      setForm({ ...form, location: e.target.value })
+                    }
                     className="text-xs"
                   />
                 </div>
@@ -235,21 +274,37 @@ export function ProfilePage() {
                   <Briefcase className="size-4 text-primary" />
                   Career Preferences & Targeting
                 </CardTitle>
-                <CardDescription className="text-xs">Configure how the agent evaluates and scores job matches.</CardDescription>
+                <CardDescription className="text-xs">
+                  Configure how the agent evaluates and scores job matches.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="seniority" className="text-xs text-muted-foreground">Seniority Level</Label>
+                    <Label
+                      htmlFor="seniority"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Seniority Level
+                    </Label>
                     <Select
                       value={form.seniority || NONE}
-                      onValueChange={v => setForm({ ...form, seniority: v === NONE ? "" : v })}
+                      onValueChange={v =>
+                        setForm({ ...form, seniority: v === NONE ? "" : v })
+                      }
                     >
                       <SelectTrigger id="seniority" className="w-full text-xs">
                         <SelectValue placeholder="— Select —" />
                       </SelectTrigger>
                       <SelectContent>
-                        {["", "Junior", "Mid", "Senior", "Staff", "Principal"].map(o => (
+                        {[
+                          "",
+                          "Junior",
+                          "Mid",
+                          "Senior",
+                          "Staff",
+                          "Principal",
+                        ].map(o => (
                           <SelectItem key={o || NONE} value={o || NONE}>
                             {o === "" ? "— Select —" : o}
                           </SelectItem>
@@ -259,10 +314,17 @@ export function ProfilePage() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label htmlFor="workMode" className="text-xs text-muted-foreground">Work Mode</Label>
+                    <Label
+                      htmlFor="workMode"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Work Mode
+                    </Label>
                     <Select
                       value={form.workMode || NONE}
-                      onValueChange={v => setForm({ ...form, workMode: v === NONE ? "" : v })}
+                      onValueChange={v =>
+                        setForm({ ...form, workMode: v === NONE ? "" : v })
+                      }
                     >
                       <SelectTrigger id="workMode" className="w-full text-xs">
                         <SelectValue placeholder="— Select —" />
@@ -278,13 +340,20 @@ export function ProfilePage() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label htmlFor="yearsExperience" className="text-xs text-muted-foreground">Years Experience</Label>
+                    <Label
+                      htmlFor="yearsExperience"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Years Experience
+                    </Label>
                     <Input
                       id="yearsExperience"
                       type="number"
                       placeholder="e.g. 7"
                       value={form.yearsExperience ?? ""}
-                      onChange={e => setForm({ ...form, yearsExperience: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, yearsExperience: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
@@ -292,29 +361,48 @@ export function ProfilePage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="targetRoles" className="text-xs text-muted-foreground">Target Role Titles</Label>
+                    <Label
+                      htmlFor="targetRoles"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Target Role Titles
+                    </Label>
                     <Input
                       id="targetRoles"
                       placeholder="e.g. Senior TypeScript Engineer"
                       value={form.targetRoles ?? ""}
-                      onChange={e => setForm({ ...form, targetRoles: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, targetRoles: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="targetLocations" className="text-xs text-muted-foreground">Target Locations</Label>
+                    <Label
+                      htmlFor="targetLocations"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Target Locations
+                    </Label>
                     <Input
                       id="targetLocations"
                       placeholder="e.g. Remote, London"
                       value={form.targetLocations ?? ""}
-                      onChange={e => setForm({ ...form, targetLocations: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, targetLocations: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="skills" className="text-xs text-muted-foreground">Skills (comma-separated)</Label>
+                  <Label
+                    htmlFor="skills"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Skills (comma-separated)
+                  </Label>
                   <Textarea
                     id="skills"
                     rows={3}
@@ -338,22 +426,36 @@ export function ProfilePage() {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="linkedinUrl" className="text-xs text-muted-foreground">LinkedIn URL</Label>
+                    <Label
+                      htmlFor="linkedinUrl"
+                      className="text-xs text-muted-foreground"
+                    >
+                      LinkedIn URL
+                    </Label>
                     <Input
                       id="linkedinUrl"
                       placeholder="https://linkedin.com/in/you"
                       value={form.linkedinUrl ?? ""}
-                      onChange={e => setForm({ ...form, linkedinUrl: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, linkedinUrl: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="githubUrl" className="text-xs text-muted-foreground">GitHub URL</Label>
+                    <Label
+                      htmlFor="githubUrl"
+                      className="text-xs text-muted-foreground"
+                    >
+                      GitHub URL
+                    </Label>
                     <Input
                       id="githubUrl"
                       placeholder="https://github.com/you"
                       value={form.githubUrl ?? ""}
-                      onChange={e => setForm({ ...form, githubUrl: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, githubUrl: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
@@ -361,22 +463,36 @@ export function ProfilePage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="portfolioUrl" className="text-xs text-muted-foreground">Portfolio URL</Label>
+                    <Label
+                      htmlFor="portfolioUrl"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Portfolio URL
+                    </Label>
                     <Input
                       id="portfolioUrl"
                       placeholder="https://you.dev"
                       value={form.portfolioUrl ?? ""}
-                      onChange={e => setForm({ ...form, portfolioUrl: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, portfolioUrl: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="workAuth" className="text-xs text-muted-foreground">Work Authorization</Label>
+                    <Label
+                      htmlFor="workAuth"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Work Authorization
+                    </Label>
                     <Input
                       id="workAuth"
                       placeholder="e.g. EU citizen, needs sponsorship"
                       value={form.workAuth ?? ""}
-                      onChange={e => setForm({ ...form, workAuth: e.target.value })}
+                      onChange={e =>
+                        setForm({ ...form, workAuth: e.target.value })
+                      }
                       className="text-xs"
                     />
                   </div>
@@ -398,10 +514,15 @@ export function ProfilePage() {
                     <div className="flex items-center gap-3">
                       <FileText className="size-5 text-primary shrink-0" />
                       <div>
-                        <div className="text-xs font-semibold text-foreground">{profile.cvFilename}</div>
+                        <div className="text-xs font-semibold text-foreground">
+                          {profile.cvFilename}
+                        </div>
                         {profile.cvUploadedAt && (
                           <div className="text-[11px] text-muted-foreground font-mono">
-                            Uploaded {new Date(profile.cvUploadedAt).toLocaleDateString()}
+                            Uploaded{" "}
+                            {new Date(
+                              profile.cvUploadedAt,
+                            ).toLocaleDateString()}
                           </div>
                         )}
                       </div>
@@ -421,7 +542,12 @@ export function ProfilePage() {
                     onChange={e => setCvFile(e.target.files?.[0] ?? null)}
                     className="max-w-xs text-xs"
                   />
-                  <Button variant="secondary" onClick={uploadCv} disabled={!cvFile || cvUploading} size="sm">
+                  <Button
+                    variant="secondary"
+                    onClick={uploadCv}
+                    disabled={!cvFile || cvUploading}
+                    size="sm"
+                  >
                     {cvUploading ? "Uploading…" : "Upload CV"}
                   </Button>
                 </div>

@@ -36,10 +36,15 @@ export function OnboardingPage() {
     async (_prev, fd) => {
       try {
         if (cvFile) {
+          // C1/P1-1: the api helper sets credentials:"include" so the
+          // SameSite=None session cookie rides along cross-origin. A bare
+          // fetch does NOT — without this, requireAuth returns 401 and the
+          // upload silently fails for every user.
           const upRes = await fetch(
             `${API_URL}/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
             {
               method: "POST",
+              credentials: "include",
               headers: { "Content-Type": cvFile.type },
               body: cvFile,
             },
