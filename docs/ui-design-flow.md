@@ -140,6 +140,15 @@ right now" list, so overdue actions don't slip through.
 Before the agent can do any of this usefully, you configure it once on the
 Settings page:
 
+> **Profile gate.** New accounts hit a `requireProfile` guard before any
+> dashboard page renders: if your profile has no **first name and last name**,
+> you're bounced to `/settings/profile` with a "Finish setting up your account"
+> banner. This runs in the route's `beforeLoad` (pre-render), so you never see
+> the dashboard flash before the redirect. The gate is separate from the legacy
+> `onboardingComplete` flag — it only checks the two name fields. The signup
+> flow is email + password → 6-digit OTP (segmented input) → `/dashboard` →
+> `/settings/profile`.
+
 - **The goal** — what you want the agent to work toward (your job-search mission).
   You can write it yourself or have the agent synthesize one from your profile.
 - **The budget** — max steps per run and a token cap, so a runaway run can't
@@ -152,8 +161,9 @@ Settings page:
   on this list. Each source has a base URL and a search-URL template.
 - **Browser** — the status of the real-Chrome connection (via the extension) and
   a manual probe to test that a URL loads through it.
-- **Profile** — your CV/resume, target roles, target locations, key skills, and
-  preferences. This is the raw material the agent searches with and writes from.
+- **Profile** — your first/last name (required by the profile gate), CV/resume,
+  target roles, target locations, key skills, and preferences. This is the raw
+  material the agent searches with and writes from. Lives at `/settings/profile`.
 
 ---
 

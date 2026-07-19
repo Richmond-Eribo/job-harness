@@ -268,6 +268,32 @@ it cross-origin with `credentials: "include"`; the API validates it via
 `requireAuth` middleware. A not-yet-onboarded user gets `428` (the frontend's
 guards redirect to `/onboarding`). Unauthenticated requests get `401`.
 
+### Signup flow
+
+The signup is two steps on `/signup`, then a profile gate:
+
+1. **Account** — email + password → `signUp.email` creates the user and Better
+   Auth emails a 6-digit OTP via Resend.
+2. **Verify** — the user enters the code in a segmented OTP input
+   (`@agent-harness/ui` `InputOTP`, backed by `input-otp`). `verifyEmail`
+   confirms the address and Better Auth's `databaseHooks.user.update.after`
+   hook flips `onboardingComplete = 1` on the D1 `user` row.
+3. **Profile gate** — the user lands on `/dashboard`, which is guarded by
+   `requireProfile` (`packages/frontend/src/lib/guards.ts`). That guard runs in
+   the route's `beforeLoad` (before render) and `GET /api/profile`s the user's
+   profile; if `firstName` and `lastName` are both non-empty it lets the page
+   render, otherwise it redirects to `/settings/profile?required=1`. The
+   profile page shows a banner ("Finish setting up your account") until both
+   names are filled in. The gate is **separate from onboarding** — it only
+   checks the name fields, so it doesn't strand users who skip the legacy
+   `/onboarding` form.
+
+Two independent gates therefore protect dashboard routes: `requireAuth`
+(session + `onboardingComplete`) and `requireProfile` (profile has a name).
+`requireProfile` composes `requireAuth`, so dashboard routes use it directly;
+`/settings/profile` uses `requireAuth` alone so it stays reachable while the
+name is missing.
+
 > [!CAUTION]
 > **Known DO-concurrency limitation:** `start()` awaits the entire multi-minute
 > run loop, and Durable Objects serialize their request queue. While a run is
@@ -342,9 +368,10 @@ packages/
 
   frontend/                   # 🟩 FRONTEND — standalone TanStack Start SSR app (Cloudflare Worker)
     src/
-      routes/                 # file-based routes (12): __root.tsx (HTML shell + guards),
+      routes/                 # file-based routes (13): __root.tsx (HTML shell + guards),
                               #   index/login/signup/forgot-password/onboarding/dashboard/
-                              #   jobs/logs/memory/settings + traces/$runId
+                              #   jobs/logs/memory/settings (→ redirects) +
+                              #   settings/profile + traces/$runId
       pages/                  # the page components rendered by the routes
       router.tsx              # getRouter() — Start's per-request factory
       lib/api.ts  lib/auth.ts # cross-origin clients (VITE_API_URL + credentials:include)
