@@ -28,6 +28,7 @@ import {
   userIdFromRelayRequest,
 } from "./auth/extension-token"
 import { getAgents, getHarnessForUser } from "./utils/get-agents"
+import { getRateLimiter } from "./utils/get-agents"
 
 // Re-export all Durable Object classes (required by Cloudflare)
 export {
@@ -51,6 +52,11 @@ const app = new Hono<AppEnv>()
 // Instead we echo the request Origin back iff it's in the allowlist (the
 // frontend origin + the API origin itself). `credentials: true` sets
 // Access-Control-Allow-Credentials so the cookie rides along cross-origin.
+//
+// P3-5/M1: `Set-Cookie` was previously listed in exposeHeaders, but it is a
+// FORBIDDEN response-header name per the Fetch spec — browsers strip it from
+// JS-readable headers regardless of Access-Control-Expose-Headers, so it was
+// dead code. Removed.
 app.use(
   "*",
   cors({
@@ -63,8 +69,7 @@ app.use(
       return origin && allowed.has(origin) ? origin : null
     },
     credentials: true,
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    exposeHeaders: ["Set-Cookie"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   }),
 )
 
@@ -77,7 +82,13 @@ app.use(
 // Better Auth's internal router (better-call) swallows unhandled errors into
 // empty-body 500s, which are hard to diagnose. We wrap the handler so any 5xx
 // is logged with the route for visibility in `wrangler tail` / the dev console.
-app.on(["GET", "POST"], "/api/auth/*", async c => {
+//
+// P2-4/H5: changed from `app.on(["GET", "POST"], "/api/auth/*", ...)` to
+// `app.all(...)`. The previous filter only allowed GET/POST through to Better
+// Auth — any PUT/DELETE/PATCH the email-OTP plugin (or future plugins) emit
+// would fall through to Hono's 404 instead of Better Auth's error response,
+// confusing clients that hit them.
+app.all("/api/auth/*", async c => {
   const auth = getAuth(c)
   let res: Response
   try {
@@ -150,10 +161,7 @@ app.post("/api/onboarding", async c => {
   // firstName/lastName so the app shell shows the right thing without an
   // extra fetch.
   if (profilePatch.firstName || profilePatch.lastName) {
-    profilePatch.fullName = [
-      profilePatch.firstName,
-      profilePatch.lastName,
-    ]
+    profilePatch.fullName = [profilePatch.firstName, profilePatch.lastName]
       .filter(Boolean)
       .join(" ")
   }
@@ -165,6 +173,12 @@ app.post("/api/onboarding", async c => {
   // PUT /api/profile; this flag just unlocks the rest of the app.
   // Columns are camelCase to match migrations/0002_camelcase.sql (Better Auth
   // 1.6.x queries camelCase at runtime).
+  //
+  // NOTE (H3/M22): for fresh signups this flag is ALREADY flipped by the
+  // `databaseHooks.user.update.after` hook on email verification, so this
+  // write is a no-op (idempotent). It is intentionally kept for the case
+  // where a user lands on /onboarding with `onboardingComplete=false` for any
+  // other reason (legacy account, manual DB edit, hook failure mode).
   try {
     await c.env.DB.prepare(
       `UPDATE "user" SET onboardingComplete = 1, updatedAt = ? WHERE id = ?`,
@@ -172,7 +186,18 @@ app.post("/api/onboarding", async c => {
       .bind(Date.now(), userId)
       .run()
   } catch (error: any) {
-    return c.json({ error: `Failed to mark onboarding: ${error.message}` }, 500)
+    // P3-5/M17: log the full error server-side (D1 errors may contain column /
+    // constraint names an operator needs to triage), return a generic 500 to
+    // the client. The previous response leaked `error.message` straight to
+    // the browser, which is a minor information disclosure.
+    console.error(
+      `[api] POST /api/onboarding — failed to mark onboarding for user ${userId}:`,
+      error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : error,
+    )
+    return c.json(
+      { error: "Failed to complete onboarding. Please try again." },
+      500,
+    )
   }
 
   return c.json({ message: "Onboarding complete", redirect: "/dashboard" })
@@ -190,13 +215,25 @@ app.post("/api/onboarding", async c => {
 
 app.all("/browser/relay", async c => {
   // The extension can't send a session cookie on a WS upgrade, so the relay
-  // identifies the user via a signed extension token on the URL
-  // (?token=<jwt>). The dashboard mints the token against the session user
-  // (POST /api/browser/extension-token); the extension stores it and appends
-  // it on connect. This is the ONLY way the Worker knows which per-user relay
-  // DO to route the socket to.
+  // identifies the user via a signed extension token. The dashboard mints the
+  // token against the session user (POST /api/browser/extension-token); the
+  // extension stores it and presents it back.
+  //
+  // P1-6 — two delivery channels (preferred first, legacy second):
+  //   1. The `Sec-WebSocket-Protocol` header: `ja-ext-token.<jwt>`. The token
+  //      never appears in the URL so it can't leak via history/logs/referrer.
+  //   2. The legacy `?token=<jwt>` query param: still accepted for existing
+  //      extension installs that haven't upgraded yet.
   const url = new URL(c.req.url)
-  const userId = await userIdFromRelayRequest(url, c.env.AUTH_SECRET)
+  const userId = await userIdFromRelayRequest(
+    url,
+    // P1-6/H2: sign with EXTENSION_TOKEN_SECRET if present (independent
+    // rotation), else fall back to AUTH_SECRET for back-compat.
+    c.env.EXTENSION_TOKEN_SECRET && c.env.EXTENSION_TOKEN_SECRET.length > 0
+      ? c.env.EXTENSION_TOKEN_SECRET
+      : c.env.AUTH_SECRET,
+    c.req.raw.headers,
+  )
   if (!userId) {
     return c.json({ error: "Missing or invalid extension token" }, 401)
   }
@@ -206,7 +243,38 @@ app.all("/browser/relay", async c => {
 
 // Mint an extension token for the session user (the dashboard surfaces it for
 // the extension to copy/store). Session-gated by requireAuth.
-app.post("/api/browser/extension-token", issueExtensionTokenRoute)
+//
+// P2-5/H4: per-user rate limit. Without it, an attacker who steals a session
+// cookie can mint an unlimited number of long-lived extension tokens that
+// outlive the (now much shorter, 1h) session. Reuse the existing global
+// RateLimiter DO with a dedicated key — limit to 5 mints per hour per user,
+// which is far above any legitimate use (the dashboard re-mints on each panel
+// open, and the panel is typically opened once per browser session).
+app.post("/api/browser/extension-token", async c => {
+  const userId = c.var.userId
+  const rateLimiter = await getRateLimiter(c.env)
+  const windowSeconds = 60 * 60 // 1h
+  const limit = 5
+  const { count } = await rateLimiter.check({
+    key: "extension-token",
+    userId,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json(
+      {
+        error: "Too many extension tokens requested. Please try again later.",
+      },
+      429,
+    )
+  }
+  await rateLimiter.consume({
+    key: "extension-token",
+    userId,
+    windowSeconds,
+  })
+  return issueExtensionTokenRoute(c)
+})
 
 app.get("/api/browser/status", async c => {
   const relay: any = await getAgentByName(c.env.BROWSER_RELAY, c.var.userId)

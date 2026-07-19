@@ -41,7 +41,11 @@ export async function sendOtpEmail(
   const { error } = await resend.emails.send({
     from: from!,
     to,
-    subject: `Your verification code: ${otp}`,
+    // P3-6/M20: the OTP used to live in the subject line. Email subjects are
+    // indexed by some clients and visible in lock-screen notification
+    // previews, so they're a higher-leakage channel than the body. Move the
+    // code body-only and keep the subject generic.
+    subject: `Your Job Agent verification code`,
     html: otpHtml(otp),
     text: `Your verification code is ${otp}. It expires in 5 minutes.`,
   })

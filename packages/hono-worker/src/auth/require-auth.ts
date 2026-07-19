@@ -68,6 +68,16 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   c.set("session", session)
   c.set("userId", session.user.id)
 
+  // P3-6/M23: defense-in-depth — Better Auth's `requireEmailVerification`
+  // already blocks email/password sign-in until the OTP is confirmed, but a
+  // session issued via any other path (a future plugin, an admin tool, a
+  // schema drift that flips emailVerified without going through the OTP flow)
+  // would otherwise pass this gate. Re-check here so the onboarding invariant
+  // holds regardless of how the session was minted.
+  if (!session.user.emailVerified) {
+    return c.json({ error: "Email not verified" }, 403)
+  }
+
   // 5. Onboarding gate — a user who hasn't completed profile + CV setup gets a
   //    428; the frontend's guards redirect to its own /onboarding. The flag
   //    lives in D1 on the Better Auth `user` table.
