@@ -1,9 +1,10 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { SettingsPage } from "../pages/SettingsPage"
-import { requireAuth } from "../lib/guards"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-// `/settings` — app shell. Profile editor + CV upload.
+// `/settings` — redirects to the profile sub-page. The settings surface is
+// currently just the profile editor at /settings/profile; this redirect keeps
+// the old link working (sidebar, bookmarks, the "Settings" nav item).
 export const Route = createFileRoute("/settings")({
-  component: SettingsPage,
-  beforeLoad: requireAuth,
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/profile", replace: true })
+  },
 })
