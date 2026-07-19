@@ -74,7 +74,22 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
   // secure:true would prevent the session cookie from persisting on the
   // http://localhost dev origin. Better Auth auto-downgrades for localhost, but
   // we gate it explicitly to be safe across versions.
-  const isLocalDev = baseURL?.includes("localhost") ?? false
+  //
+  // Detect local dev by checking the host portion of the URL so we cover both
+  // `http://localhost:8787` AND `http://127.0.0.1:8787` — the previous
+  // `baseURL.includes("localhost")` substring check missed the latter, which
+  // caused cookies to be set with `secure: true` over plain HTTP and silently
+  // dropped by the browser. An explicit `IS_LOCAL_DEV` env wins over all.
+  const isLocalDev =
+    (typeof env.IS_LOCAL_DEV === "boolean" && env.IS_LOCAL_DEV) ||
+    (() => {
+      try {
+        const u = new URL(baseURL ?? "")
+        return u.hostname === "localhost" || u.hostname === "127.0.0.1"
+      } catch {
+        return false
+      }
+    })()
 
   return betterAuth({
     // Native D1 — Better Auth manages its own Kysely D1 dialect.
@@ -105,6 +120,18 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
       autoSignIn: true,
     },
 
+    // After the OTP verifies the email, automatically create a session and
+    // set the session cookie. WITHOUT this, /email-otp/verify-email returns
+    // { token: null } with no Set-Cookie — the emailOTP plugin's verify
+    // handler only calls createSession + setSessionCookie when this flag is
+    // on (see better-auth/dist/plugins/email-otp/routes.mjs). The signup flow
+    // relies on it: verify → cookie set → navigate to /dashboard → the
+    // session is present so requireAuth passes. Without it, get-session
+    // returns null right after verify and the user is bounced to /login.
+    emailVerification: {
+      autoSignInAfterVerification: true,
+    },
+
     plugins: [
       emailOTP({
         // Delivers the 6-digit code via Resend. Throws if the key/sender is
@@ -119,8 +146,15 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
         otpLength: 6,
         expiresIn: 60 * 5, // 5 minutes
         allowedAttempts: 3,
-        // Mint + email the OTP as soon as the user signs up.
-        sendVerificationOnSignUp: true,
+        // We do NOT auto-send the OTP at signUp.email. Better Auth's core
+        // signUpEmail handler short-circuits to a synthetic 200 response for
+        // duplicate emails (anti-enumeration) BEFORE it would reach the
+        // send path — so a user who signs up twice with the same address never
+        // gets a code and is stuck on the verify step. Instead the frontend
+        // explicitly calls sendVerificationOtp right after signUp.email
+        // returns, which mints + sends a fresh code regardless of whether the
+        // signup created a new user or hit the duplicate path.
+        sendVerificationOnSignUp: false,
         // Route core's email-verification flow through OTP (so
         // /api/auth/send-verification-email mints a code, not a link).
         overrideDefaultEmailVerification: true,
@@ -128,14 +162,31 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
     ],
 
     advanced: {
-      // The frontend lives on a SEPARATE origin and calls /api/auth/* cross-
-      // origin with credentials:"include". For the browser to attach the
-      // session cookie across sites it must be SameSite=None + Secure. We do
-      // NOT set a domain — the cookie stays scoped to the API origin (the
-      // browser sends it on cross-origin fetches with credentials, but the
-      // cookie is never readable from document.cookie on the frontend origin).
+      // Cookie prefix. Better Auth's default is "better-auth", producing
+      // `better-auth.session_token`. We shorten it to "ja" so the session
+      // cookie is `ja.session_token`. Applies consistently across session /
+      // csrf / callback cookies (see cookies/index.mjs). Changing the prefix
+      // invalidates any pre-existing cookies — users simply re-authenticate.
+      cookiePrefix: "ja",
+
+      // Cross-origin session cookie. The cookie must be sent on credentialed
+      // cross-origin fetches from the frontend origin to this API origin.
+      //
+      // DEV (localhost:5173 → localhost:8787): SameSite=Lax. Different ports on
+      // the same registrable domain ("localhost") count as same-site for cookie
+      // purposes, so a Lax cookie rides along on credentialed cross-port
+      // fetches. Crucially, Lax is the most permissive attribute that browsers
+      // will ACCEPT over plain http — SameSite=None without Secure is silently
+      // dropped by modern browsers (Chrome 80+, current FF/Safari), which was
+      // the bug that previously made sessions never persist in dev.
+      //
+      // PROD (app.example.com → api.example.com, https): SameSite=None + Secure.
+      // Genuinely cross-site credentialed fetches require None, and https makes
+      // Secure legal. No domain is set — the cookie stays scoped to the API
+      // origin (sent on cross-origin fetches with credentials, never readable
+      // from document.cookie on the frontend origin).
       defaultCookieAttributes: {
-        sameSite: "none",
+        sameSite: isLocalDev ? "lax" : "none",
         secure: !isLocalDev,
       },
     },
@@ -160,9 +211,23 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
                 )
                   .bind(user.id)
                   .run()
-              } catch {
-                // Non-fatal: the worst case is the user re-runs the OTP verify,
-                // which is idempotent. The surrounding error wrapper logs 5xx.
+              } catch (err) {
+                // The OTP verify itself has already succeeded, so we don't fail
+                // the request; but the user WILL be stranded at onboarding on
+                // the next requireAuth check. Log loudly so operators see it
+                // (wrangler tail / Workers dashboard), and include enough
+                // context to triage: user id, error message, and stack.
+                console.error(
+                  `[auth] onboarding flag write failed for user ${user.id}:`,
+                  err instanceof Error
+                    ? `${err.message}\n${err.stack ?? ""}`
+                    : err,
+                )
+                // NOTE: We intentionally do NOT rethrow here — the verify call
+                // has already returned 200 to the client and the email is now
+                // verified. Recovery path: the user re-runs OTP verify
+                // (idempotent), or an operator runs the SQL by hand, or we add
+                // a /api/auth/resync-onboarding admin endpoint later.
               }
             }
           },

@@ -66,14 +66,15 @@ export interface Env {
   // plus runtime knobs that DON'T make sense in a static config (DO tokens).
   LLM_API_KEY: string
   MAX_STEPS: string
-  // Legacy shared bearer token. Still used by the bearerAuth middleware on
-  // /api/* until Stage 4 replaces it with session-cookie auth. Optional now so
-  // a deployment without the secret set doesn't fail the type check.
-  DASHBOARD_TOKEN?: string
 
   // --- Auth (multi-tenant) ---
   // Better Auth secret — signs/verifies session cookies and extension tokens.
   AUTH_SECRET: string
+  // Dedicated secret for extension WS tokens — INDEPENDENT of AUTH_SECRET so a
+  // leaked extension token can be rotated without invalidating every web
+  // session. Defaults to AUTH_SECRET for back-compat in deployments that
+  // haven't set it yet (see extension-token.ts).
+  EXTENSION_TOKEN_SECRET?: string
   // Resend API key for magic-link delivery. When empty, magic links are logged
   // to the console + surfaced via a dev-only response header (no email sent).
   RESEND_API_KEY?: string
@@ -86,6 +87,11 @@ export interface Env {
   // Better Auth's trustedOrigins and to the CORS allowlist so the separate-origin
   // SPA can call /api/* with credentials (the session cookie).
   FRONTEND_URL?: string
+
+  // Explicit local-dev override for cookie attributes. When true, the session
+  // cookie is set SameSite=Lax without Secure (legal over http). Auto-detected
+  // from BETTER_AUTH_URL hostname when unset (see auth.ts).
+  IS_LOCAL_DEV?: boolean
 
   // v2 non-secret knobs (sourced from wrangler.jsonc vars). Trace capture
   // toggle — "1" = on (default); any other value = off. Detailed cap values
