@@ -1,4 +1,5 @@
 import { useStatus, usePipeline, useStartRun, useStopRun } from "../hooks/queries"
+import type { JobListing } from "@/types"
 import {
   Badge,
   Button,
@@ -17,6 +18,7 @@ import {
   TrendingUp,
   AlertCircle,
   ArrowUpRight,
+  CircleAlert,
 } from "lucide-react"
 
 const STAGES = [
@@ -38,8 +40,20 @@ const STAGE_ACCENT: Record<string, string> = {
 }
 
 export function OverviewPage() {
-  const { data: status, isLoading: statusLoading } = useStatus()
-  const { data: pipeline, isLoading: pipelineLoading } = usePipeline()
+  const {
+    data: status,
+    isLoading: statusLoading,
+    isError: statusErr,
+    error: statusErrObj,
+    refetch: refetchStatus,
+  } = useStatus()
+  const {
+    data: pipeline,
+    isLoading: pipelineLoading,
+    isError: pipelineErr,
+    error: pipelineErrObj,
+    refetch: refetchPipeline,
+  } = usePipeline()
   const startRun = useStartRun()
   const stopRun = useStopRun()
 
@@ -54,34 +68,78 @@ export function OverviewPage() {
   const handleStart = () =>
     startRun.mutate(undefined, {
       onSuccess: () => toast.success("Agent run initiated"),
-      onError: (e: any) => toast.error("Couldn't start the agent", { description: e?.message }),
+      onError: (e: { message?: string }) =>
+        toast.error("Couldn't start the agent", { description: e?.message }),
     })
   const handleStop = () =>
     stopRun.mutate(undefined, {
       onSuccess: () => toast.success("Agent run stopped"),
-      onError: (e: any) => toast.error("Couldn't stop the agent", { description: e?.message }),
+      onError: (e: { message?: string }) =>
+        toast.error("Couldn't stop the agent", { description: e?.message }),
     })
+
+  // Failure state — render error card with retry instead of misleading empty state.
+  if (statusErr || pipelineErr) {
+    const msg =
+      (statusErr
+        ? (statusErrObj as { message?: string })?.message
+        : (pipelineErrObj as { message?: string })?.message) ?? "Unknown error"
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="py-8 text-center">
+            <CircleAlert className="size-8 mx-auto mb-2 text-destructive" />
+            <p className="text-sm font-medium">Failed to load pipeline data</p>
+            <p className="text-xs text-muted-foreground mt-1">{msg}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => {
+                if (statusErr) refetchStatus()
+                if (pipelineErr) refetchPipeline()
+              }}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 animate-fade-in">
       {/* Overview Top Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Pipeline Overview</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            Pipeline Overview
+          </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Real-time status of your autonomous job search and application pipeline.
+            Real-time status of your autonomous job search and application
+            pipeline.
           </p>
         </div>
         <div className="flex items-center gap-3">
           {statusLoading ? (
             <Skeleton className="h-9 w-28 rounded-lg" />
           ) : isRunning ? (
-            <Button variant="destructive" size="sm" onClick={handleStop} disabled={stopRun.isPending}>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleStop}
+              disabled={stopRun.isPending}
+            >
               <StopCircle className="size-4 mr-1.5" />
               {stopRun.isPending ? "Stopping…" : "Stop Agent"}
             </Button>
           ) : (
-            <Button size="sm" onClick={handleStart} disabled={startRun.isPending}>
+            <Button
+              size="sm"
+              onClick={handleStart}
+              disabled={startRun.isPending}
+            >
               <PlayCircle className="size-4 mr-1.5" />
               {startRun.isPending ? "Starting…" : "Start Agent Run"}
             </Button>
@@ -98,7 +156,9 @@ export function OverviewPage() {
             style={{ "--stagger-i": i } as React.CSSProperties}
           >
             <CardContent className="px-4">
-              <div className="text-xs text-muted-foreground capitalize font-medium mb-1">{stage}</div>
+              <div className="text-xs text-muted-foreground capitalize font-medium mb-1">
+                {stage}
+              </div>
               {pipelineLoading ? (
                 <Skeleton className="h-8 w-10" />
               ) : (
@@ -135,16 +195,22 @@ export function OverviewPage() {
             <Card className="border-dashed">
               <CardContent className="py-16 text-center">
                 <Search className="size-10 text-muted-foreground/30 mx-auto mb-3" />
-                <p className="text-sm font-medium text-foreground">No job listings discovered yet</p>
+                <p className="text-sm font-medium text-foreground">
+                  No job listings discovered yet
+                </p>
                 <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
-                  Click "Start Agent Run" to begin scanning your allowlisted job boards for relevant positions.
+                  Click "Start Agent Run" to begin scanning your allowlisted job
+                  boards for relevant positions.
                 </p>
               </CardContent>
             </Card>
           ) : (
             <div className="flex flex-col gap-3">
-              {listings.slice(0, 8).map((job: any, i: number) => {
-                const score = job.matchScore != null ? Math.round(job.matchScore * 100) : null
+              {listings.slice(0, 8).map((job: JobListing, i: number) => {
+                const score =
+                  job.matchScore != null
+                    ? Math.round(job.matchScore * 100)
+                    : null
                 return (
                   <Card
                     key={job.id}
@@ -154,18 +220,28 @@ export function OverviewPage() {
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-sm text-foreground truncate">{job.title}</h3>
-                          <Badge variant="secondary" className="capitalize text-[11px] font-medium shrink-0">
+                          <h3 className="font-semibold text-sm text-foreground truncate">
+                            {job.title}
+                          </h3>
+                          <Badge
+                            variant="secondary"
+                            className="capitalize text-[11px] font-medium shrink-0"
+                          >
                             {job.status}
                           </Badge>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-0.5">{job.company}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {job.company}
+                        </p>
                       </div>
 
                       {score != null && (
                         <div className="text-right shrink-0">
                           <div className="text-xs font-mono font-semibold text-foreground">
-                            {score}% <span className="text-[10px] text-muted-foreground font-sans">match</span>
+                            {score}%{" "}
+                            <span className="text-[10px] text-muted-foreground font-sans">
+                              match
+                            </span>
                           </div>
                           <div className="w-16 bg-secondary h-1.5 rounded-full mt-1.5 overflow-hidden">
                             <div
@@ -195,11 +271,15 @@ export function OverviewPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between p-3 bg-secondary/40 rounded-lg border border-border">
-                <span className="text-xs text-muted-foreground">Execution State</span>
+                <span className="text-xs text-muted-foreground">
+                  Execution State
+                </span>
                 <span className="inline-flex items-center gap-2 text-xs font-medium capitalize text-foreground">
                   <span
                     className={`size-2 rounded-full ${
-                      isRunning ? "bg-success animate-pulse" : "bg-muted-foreground/40"
+                      isRunning
+                        ? "bg-success animate-pulse"
+                        : "bg-muted-foreground/40"
                     }`}
                   />
                   {status?.status ?? "Idle"}
@@ -209,7 +289,9 @@ export function OverviewPage() {
               <div className="text-xs text-muted-foreground space-y-2">
                 <div className="flex items-center justify-between">
                   <span>Target Boards</span>
-                  <span className="text-foreground font-mono">HN, LinkedIn</span>
+                  <span className="text-foreground font-mono">
+                    HN, LinkedIn
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Auto Cover Letters</span>
@@ -218,7 +300,12 @@ export function OverviewPage() {
               </div>
 
               {isRunning ? (
-                <Button variant="destructive" size="sm" className="w-full" onClick={handleStop}>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="w-full"
+                  onClick={handleStop}
+                >
                   Stop Active Run
                 </Button>
               ) : (
@@ -240,10 +327,21 @@ export function OverviewPage() {
               </CardHeader>
               <CardContent className="text-xs text-muted-foreground space-y-2">
                 <p>
-                  You have <strong className="text-foreground">{stats.dueFollowUps}</strong> job application follow-up(s) waiting for review.
+                  You have{" "}
+                  <strong className="text-foreground">
+                    {stats.dueFollowUps}
+                  </strong>{" "}
+                  job application follow-up(s) waiting for review.
                 </p>
-                <Button variant="outline" size="sm" className="w-full mt-2" asChild>
-                  <a href="/jobs">Review on Board <ArrowUpRight className="size-3 ml-1" /></a>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full mt-2"
+                  asChild
+                >
+                  <a href="/jobs">
+                    Review on Board <ArrowUpRight className="size-3 ml-1" />
+                  </a>
                 </Button>
               </CardContent>
             </Card>

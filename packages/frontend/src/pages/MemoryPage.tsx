@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Brain, User, Plus, Search } from "lucide-react"
-import { useState } from "react"
+import { Brain, User, Plus, Search, CircleAlert } from "lucide-react"
+import { useMemo, useState } from "react"
 import { api } from "../lib/api"
+import type { UserMemory } from "@/types"
 import {
   Badge,
   Button,
@@ -15,13 +16,41 @@ import {
 } from "@agent-harness/ui"
 import { toast } from "sonner"
 
+// Normalize whatever the API returns for user-memory into {key,value} pairs.
+// `updatedAt` is required on the UserMemory type but not always returned by
+// the legacy object-shape endpoint; default to "" for those rows.
+function toEntries(data: unknown): UserMemory[] {
+  if (Array.isArray(data)) return data as UserMemory[]
+  if (data && typeof data === "object") {
+    if (Array.isArray((data as { entries?: unknown }).entries)) {
+      return (data as { entries: UserMemory[] }).entries
+    }
+    return Object.entries(data as Record<string, unknown>).map(([k, v]) => ({
+      key: k,
+      value: typeof v === "string" ? v : JSON.stringify(v),
+      updatedAt: "",
+    }))
+  }
+  return []
+}
+
 export function MemoryPage() {
   const qc = useQueryClient()
-  const { data: memory } = useQuery({
+  const {
+    data: memory,
+    isError: userErr,
+    error: userErrObj,
+    refetch: refetchUser,
+  } = useQuery({
     queryKey: ["user-memory"],
     queryFn: () => api.get("/user-memory"),
   })
-  const { data: agentMemory } = useQuery({
+  const {
+    data: agentMemory,
+    isError: agentErr,
+    error: agentErrObj,
+    refetch: refetchAgent,
+  } = useQuery({
     queryKey: ["memory"],
     queryFn: () => api.get("/memory"),
   })
@@ -38,28 +67,37 @@ export function MemoryPage() {
       setValue("")
       toast.success("Memory entry saved")
     },
-    onError: (e: any) => toast.error("Couldn't save memory", { description: e?.message }),
+    onError: (e: { message?: string }) =>
+      toast.error("Couldn't save memory", { description: e?.message }),
   })
 
-  const rawEntries = Array.isArray(memory) ? memory : memory?.entries ?? Object.entries(memory ?? {})
-  const agentEntries = agentMemory ?? []
+  const rawEntries = useMemo(() => toEntries(memory), [memory])
+  const agentEntries = useMemo<UserMemory[]>(
+    () => (Array.isArray(agentMemory) ? (agentMemory as UserMemory[]) : []),
+    [agentMemory],
+  )
 
-  const userEntries = rawEntries.filter((e: any) => {
-    if (!search) return true
+  const userEntries = useMemo(() => {
+    if (!search) return rawEntries
     const q = search.toLowerCase()
-    const k = String(e.key ?? e[0]).toLowerCase()
-    const v = String(e.value ?? e[1]).toLowerCase()
-    return k.includes(q) || v.includes(q)
-  })
+    return rawEntries.filter(e => {
+      const k = String(e.key ?? "").toLowerCase()
+      const v = String(e.value ?? "").toLowerCase()
+      return k.includes(q) || v.includes(q)
+    })
+  }, [rawEntries, search])
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-6 animate-fade-in">
       {/* Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Agent Memory Bank</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            Agent Memory Bank
+          </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Configure preference constraints and view learned context stored in agent memory.
+            Configure preference constraints and view learned context stored in
+            agent memory.
           </p>
         </div>
       </div>
@@ -77,7 +115,12 @@ export function MemoryPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="mem-key" className="text-xs text-muted-foreground">Memory Key</Label>
+                <Label
+                  htmlFor="mem-key"
+                  className="text-xs text-muted-foreground"
+                >
+                  Memory Key
+                </Label>
                 <Input
                   id="mem-key"
                   placeholder="e.g. preferred_stack"
@@ -88,7 +131,12 @@ export function MemoryPage() {
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="mem-value" className="text-xs text-muted-foreground">Memory Value</Label>
+                <Label
+                  htmlFor="mem-value"
+                  className="text-xs text-muted-foreground"
+                >
+                  Memory Value
+                </Label>
                 <Textarea
                   id="mem-value"
                   placeholder="e.g. TypeScript, React, Cloudflare Workers"
@@ -124,6 +172,35 @@ export function MemoryPage() {
 
         {/* Right Column: Tabbed Memory Store Cards */}
         <div className="lg:col-span-2 space-y-6">
+          {(userErr || agentErr) && (
+            <Card className="border-destructive/40 bg-destructive/5 lg:col-span-3">
+              <CardContent className="py-8 text-center">
+                <CircleAlert className="size-8 mx-auto mb-2 text-destructive" />
+                <p className="text-sm font-medium">Failed to load memory</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {(userErr ? userErrObj : agentErrObj) != null
+                    ? (
+                        (userErr ? userErrObj : agentErrObj) as {
+                          message?: string
+                        }
+                      )?.message
+                    : "Unknown error"}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-4"
+                  onClick={() => {
+                    if (userErr) refetchUser()
+                    if (agentErr) refetchAgent()
+                  }}
+                >
+                  Retry
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           {/* User Memory Section */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -138,20 +215,21 @@ export function MemoryPage() {
 
             {userEntries.length === 0 ? (
               <div className="p-8 text-center text-xs text-muted-foreground border border-dashed border-border rounded-xl">
-                No user memory entries found. Add a key-value pair using the form on the left.
+                No user memory entries found. Add a key-value pair using the
+                form on the left.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {userEntries.map((e: any, i: number) => (
+                {userEntries.map((e: UserMemory, i: number) => (
                   <Card
-                    key={i}
+                    key={e.key ? `${e.key}-${i}` : i}
                     className="py-3 px-3.5 border-l-4 border-l-primary transition-all hover:border-primary"
                   >
                     <div className="text-xs font-mono font-semibold text-primary mb-1">
-                      {e.key ?? e[0]}
+                      {e.key}
                     </div>
                     <div className="text-xs text-foreground leading-relaxed">
-                      {e.value ?? e[1]}
+                      {e.value}
                     </div>
                   </Card>
                 ))}
@@ -177,16 +255,16 @@ export function MemoryPage() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {agentEntries.map((e: any, i: number) => (
+                {agentEntries.map((e: UserMemory, i: number) => (
                   <Card
-                    key={i}
+                    key={e.key ? `${e.key}-${i}` : i}
                     className="py-3 px-3.5 border-l-4 border-l-violet-400/60"
                   >
                     <div className="text-xs font-mono font-semibold text-violet-400 mb-1">
-                      {e.key ?? e[0]}
+                      {e.key}
                     </div>
                     <div className="text-xs text-foreground leading-relaxed">
-                      {e.value ?? e[1]}
+                      {e.value}
                     </div>
                   </Card>
                 ))}

@@ -1,11 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { ProfilePage } from "../../pages/ProfilePage"
-import { requireAuth } from "../../lib/guards"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-// `/settings/profile` — the profile editor. Uses requireAuth (any signed-in
-// user can edit their own profile). firstName/lastName are collected at signup
-// now, so there's no gate that redirects here — it's just the editor.
+// `/settings/profile` — legacy deep link. The profile editor now lives as the
+// default tab of /settings, so we redirect old bookmarks/sidebar links there.
 export const Route = createFileRoute("/settings/profile")({
-  component: ProfilePage,
-  beforeLoad: requireAuth,
+  beforeLoad: () => {
+    throw redirect({ to: "/settings", replace: true })
+  },
 })

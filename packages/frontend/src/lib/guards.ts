@@ -49,8 +49,8 @@ export interface RouteAuthContext {
 }
 
 /**
- * Guard for app routes (/dashboard, /jobs, /traces, /logs, /memory, /settings,
- * /settings/profile). Requires a session; if the user somehow still has
+ * Guard for app routes (/dashboard, /jobs, /traces, /logs, /memory,
+ * /settings). Requires a session; if the user somehow still has
  * onboardingComplete=false (legacy accounts from the old /onboarding flow),
  * sends them there to finish. Passes the current location as ?redirect= so
  * /login can return.

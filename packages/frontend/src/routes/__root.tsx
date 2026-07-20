@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { Suspense, useCallback, useState } from "react"
 import {
   createRootRouteWithContext,
   Outlet,
@@ -10,12 +10,7 @@ import {
   Scripts,
 } from "@tanstack/react-router"
 import "../index.css"
-import {
-  QueryClient,
-  QueryCache,
-  MutationCache,
-  QueryClientProvider,
-} from "@tanstack/react-query"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import {
   LayoutDashboard,
   Briefcase,
@@ -29,7 +24,6 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { authClient, signOutClient } from "../lib/auth"
-import { ApiError } from "../lib/api"
 import { Button, Skeleton, Toaster } from "@agent-harness/ui"
 import { ErrorBoundary } from "../components/ErrorBoundary"
 
@@ -39,7 +33,7 @@ const NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: "/traces", label: "Traces", icon: Search },
   { id: "/logs", label: "Logs", icon: ScrollText },
   { id: "/memory", label: "Memory", icon: Brain },
-  { id: "/settings/profile", label: "Profile", icon: Settings },
+  { id: "/settings", label: "Settings", icon: Settings },
 ]
 
 const SHELL_LESS = new Set([
@@ -55,6 +49,20 @@ function Shell() {
   const navigate = useNavigate()
   const router = useRouter()
   const pathname = useRouterState({ select: s => s.location.pathname })
+
+  // Stable so <Button onClick={handleSignOut}> doesn't get a fresh closure
+  // every render. Closes only over stable refs.
+  const handleSignOut = useCallback(async () => {
+    const result = await signOutClient()
+    // Always clear React Query cache so any in-flight dashboard request
+    // can't repopulate auth-gated data post-sign-out.
+    queryClient.clear()
+    if (!result.ok) {
+      console.warn("[sign-out] failed:", result.error)
+    }
+    await router.invalidate()
+    await navigate({ to: "/login", replace: true })
+  }, [router, navigate])
 
   if (SHELL_LESS.has(pathname)) {
     return <Outlet />
@@ -181,17 +189,7 @@ function Shell() {
             //      the user on the login screen than leave a stale session
             //      visible. The QueryClient cache is cleared so the dashboard
             //      pollers can't write into it during the brief window.
-            onClick={async () => {
-              const result = await signOutClient()
-              // Always clear React Query cache so any in-flight dashboard
-              // request can't repopulate auth-gated data post-sign-out.
-              queryClient.clear()
-              if (!result.ok) {
-                console.warn("[sign-out] failed:", result.error)
-              }
-              await router.invalidate()
-              await navigate({ to: "/login", replace: true })
-            }}
+            onClick={handleSignOut}
           >
             <LogOut className="size-3.5 mr-2" />
             Sign out
@@ -226,20 +224,12 @@ function Shell() {
   )
 }
 
-function onQueryError(err: unknown): void {
-  if (typeof window === "undefined") return
-  if (!(err instanceof ApiError)) return
-  if (err.status === 401) {
-    window.location.assign("/login")
-  } else if (err.status === 428) {
-    window.location.assign("/onboarding")
-  }
-}
-
+// NOTE: route guards (requireAuth / requireOnboarding) handle 401/428 the
+// SPA-safe way via `throw redirect()`. We deliberately do NOT install a
+// global onQueryError that calls window.location.assign() — that nukes the
+// React tree, query cache, and router history on every auth failure.
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 0 } },
-  queryCache: new QueryCache({ onError: onQueryError }),
-  mutationCache: new MutationCache({ onError: onQueryError }),
 })
 
 export const Route = createRootRouteWithContext()({
@@ -279,10 +269,37 @@ function RootComponent() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={client}>
-        <Shell />
+        {/* Suspense boundary is required for TanStack Router's lazy route
+            chunks (file-based code splitting). Reuses the same skeleton
+            layout the auth-pending shell already renders — no extra asset. */}
+        <Suspense fallback={<ShellSkeleton />}>
+          <Shell />
+        </Suspense>
         <Toaster richColors position="top-right" />
       </QueryClientProvider>
     </ErrorBoundary>
+  )
+}
+
+// Presentational shell skeleton — shares the layout the auth-pending shell
+// uses, so the Suspense fallback feels continuous instead of a harsh flash.
+function ShellSkeleton() {
+  return (
+    <div className="flex h-screen bg-background">
+      <div className="w-64 shrink-0 bg-card border-r border-border flex flex-col gap-2 p-4">
+        <Skeleton className="h-8 w-36 mb-4" />
+        <div className="flex flex-col gap-2">
+          {NAV.map(n => (
+            <Skeleton key={n.id} className="h-9 w-full rounded-md" />
+          ))}
+        </div>
+      </div>
+      <div className="flex-1 p-8 flex flex-col gap-4">
+        <Skeleton className="h-10 w-48" />
+        <Skeleton className="h-32 w-full rounded-xl" />
+        <Skeleton className="h-64 w-full rounded-xl" />
+      </div>
+    </div>
   )
 }
 

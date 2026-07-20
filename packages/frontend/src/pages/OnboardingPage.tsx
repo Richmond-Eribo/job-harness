@@ -1,4 +1,4 @@
-import { useActionState, useState } from "react"
+import { useActionState, useCallback, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { CircleAlert, Sparkles } from "lucide-react"
 import {
@@ -27,10 +27,17 @@ export function OnboardingPage() {
   const [cvFile, setCvFile] = useState<File | null>(null)
   const [p, setP] = useState<Record<string, string>>({})
 
-  const setSelect = (k: string) => (v: string) =>
-    setP(prev => ({ ...prev, [k]: v === NONE ? "" : v }))
-  const setText = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setP(prev => ({ ...prev, [k]: e.target.value }))
+  // Stable closures — only close over setP (stable), so [] deps are correct.
+  const setSelect = useCallback(
+    (k: string) => (v: string) =>
+      setP(prev => ({ ...prev, [k]: v === NONE ? "" : v })),
+    [],
+  )
+  const setText = useCallback(
+    (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setP(prev => ({ ...prev, [k]: e.target.value })),
+    [],
+  )
 
   const [state, action, pending] = useActionState<OnboardingState, FormData>(
     async (_prev, fd) => {
@@ -89,9 +96,12 @@ export function OnboardingPage() {
             <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 grid place-items-center text-primary mb-4">
               <Sparkles className="size-5" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight">Complete your profile</h1>
+            <h1 className="text-2xl font-bold tracking-tight">
+              Complete your profile
+            </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Configure your preferences so the agent targets the right job listings.
+              Configure your preferences so the agent targets the right job
+              listings.
             </p>
           </div>
 
@@ -134,7 +144,9 @@ export function OnboardingPage() {
             />
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="skills" className="text-xs text-muted-foreground">Skills (comma-separated)</Label>
+              <Label htmlFor="skills" className="text-xs text-muted-foreground">
+                Skills (comma-separated)
+              </Label>
               <Textarea
                 id="skills"
                 name="skills"
@@ -144,7 +156,9 @@ export function OnboardingPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="cv" className="text-xs text-muted-foreground">CV / Résumé (PDF or DOCX)</Label>
+              <Label htmlFor="cv" className="text-xs text-muted-foreground">
+                CV / Résumé (PDF or DOCX)
+              </Label>
               <FileInput
                 id="cv"
                 accept=".pdf,.doc,.docx"
@@ -159,8 +173,15 @@ export function OnboardingPage() {
               </Alert>
             )}
 
-            <Button type="submit" size="lg" disabled={pending} className="w-full mt-2">
-              {pending ? "Saving profile…" : "Complete Setup & Launch Dashboard"}
+            <Button
+              type="submit"
+              size="lg"
+              disabled={pending}
+              className="w-full mt-2"
+            >
+              {pending
+                ? "Saving profile…"
+                : "Complete Setup & Launch Dashboard"}
             </Button>
           </form>
         </div>
@@ -192,7 +213,9 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={name} className="text-xs text-muted-foreground">{label}</Label>
+      <Label htmlFor={name} className="text-xs text-muted-foreground">
+        {label}
+      </Label>
       <Input
         id={name}
         name={name}
@@ -221,7 +244,9 @@ function SelectField({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={name} className="text-xs text-muted-foreground">{label}</Label>
+      <Label htmlFor={name} className="text-xs text-muted-foreground">
+        {label}
+      </Label>
       <Select value={value || NONE} onValueChange={onChange}>
         <SelectTrigger id={name} className="w-full">
           <SelectValue placeholder="— Select —" />

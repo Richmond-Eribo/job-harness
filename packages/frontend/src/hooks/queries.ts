@@ -40,7 +40,7 @@ interface HarnessStatus {
 }
 
 /** A run summary from GET /api/runs. */
-interface RunSummary {
+export interface RunSummary {
   runId: string
   status?: string
   goal?: string | null
@@ -90,11 +90,16 @@ export function useRuns() {
 }
 
 // --- Single run events (the transcript) ---
+// Polls every 3s while the run is active; stops once it settles.
 export function useRunTrace(runId: string) {
   return useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.get<RunTraceResponse>(`/runs/${runId}`),
-    refetchInterval: 3000,
+    refetchInterval: query => {
+      const status = query.state.data?.run?.status
+      if (status === "done" || status === "error") return false
+      return 3000
+    },
   })
 }
 
@@ -103,14 +108,19 @@ export function useLog() {
   return useQuery({
     queryKey: ["log"],
     queryFn: () => api.get<StepLogEntry[]>("/log"),
+    staleTime: 30_000,
   })
 }
 
 // --- Profile ---
+// Config data, not real-time. Window focus should never trigger a refetch
+// that could fight the ProfilePage edits overlay.
 export function useProfile() {
   return useQuery({
     queryKey: ["profile"],
     queryFn: () => api.get<UserProfile>("/profile"),
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   })
 }
 
@@ -128,6 +138,7 @@ export function useSchedules() {
   return useQuery({
     queryKey: ["schedules"],
     queryFn: () => api.get<ScheduleEntry[]>("/schedules"),
+    staleTime: 60_000,
   })
 }
 
@@ -136,6 +147,29 @@ export function useUserMemory() {
   return useQuery({
     queryKey: ["user-memory"],
     queryFn: () => api.get<UserMemory[]>("/user-memory"),
+    staleTime: 30_000,
+  })
+}
+
+// --- Harness runtime / LLM config (GET/PUT /api/config) ---
+// Backend returns a flat Record<string,string> with keys like:
+//   goal, maxSteps, tokenBudget, tokensUsed (read-only),
+//   llmProvider, llmModel, customProviderUrl.
+// Only send keys you want to mutate — updateConfig() does partial writes.
+export function useConfig() {
+  return useQuery({
+    queryKey: ["config"],
+    queryFn: () => api.get<Record<string, string>>("/config"),
+    staleTime: 60_000,
+  })
+}
+
+export function useUpdateConfig() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (patch: Record<string, string>) =>
+      api.put<string>("/config", patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["config"] }),
   })
 }
 

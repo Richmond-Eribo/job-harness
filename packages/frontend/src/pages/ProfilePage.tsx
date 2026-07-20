@@ -1,6 +1,13 @@
-import { useState, useEffect } from "react"
-import { Download, FileText, User, Briefcase, Link2 } from "lucide-react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useState } from "react"
+import {
+  Download,
+  FileText,
+  User,
+  Briefcase,
+  Link2,
+  CircleAlert,
+} from "lucide-react"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "../lib/api"
 import { API_URL } from "../lib/auth"
 import { useProfile } from "../hooks/queries"
@@ -26,68 +33,71 @@ import { toast } from "sonner"
 
 const NONE = "__none__"
 
+// The 15 editable profile keys the original save() sent. Keeping this as an
+// explicit allowlist prevents leaking read-only server fields (cvFilename,
+// cvUploadedAt, createdAt, updatedAt) back to the API in the PUT payload.
+const EDITABLE_KEYS = [
+  "firstName",
+  "lastName",
+  "email",
+  "phone",
+  "location",
+  "yearsExperience",
+  "targetRoles",
+  "targetLocations",
+  "linkedinUrl",
+  "githubUrl",
+  "portfolioUrl",
+  "workAuth",
+  "seniority",
+  "workMode",
+  "jobSearchStatus",
+] as const
+
 export function ProfilePage() {
   const qc = useQueryClient()
-  const { data: profile, isLoading } = useProfile()
+  const { data: profile, isLoading, isError, error, refetch } = useProfile()
 
-  const [form, setForm] = useState<Record<string, string>>({})
-  const [saving, setSaving] = useState(false)
-  const [skills, setSkills] = useState("")
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │ Edits overlay (derived-values pattern — no useEffect sync).     │
+  // │ The query cache is the source of truth; local state tracks      │
+  // │ only user-introduced overrides. Resolved value:                 │
+  // │   v(k) = edits[k] ?? String(profile?.[k] ?? "")                  │
+  // │ Profile refetches are harmless because the overlay wins.       │
+  // └─────────────────────────────────────────────────────────────────┘
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const v = (k: string): string =>
+    edits[k] ?? String(profile?.[k as keyof typeof profile] ?? "")
+  const set = (k: string, value: string) =>
+    setEdits(prev => ({ ...prev, [k]: value }))
 
-  useEffect(() => {
-    if (profile) {
-      const f: Record<string, string> = {}
-      const keys = [
-        "firstName",
-        "lastName",
-        "email",
-        "phone",
-        "location",
-        "yearsExperience",
-        "targetRoles",
-        "targetLocations",
-        "linkedinUrl",
-        "githubUrl",
-        "portfolioUrl",
-        "workAuth",
-        "seniority",
-        "workMode",
-        "jobSearchStatus",
-      ]
-      for (const k of keys) {
-        if (profile[k as keyof typeof profile] != null) {
-          f[k] = String(profile[k as keyof typeof profile])
-        }
-      }
-      setForm(f)
-      setSkills(String(profile.skills ?? ""))
-    }
-  }, [profile])
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      await api.put("/profile", { ...form, skills })
+  const save = useMutation({
+    mutationFn: async () => {
+      // Build payload from the SAME v() helper used in render — no
+      // duplication, no leakage of read-only fields.
+      const payload: Record<string, string> = {}
+      for (const k of EDITABLE_KEYS) payload[k] = v(k)
+      payload.skills = v("skills")
+      await api.put("/profile", payload)
+    },
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["profile"] })
+      setEdits({}) // overlay no longer needed — server has latest
       toast.success("Profile saved")
-    } catch (e: any) {
-      toast.error("Couldn't save profile", { description: e?.message })
-    } finally {
-      setSaving(false)
-    }
-  }
+    },
+    onError: (e: { message?: string }) =>
+      toast.error("Couldn't save profile", { description: e?.message }),
+  })
 
   const [cvFile, setCvFile] = useState<File | null>(null)
-  const [cvUploading, setCvUploading] = useState(false)
 
-  const uploadCv = async () => {
-    if (!cvFile) return
-    setCvUploading(true)
-    try {
+  const uploadCv = useMutation({
+    mutationFn: async () => {
+      if (!cvFile) return
       // C1/P1-1: same-as-OnboardingPage — explicit credentials:"include" so
-      // the cross-origin session cookie is attached. (Also using the
+      // the cross-origin session cookie is attached. Also using the
       // absolute API_URL rather than a relative path so this works in both
-      // same-origin legacy mode and the standalone-frontend mode.)
+      // same-origin legacy mode and the standalone-frontend mode.
       const res = await fetch(
         `${API_URL}/api/profile/cv?filename=${encodeURIComponent(cvFile.name)}`,
         {
@@ -98,16 +108,16 @@ export function ProfilePage() {
         },
       )
       if (!res.ok) throw new Error("Upload failed")
-      const data = await res.json()
+      return res.json() as Promise<{ filename: string }>
+    },
+    onSuccess: data => {
       qc.invalidateQueries({ queryKey: ["profile"] })
-      toast.success(`Uploaded ${data.filename}`)
+      toast.success(`Uploaded ${data?.filename ?? cvFile?.name ?? ""}`)
       setCvFile(null)
-    } catch (e: any) {
-      toast.error("CV upload failed", { description: e?.message })
-    } finally {
-      setCvUploading(false)
-    }
-  }
+    },
+    onError: (e: { message?: string }) =>
+      toast.error("CV upload failed", { description: e?.message }),
+  })
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-6 animate-fade-in">
@@ -122,12 +132,34 @@ export function ProfilePage() {
             files.
           </p>
         </div>
-        <Button onClick={save} disabled={saving} size="sm">
-          {saving ? "Saving Changes…" : "Save All Settings"}
+        <Button
+          onClick={() => save.mutate()}
+          disabled={save.isPending}
+          size="sm"
+        >
+          {save.isPending ? "Saving Changes…" : "Save All Settings"}
         </Button>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="py-8 text-center">
+            <CircleAlert className="size-8 mx-auto mb-2 text-destructive" />
+            <p className="text-sm font-medium">Failed to load profile</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {(error as { message?: string })?.message}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => refetch()}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      ) : isLoading ? (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-96 w-full rounded-xl" />
         </div>
@@ -186,10 +218,8 @@ export function ProfilePage() {
                     </Label>
                     <Input
                       id="firstName"
-                      value={form.firstName ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, firstName: e.target.value })
-                      }
+                      value={v("firstName")}
+                      onChange={e => set("firstName", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -202,10 +232,8 @@ export function ProfilePage() {
                     </Label>
                     <Input
                       id="lastName"
-                      value={form.lastName ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, lastName: e.target.value })
-                      }
+                      value={v("lastName")}
+                      onChange={e => set("lastName", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -222,10 +250,8 @@ export function ProfilePage() {
                     <Input
                       id="email"
                       type="email"
-                      value={form.email ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, email: e.target.value })
-                      }
+                      value={v("email")}
+                      onChange={e => set("email", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -238,10 +264,8 @@ export function ProfilePage() {
                     </Label>
                     <Input
                       id="phone"
-                      value={form.phone ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, phone: e.target.value })
-                      }
+                      value={v("phone")}
+                      onChange={e => set("phone", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -257,10 +281,8 @@ export function ProfilePage() {
                   <Input
                     id="location"
                     placeholder="e.g. London, UK"
-                    value={form.location ?? ""}
-                    onChange={e =>
-                      setForm({ ...form, location: e.target.value })
-                    }
+                    value={v("location")}
+                    onChange={e => set("location", e.target.value)}
                     className="text-xs"
                   />
                 </div>
@@ -288,9 +310,9 @@ export function ProfilePage() {
                       Seniority Level
                     </Label>
                     <Select
-                      value={form.seniority || NONE}
-                      onValueChange={v =>
-                        setForm({ ...form, seniority: v === NONE ? "" : v })
+                      value={v("seniority") || NONE}
+                      onValueChange={val =>
+                        set("seniority", val === NONE ? "" : val)
                       }
                     >
                       <SelectTrigger id="seniority" className="w-full text-xs">
@@ -321,9 +343,9 @@ export function ProfilePage() {
                       Work Mode
                     </Label>
                     <Select
-                      value={form.workMode || NONE}
-                      onValueChange={v =>
-                        setForm({ ...form, workMode: v === NONE ? "" : v })
+                      value={v("workMode") || NONE}
+                      onValueChange={val =>
+                        set("workMode", val === NONE ? "" : val)
                       }
                     >
                       <SelectTrigger id="workMode" className="w-full text-xs">
@@ -350,10 +372,8 @@ export function ProfilePage() {
                       id="yearsExperience"
                       type="number"
                       placeholder="e.g. 7"
-                      value={form.yearsExperience ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, yearsExperience: e.target.value })
-                      }
+                      value={v("yearsExperience")}
+                      onChange={e => set("yearsExperience", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -370,10 +390,8 @@ export function ProfilePage() {
                     <Input
                       id="targetRoles"
                       placeholder="e.g. Senior TypeScript Engineer"
-                      value={form.targetRoles ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, targetRoles: e.target.value })
-                      }
+                      value={v("targetRoles")}
+                      onChange={e => set("targetRoles", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -387,10 +405,8 @@ export function ProfilePage() {
                     <Input
                       id="targetLocations"
                       placeholder="e.g. Remote, London"
-                      value={form.targetLocations ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, targetLocations: e.target.value })
-                      }
+                      value={v("targetLocations")}
+                      onChange={e => set("targetLocations", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -406,8 +422,8 @@ export function ProfilePage() {
                   <Textarea
                     id="skills"
                     rows={3}
-                    value={skills}
-                    onChange={e => setSkills(e.target.value)}
+                    value={v("skills")}
+                    onChange={e => set("skills", e.target.value)}
                     placeholder="e.g. TypeScript, React, Cloudflare Workers"
                     className="text-xs"
                   />
@@ -435,10 +451,8 @@ export function ProfilePage() {
                     <Input
                       id="linkedinUrl"
                       placeholder="https://linkedin.com/in/you"
-                      value={form.linkedinUrl ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, linkedinUrl: e.target.value })
-                      }
+                      value={v("linkedinUrl")}
+                      onChange={e => set("linkedinUrl", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -452,10 +466,8 @@ export function ProfilePage() {
                     <Input
                       id="githubUrl"
                       placeholder="https://github.com/you"
-                      value={form.githubUrl ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, githubUrl: e.target.value })
-                      }
+                      value={v("githubUrl")}
+                      onChange={e => set("githubUrl", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -472,10 +484,8 @@ export function ProfilePage() {
                     <Input
                       id="portfolioUrl"
                       placeholder="https://you.dev"
-                      value={form.portfolioUrl ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, portfolioUrl: e.target.value })
-                      }
+                      value={v("portfolioUrl")}
+                      onChange={e => set("portfolioUrl", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -489,10 +499,8 @@ export function ProfilePage() {
                     <Input
                       id="workAuth"
                       placeholder="e.g. EU citizen, needs sponsorship"
-                      value={form.workAuth ?? ""}
-                      onChange={e =>
-                        setForm({ ...form, workAuth: e.target.value })
-                      }
+                      value={v("workAuth")}
+                      onChange={e => set("workAuth", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -544,11 +552,11 @@ export function ProfilePage() {
                   />
                   <Button
                     variant="secondary"
-                    onClick={uploadCv}
-                    disabled={!cvFile || cvUploading}
+                    onClick={() => uploadCv.mutate()}
+                    disabled={!cvFile || uploadCv.isPending}
                     size="sm"
                   >
-                    {cvUploading ? "Uploading…" : "Upload CV"}
+                    {uploadCv.isPending ? "Uploading…" : "Upload CV"}
                   </Button>
                 </div>
               </CardContent>
