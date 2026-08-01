@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Brain, User, Plus, Search, CircleAlert } from "lucide-react"
+import { Brain, User, Plus, Search, CircleAlert, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { api } from "../lib/api"
 import type { UserMemory } from "@/types"
@@ -15,6 +15,7 @@ import {
   Textarea,
 } from "@agent-harness/ui"
 import { toast } from "sonner"
+import { useUserMemory } from "../hooks/queries"
 
 // Normalize whatever the API returns for user-memory into {key,value} pairs.
 // `updatedAt` is required on the UserMemory type but not always returned by
@@ -36,15 +37,19 @@ function toEntries(data: unknown): UserMemory[] {
 
 export function MemoryPage() {
   const qc = useQueryClient()
+  // Refactored: previously this page re-implemented its own useQuery for
+  // user-memory, bypassing the centralized useUserMemory() hook. Now uses
+  // it directly so cache keys stay in lock-step with the rest of the app
+  // (e.g. invalidations fired from other surfaces). The agent's own
+  // context memory still goes through a raw useQuery — there's no
+  // centralized useMemory() yet, but matching the same queryKey shape so
+  // adding one later is a 1-line swap.
   const {
     data: memory,
     isError: userErr,
     error: userErrObj,
     refetch: refetchUser,
-  } = useQuery({
-    queryKey: ["user-memory"],
-    queryFn: () => api.get("/user-memory"),
-  })
+  } = useUserMemory()
   const {
     data: agentMemory,
     isError: agentErr,
@@ -69,6 +74,28 @@ export function MemoryPage() {
     },
     onError: (e: { message?: string }) =>
       toast.error("Couldn't save memory", { description: e?.message }),
+  })
+
+  // Delete a user-authored memory entry by key. Backend: DELETE /api/user-memory/:key.
+  const forgetUser = useMutation({
+    mutationFn: (k: string) => api.del(`/user-memory/${encodeURIComponent(k)}`),
+    onSuccess: (_data, k) => {
+      qc.invalidateQueries({ queryKey: ["user-memory"] })
+      toast.success(`Forgot "${k}"`)
+    },
+    onError: (e: { message?: string }) =>
+      toast.error("Couldn't delete memory", { description: e?.message }),
+  })
+
+  // Delete an agent-learned memory entry by key. Backend: DELETE /api/memory/:key.
+  const forgetAgent = useMutation({
+    mutationFn: (k: string) => api.del(`/memory/${encodeURIComponent(k)}`),
+    onSuccess: (_data, k) => {
+      qc.invalidateQueries({ queryKey: ["memory"] })
+      toast.success(`Forgot "${k}"`)
+    },
+    onError: (e: { message?: string }) =>
+      toast.error("Couldn't delete memory", { description: e?.message }),
   })
 
   const rawEntries = useMemo(() => toEntries(memory), [memory])
@@ -223,10 +250,23 @@ export function MemoryPage() {
                 {userEntries.map((e: UserMemory, i: number) => (
                   <Card
                     key={e.key ? `${e.key}-${i}` : i}
-                    className="py-3 px-3.5 border-l-4 border-l-primary transition-all hover:border-primary"
+                    className="py-3 px-3.5 border-l-4 border-l-primary transition-all hover:border-primary group"
                   >
-                    <div className="text-xs font-mono font-semibold text-primary mb-1">
-                      {e.key}
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="text-xs font-mono font-semibold text-primary break-all">
+                        {e.key}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        title={`Forget "${e.key}"`}
+                        aria-label={`Forget memory entry ${e.key}`}
+                        disabled={forgetUser.isPending}
+                        onClick={() => forgetUser.mutate(e.key)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
                     </div>
                     <div className="text-xs text-foreground leading-relaxed">
                       {e.value}
@@ -258,10 +298,23 @@ export function MemoryPage() {
                 {agentEntries.map((e: UserMemory, i: number) => (
                   <Card
                     key={e.key ? `${e.key}-${i}` : i}
-                    className="py-3 px-3.5 border-l-4 border-l-violet-400/60"
+                    className="py-3 px-3.5 border-l-4 border-l-violet-400/60 group"
                   >
-                    <div className="text-xs font-mono font-semibold text-violet-400 mb-1">
-                      {e.key}
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="text-xs font-mono font-semibold text-violet-400 break-all">
+                        {e.key}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        title={`Forget "${e.key}"`}
+                        aria-label={`Forget agent memory ${e.key}`}
+                        disabled={forgetAgent.isPending}
+                        onClick={() => forgetAgent.mutate(e.key)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
                     </div>
                     <div className="text-xs text-foreground leading-relaxed">
                       {e.value}
