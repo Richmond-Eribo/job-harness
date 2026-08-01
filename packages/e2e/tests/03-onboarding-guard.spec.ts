@@ -37,11 +37,23 @@ test.describe("onboarding guard", () => {
   test("completing onboarding reaches /dashboard", async ({ page }) => {
     await page.goto(`${E2E_WEB_URL}/onboarding`)
 
-    // Fill required + a few optional fields. (fullName is required.)
+    // ── Step 1: Profile ─────────────────────────────────────────────────
     await page.getByLabel(/full name/i).fill("New Onboarded User")
     await page.getByLabel(/target roles/i).fill("Senior TypeScript Engineer")
-    await page.getByLabel(/skills \(comma-separated\)/i).fill("TypeScript, React, Cloudflare")
+    await page
+      .getByLabel(/skills \(comma-separated\)/i)
+      .fill("TypeScript, React, Cloudflare")
+    await page.getByRole("button", { name: /continue/i }).click()
 
+    // ── Step 2: CV (optional — skip) ────────────────────────────────────
+    // The default-seed checkbox is pre-checked; leave it. Click Continue.
+    await page.getByRole("button", { name: /continue/i }).click()
+
+    // ── Step 3: Connect browser (skip pairing, finish) ───────────────────
+    // Pairing the extension is optional in onboarding — finishing here
+    // leaves the user with a "No browser" pill that the dashboard's
+    // pre-flight checklist will surface. No assertion on that here; it's
+    // covered separately by 04-dashboard-run's @llm path.
     await page.getByRole("button", { name: /complete setup/i }).click()
 
     // On success the action navigates to /dashboard.

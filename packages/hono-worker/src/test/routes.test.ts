@@ -20,6 +20,7 @@ describe("Route structure", () => {
     const expectedRoutes = [
       'app.get("/api/status"',
       'app.post("/api/start"',
+      'app.get("/api/start/preflight"',
       'app.post("/api/stop"',
       'app.post("/api/pause"',
       'app.post("/api/resume"',
@@ -40,10 +41,34 @@ describe("Route structure", () => {
       'app.get("/api/profile"',
       'app.put("/api/profile"',
       'app.get("/api/follow-ups"',
+      'app.get("/healthz"',
+      'app.post("/api/browser/pair"',
+      'app.post("/api/browser/pair/redeem"',
+      'app.post("/api/browser/refresh"',
+      'app.post("/api/browser/unpair"',
+      'app.get("/api/account/export"',
+      'app.delete("/api/account"',
     ]
     for (const route of expectedRoutes) {
       expect(src).toContain(route)
     }
+  })
+
+  it("gates /api/debug/* behind IS_LOCAL_DEV", () => {
+    const src = readSrc()
+    expect(src).toContain('app.use("/api/debug/*"')
+    expect(src).toContain("IS_LOCAL_DEV")
+  })
+
+  it("exempts extension pair/redeem + refresh from session auth", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const requireAuthSrc = fs.readFileSync(
+      path.join(__dirname, "..", "auth", "require-auth.ts"),
+      "utf-8",
+    )
+    expect(requireAuthSrc).toContain("/api/browser/pair/redeem")
+    expect(requireAuthSrc).toContain("/api/browser/refresh")
   })
 
   it("has session-cookie auth on all routes", () => {
