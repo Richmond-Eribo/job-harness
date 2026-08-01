@@ -1,4 +1,12 @@
-import { useStatus, usePipeline, useStartRun, useStopRun } from "../hooks/queries"
+import { useState } from "react"
+import { Link } from "@tanstack/react-router"
+import {
+  useStatus,
+  usePipeline,
+  useStartRun,
+  useStopRun,
+  usePreflight,
+} from "../hooks/queries"
 import type { JobListing } from "@/types"
 import {
   Badge,
@@ -8,6 +16,12 @@ import {
   CardHeader,
   CardTitle,
   Skeleton,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
 } from "@agent-harness/ui"
 import { toast } from "sonner"
 import {
@@ -19,7 +33,39 @@ import {
   AlertCircle,
   ArrowUpRight,
   CircleAlert,
+  FileText,
+  Globe,
+  Chrome,
 } from "lucide-react"
+
+// Pre-flight requirement metadata — mirrors the `missing` string keys the
+// backend's computePreflightGaps() emits (src/index.ts). Kept as a lookup
+// here rather than a shared enum so the UI can degrade gracefully (an
+// unrecognized key still renders, just without an icon/link) if the backend
+// ever adds a new requirement before the frontend catches up.
+const PREFLIGHT_ITEMS: Record<
+  string,
+  { label: string; hint: string; to: string; icon: typeof FileText }
+> = {
+  cv: {
+    label: "Upload your CV",
+    hint: "The agent uses it to tailor cover letters and match roles.",
+    to: "/settings",
+    icon: FileText,
+  },
+  "job-sources": {
+    label: "Add a job source",
+    hint: "Configure at least one site the agent is allowed to browse.",
+    to: "/jobs",
+    icon: Globe,
+  },
+  browser: {
+    label: "Connect your browser",
+    hint: "Pair the Chrome extension so the agent can reach login-walled listings.",
+    to: "/settings",
+    icon: Chrome,
+  },
+}
 
 const STAGES = [
   "discovered",
@@ -54,8 +100,17 @@ export function OverviewPage() {
     error: pipelineErrObj,
     refetch: refetchPipeline,
   } = usePipeline()
+  const { data: preflight } = usePreflight()
   const startRun = useStartRun()
   const stopRun = useStopRun()
+
+  // The checklist modal's contents — either populated from a proactive
+  // usePreflight() read (banner "Review setup" click) or from the 428 the
+  // server returns if /api/start is attempted anyway (belt-and-suspenders:
+  // the client-side preflight cache could be briefly stale).
+  const [checklistMissing, setChecklistMissing] = useState<string[] | null>(
+    null,
+  )
 
   const isRunning = status?.status === "running"
   const stats = pipeline?.stats ?? {
@@ -65,12 +120,51 @@ export function OverviewPage() {
   }
   const listings = pipeline?.listings ?? []
 
-  const handleStart = () =>
+  const doStart = () =>
     startRun.mutate(undefined, {
-      onSuccess: () => toast.success("Agent run initiated"),
-      onError: (e: { message?: string }) =>
-        toast.error("Couldn't start the agent", { description: e?.message }),
+      onSuccess: () => {
+        setChecklistMissing(null)
+        toast.success("Agent run initiated")
+      },
+      onError: (e: unknown) =>
+        toast.error("Couldn't start the agent", {
+          description: (e as { message?: string })?.message,
+        }),
     })
+
+  const handleStart = () => {
+    // Advisory pre-flight from the cached usePreflight() read.
+    //
+    // DESIGN (per user request, 2026-07-21):
+    //   • `job-sources` missing → BLOCKING modal. A run with zero configured
+    //     sources can't discover anything, so the button would silently do
+    //     nothing. The modal offers deep-links + "Start anyway".
+    //   • `cv` / `browser` missing → non-blocking toast warning, then start.
+    //     The run is still useful (the agent can browse job-sources without
+    //     login, draft letters once a CV is added later, etc.) so blocking
+    //     would be heavy-handed.
+    //
+    // If preflight itself errored or hasn't loaded, just start — the server
+    // no longer gates either, so the worst case is a wasted run, not a
+    // broken UI.
+    if (preflight && preflight.missing.includes("job-sources")) {
+      setChecklistMissing(preflight.missing)
+      return
+    }
+    if (preflight) {
+      const other = preflight.missing.filter(k => k !== "job-sources")
+      if (other.length > 0) {
+        const noun =
+          other.includes("cv") && other.includes("browser")
+            ? "No CV or browser connected — the agent will be limited."
+            : other.includes("cv")
+              ? "No CV uploaded — cover letters won't work yet."
+              : "No browser connected — login-walled sites will be skipped."
+        toast.warning("Starting anyway", { description: noun })
+      }
+    }
+    doStart()
+  }
   const handleStop = () =>
     stopRun.mutate(undefined, {
       onSuccess: () => toast.success("Agent run stopped"),
@@ -287,16 +381,35 @@ export function OverviewPage() {
               </div>
 
               <div className="text-xs text-muted-foreground space-y-2">
-                <div className="flex items-center justify-between">
-                  <span>Target Boards</span>
-                  <span className="text-foreground font-mono">
-                    HN, LinkedIn
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Auto Cover Letters</span>
-                  <span className="text-success font-medium">Enabled</span>
-                </div>
+                {/* Previously this panel showed hardcoded "Target Boards: HN,
+                  LinkedIn" + "Auto Cover Letters: Enabled" strings that bore
+                  no relationship to real state. Replaced with the actual
+                  preflight checklist so the dashboard is truthful about
+                  capability — matches the Phase 1 target-UX principle
+                  ("Dashboard is always truthful about capability"). */}
+                {(["cv", "job-sources", "browser"] as const).map(key => {
+                  const ok = !preflight?.missing.includes(key)
+                  const item = PREFLIGHT_ITEMS[key]
+                  const Icon = item.icon
+                  return (
+                    <div
+                      key={key}
+                      className="flex items-center justify-between"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Icon className="size-3.5" />
+                        {item.label}
+                      </span>
+                      <span
+                        className={`font-medium ${
+                          ok ? "text-success" : "text-warning"
+                        }`}
+                      >
+                        {ok ? "Ready" : "Needed"}
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
 
               {isRunning ? (
@@ -339,15 +452,107 @@ export function OverviewPage() {
                   className="w-full mt-2"
                   asChild
                 >
-                  <a href="/jobs">
+                  {/* Plain <a href> forces a full page reload — replaced with
+                    a router <Link> so the SPA state + QueryClient cache
+                    survive the navigation. Part of the Phase 4 parity list
+                    but trivial enough to fix in passing here. */}
+                  <Link to="/jobs">
                     Review on Board <ArrowUpRight className="size-3 ml-1" />
-                  </a>
+                  </Link>
                 </Button>
               </CardContent>
             </Card>
           )}
         </div>
       </div>
+
+      {/* Pre-flight checklist modal — opens ONLY when the cached usePreflight()
+          read says job-sources is missing (the one case where a run literally
+          cannot discover anything). CV and browser warnings go through
+          handleStart() as toasts instead. "Start anyway" lets the user force
+          a no-op run if they want (e.g. they'll add sources manually
+          mid-run). Deep-link buttons open Settings or Jobs in a new tab. */}
+      <PreflightDialog
+        missing={checklistMissing}
+        onClose={() => setChecklistMissing(null)}
+        onStartAnyway={() => {
+          setChecklistMissing(null)
+          doStart()
+        }}
+        startingAnyway={startRun.isPending}
+      />
     </div>
+  )
+}
+
+function PreflightDialog({
+  missing,
+  onClose,
+  onStartAnyway,
+  startingAnyway,
+}: {
+  missing: string[] | null
+  onClose: () => void
+  onStartAnyway: () => void
+  startingAnyway: boolean
+}) {
+  const open = missing !== null && missing.length > 0
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={o => {
+        if (!o) onClose()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add a job source first</DialogTitle>
+          <DialogDescription>
+            The agent needs at least one configured job website to search. You
+            can still start a run without sources, but it won&apos;t be able to
+            discover anything — pair now, or start anyway.
+          </DialogDescription>
+        </DialogHeader>
+
+        <ul className="flex flex-col gap-3 py-2">
+          {(missing ?? []).map(key => {
+            const item = PREFLIGHT_ITEMS[key] ?? {
+              label: key,
+              hint: "(no description)",
+              to: "/settings",
+              icon: CircleAlert,
+            }
+            const Icon = item.icon
+            return (
+              <li key={key} className="flex items-start gap-3">
+                <span className="size-8 rounded-md bg-warning/10 border border-warning/30 grid place-items-center text-warning shrink-0">
+                  <Icon className="size-4" />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground">
+                    {item.label}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {item.hint}
+                  </p>
+                </div>
+                <Button asChild size="sm" variant="outline">
+                  <Link to={item.to}>Fix</Link>
+                </Button>
+              </li>
+            )
+          })}
+        </ul>
+
+        <DialogFooter className="gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+          <Button onClick={onStartAnyway} disabled={startingAnyway}>
+            {startingAnyway ? "Starting…" : "Start anyway"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
