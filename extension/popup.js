@@ -1,103 +1,145 @@
 // =============================================================================
-// Popup — sets the worker URL + shows connection state. NO sendMessage.
+// Popup — pairing UX. NO manual token entry, NO sendMessage.
 // =============================================================================
-// MV3 LESSON: the previous version saved via chrome.runtime.sendMessage, but
-// the service worker's response hung the popup's await ("stuck on
-// connecting"). MV3 message channels close if the listener doesn't return true
-// AND call sendResponse within the async chain — fragile. Instead we:
-//   • Save: write workerUrl straight to chrome.storage.local. background.js's
-//     storage.onChanged listener already connects on change — no message needed.
-//   • State: the bridge PUBLISHES its connection state to storage.local under
-//     `relayState`; the popup reads it with storage.local.get — no message.
-// storage is the durable, always-works IPC channel here.
+// TWO STATES:
+//   • Unpaired — worker URL + 6-char pairing code (from the dashboard's
+//     "Pair new browser" button) → exchanged for a refresh token via
+//     redeemPairingCode() in bridge.js.
+//   • Paired — connection status (from the bridge's published relayState),
+//     worker URL, access-token expiry, and a "Forget this browser" button
+//     that revokes everything and returns to the unpaired view.
+//
+// MV3 LESSON (kept from the original implementation): state changes are
+// driven entirely through chrome.storage — never chrome.runtime.sendMessage,
+// which can hang the popup if the service worker's response handling isn't
+// perfectly managed across the async boundary. Storage is the durable,
+// always-works IPC channel here.
 // =============================================================================
 
+import { redeemPairingCode, forgetPairing } from "./bridge.js"
+
+const $unpairedView = document.getElementById("unpaired-view")
+const $pairedView = document.getElementById("paired-view")
 const $url = document.getElementById("worker-url")
-const $save = document.getElementById("save")
-const $disc = document.getElementById("disconnect")
+const $code = document.getElementById("pair-code")
+const $pair = document.getElementById("pair")
+const $forget = document.getElementById("forget")
 const $status = document.getElementById("status")
 const $state = document.getElementById("state")
+const $pairedWorkerUrl = document.getElementById("paired-worker-url")
+const $pairedExpiry = document.getElementById("paired-expiry")
 
-// ── Load saved URL on open. ────────────────────────────────────────────────
 async function init() {
   const { workerUrl } = await chrome.storage.local.get("workerUrl")
-  if (workerUrl) {
-    $url.value = workerUrl
-    $save.disabled = false
-  }
-  refreshState()
-  // Re-read state whenever storage changes (the bridge writes relayState on
-  // connect/disconnect) + on a timer as a fallback.
+  if (workerUrl) $url.value = workerUrl
+
+  await render()
+
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && (changes.relayState || changes.workerUrl)) {
-      refreshState()
+    if (area === "local" && (changes.relayState || changes.refreshToken || changes.workerUrl)) {
+      render()
     }
   })
-  setInterval(refreshState, 2000)
+  setInterval(render, 2000)
 }
 
-// ── Read connection state from storage (written by the bridge). ───────────
-async function refreshState() {
-  try {
-    const { relayState } = await chrome.storage.local.get("relayState")
-    const s = relayState || { connected: false }
-    if (s.connected) {
-      $state.innerHTML =
-        '<span class="dot on"></span>connected' +
-        (s.activeTabId != null ? " · tab " + s.activeTabId : "")
-    } else {
-      $state.innerHTML = '<span class="dot off"></span>' + (s.reason || "disconnected")
-    }
-  } catch {
-    $state.innerHTML = '<span class="dot off"></span>disconnected'
+async function render() {
+  const { refreshToken, workerUrl, accessTokenExpiresAt, relayState } =
+    await chrome.storage.local.get([
+      "refreshToken",
+      "workerUrl",
+      "accessTokenExpiresAt",
+      "relayState",
+    ])
+
+  const paired = !!refreshToken
+  $unpairedView.hidden = paired
+  $pairedView.hidden = !paired
+
+  if (!paired) return
+
+  $pairedWorkerUrl.textContent = workerUrl || "—"
+  if (accessTokenExpiresAt) {
+    const minsLeft = Math.max(0, Math.round((accessTokenExpiresAt - Date.now()) / 60000))
+    $pairedExpiry.textContent = minsLeft > 0 ? `refreshes in ~${minsLeft}m` : "refreshing…"
+  } else {
+    $pairedExpiry.textContent = "—"
+  }
+
+  const s = relayState || { connected: false }
+  if (s.connected) {
+    $state.innerHTML =
+      '<span class="dot on"></span>connected' +
+      (s.activeTabId != null ? " · tab " + s.activeTabId : "")
+  } else {
+    $state.innerHTML = '<span class="dot off"></span>' + (s.reason || "disconnected")
   }
 }
 
-// ── Enable Save once there's text. ────────────────────────────────────────
+// ── Enable Pair once both fields have content. ────────────────────────────
+function updatePairButton() {
+  $pair.disabled = $url.value.trim().length === 0 || $code.value.trim().length !== 6
+}
 $url.addEventListener("input", () => {
-  $save.disabled = $url.value.trim().length === 0
-  $status.className = ""
-  $status.textContent = ""
+  updatePairButton()
+  clearStatus()
+})
+$code.addEventListener("input", () => {
+  $code.value = $code.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6)
+  updatePairButton()
+  clearStatus()
 })
 
 function showStatus(msg, kind) {
   $status.textContent = msg
   $status.className = kind // "ok" or "err"
 }
+function clearStatus() {
+  $status.className = ""
+  $status.textContent = ""
+}
 
-// ── Save: write storage directly. The SW's onChanged listener connects. ───
-// No sendMessage — that was the hang. Writing storage is synchronous-ish and
-// never blocks the popup.
-$save.addEventListener("click", async () => {
+// ── Pair: redeem the code for a refresh token, then the bridge connects. ──
+$pair.addEventListener("click", async () => {
   let url = $url.value.trim().replace(/\/+$/, "")
+  const code = $code.value.trim()
   if (!url) return
   if (!/^https?:\/\//i.test(url)) {
     showStatus("URL must start with http:// or https://", "err")
     return
   }
-  $save.disabled = true
-  $save.textContent = "Saving…"
+  $pair.disabled = true
+  $pair.textContent = "Pairing…"
   try {
-    await chrome.storage.local.set({ workerUrl: url })
-    showStatus("Saved. The service worker is connecting to " + url + "…", "ok")
+    await redeemPairingCode(url, code)
+    showStatus("Paired! Connecting…", "ok")
+    // storage.onChanged (refreshToken) in background.js triggers connectRelay.
   } catch (e) {
-    showStatus("Failed to save: " + (e?.message || String(e)), "err")
+    showStatus(e?.message || "Pairing failed", "err")
   } finally {
-    $save.disabled = false
-    $save.textContent = "Save & Connect"
-    setTimeout(refreshState, 800)
+    $pair.disabled = false
+    $pair.textContent = "Pair"
+    setTimeout(render, 500)
   }
 })
 
-// ── Disconnect: clear the URL + ask the SW to drop the socket. ────────────
-// Clearing workerUrl stops auto-reconnect on the next SW wake; the storage
-// change also fires the SW's onChanged → disconnectRelay() path.
-$disc.addEventListener("click", async () => {
-  await chrome.storage.local.set({ workerUrl: null })
-  showStatus("Disconnected. URL cleared.", "ok")
-  $url.value = ""
-  $save.disabled = true
-  setTimeout(refreshState, 400)
+// ── Forget: revoke locally + clear storage, back to unpaired view. ────────
+// (Server-side revocation of ALL of this user's refresh tokens is available
+// via the session-gated POST /api/browser/unpair — surfaced on the dashboard,
+// not here, since the extension itself has no session cookie to present.)
+$forget.addEventListener("click", async () => {
+  $forget.disabled = true
+  $forget.textContent = "Forgetting…"
+  try {
+    await forgetPairing()
+    $code.value = ""
+    updatePairButton()
+    showStatus("Forgotten. This browser is disconnected.", "ok")
+  } finally {
+    $forget.disabled = false
+    $forget.textContent = "Forget this browser"
+    setTimeout(render, 300)
+  }
 })
 
 init()

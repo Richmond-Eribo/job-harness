@@ -118,6 +118,39 @@
         margin-top: 10px;
         line-height: 1.4;
       }
+      input[type="text"].code-input {
+        text-align: center;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .paired-card {
+        background: #251e17;
+        border: 1px solid #332a20;
+        border-radius: 6px;
+        padding: 12px;
+        margin-top: 4px;
+      }
+      .paired-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        color: #a99d8a;
+        margin-bottom: 4px;
+      }
+      .paired-row strong {
+        color: #ece5d8;
+        font-weight: 600;
+      }
+      .forget {
+        background: transparent;
+        color: #e5555a;
+        border-color: rgba(229, 85, 90, 0.4);
+        width: 100%;
+        margin-top: 10px;
+      }
+      [hidden] { display: none !important; }
     </style>
   </head>
   <body>
@@ -127,28 +160,57 @@
       job sites. Credentials never leave your browser.
     </div>
 
-    <label for="worker-url">Worker URL</label>
-    <input
-      id="worker-url"
-      type="text"
-      placeholder="https://agent-harness.you.workers.dev"
-      spellcheck="false"
-      autocomplete="off"
-    />
+    <!-- ── Unpaired state: redeem a pairing code from the dashboard. ── -->
+    <div id="unpaired-view">
+      <label for="worker-url">Worker URL</label>
+      <input
+        id="worker-url"
+        type="text"
+        placeholder="https://agent-harness.you.workers.dev"
+        spellcheck="false"
+        autocomplete="off"
+      />
 
-    <div class="row">
-      <button id="save" class="save" disabled>Save & Connect</button>
-      <button id="disconnect" class="disconnect">Disconnect</button>
+      <label for="pair-code" style="margin-top: 12px;">Pairing code</label>
+      <input
+        id="pair-code"
+        class="code-input"
+        type="text"
+        placeholder="XXXXXX"
+        spellcheck="false"
+        autocomplete="off"
+        maxlength="6"
+      />
+
+      <div class="row">
+        <button id="pair" class="save" disabled>Pair</button>
+      </div>
+
+      <div class="hint">
+        Get a code from the dashboard: Settings → Browser &amp; Extension →
+        "Pair new browser". Codes expire after 5 minutes and can only be used
+        once.
+      </div>
+    </div>
+
+    <!-- ── Paired state: connection status + forget/disconnect. ── -->
+    <div id="paired-view" hidden>
+      <div id="state"><span class="dot off"></span>checking…</div>
+      <div class="paired-card">
+        <div class="paired-row">
+          <span>Worker</span>
+          <strong id="paired-worker-url">—</strong>
+        </div>
+        <div class="paired-row">
+          <span>Access token</span>
+          <strong id="paired-expiry">—</strong>
+        </div>
+      </div>
+      <button id="forget" class="disconnect forget">Forget this browser</button>
     </div>
 
     <div id="status"></div>
-    <div id="state"><span class="dot off"></span>checking…</div>
 
-    <div class="hint">
-      For local dev: <code>http://localhost:8787</code>. Keep a tab open and
-      focused while the agent browses — it drives the active tab.
-    </div>
-
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>
