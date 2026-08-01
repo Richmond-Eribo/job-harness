@@ -17,10 +17,9 @@
 LLM_API_KEY=""
 
 # --- Dashboard ---
-# Legacy shared bearer token. Replaced by session-cookie auth (Better Auth) in
-# Stage 4; kept only for the /legacy dashboard during the cutover. Optional.
-# Pick any opaque random string.
-DASHBOARD_TOKEN=""
+# (Removed 2026-07-20.) The legacy shared bearer-token auth was replaced by
+# session-cookie auth (Better Auth) and the dead ./public dashboard was
+# deleted in the Phase 4 consolidation. No replacement needed.
 
 # --- Auth (multi-tenant) ---
 # Secret used to sign/verify Better Auth session cookies + browser-relay
@@ -51,3 +50,14 @@ MAIL_FROM="agent@example.com"
 # When MAIL_ALLOWLIST is empty, the sendmail tool returns needs_approval but
 # never transports anything. Set this to enable real delivery in a future phase.
 # MAIL_ALLOWLIST="you@example.com,recruiter@acme.com"
+
+# Explicit local-dev flag. Also unlocks the /api/debug/* routes (model-probe,
+# validate-messages) — see src/index.ts. Leave unset/false in any deployed
+# environment; only set to "true" in your local .dev.vars.
+IS_LOCAL_DEV="true"
+
+# Independent secret for browser-extension WS tokens (see
+# src/auth/extension-token.ts). Optional — falls back to AUTH_SECRET if unset.
+# Setting a dedicated value lets you rotate extension tokens without
+# invalidating every web session. Generate one: `openssl rand -hex 32`
+# EXTENSION_TOKEN_SECRET=""

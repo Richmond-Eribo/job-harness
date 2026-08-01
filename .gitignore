@@ -24,5 +24,6 @@ tsconfig.tsbuildinfo
 
 docs/
 prompts/
+docs
 
 /packages/frontend/.tanstack
