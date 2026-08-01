@@ -22,6 +22,14 @@ import { getSessionUser } from "./session"
 // Paths that must be reachable WITHOUT a session.
 const PUBLIC_PREFIXES = [
   "/api/auth/", // Better Auth's own endpoints (sign-up, sign-in, verify, sign-out)
+  // Extension pairing redeem/refresh: the extension has no session cookie to
+  // present. The pairing code / refresh token IS the credential for these two
+  // calls (see src/auth/extension-pairing.ts) — each is independently
+  // rate-limited and single-use/revocable. POST /api/browser/pair (mint) and
+  // /api/browser/unpair (revoke) stay session-gated since they act on behalf
+  // of a logged-in dashboard user.
+  "/api/browser/pair/redeem",
+  "/api/browser/refresh",
 ]
 
 // Paths that require a SESSION but are exempt from the onboarding gate (so a

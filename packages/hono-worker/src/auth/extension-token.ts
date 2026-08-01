@@ -44,8 +44,9 @@ import type { AppEnv } from "../types/app-env"
 
 // P1-6: was 24h. Reduced to 1h so a leaked token has a small exploitation
 // window. The dashboard re-mints on each panel open, so working sessions are
-// unaffected.
-const TOKEN_TTL_SECONDS = 60 * 60 // 1 hour
+// unaffected. Exported so extension-pairing.ts can report the access-token
+// lifetime to the client without duplicating the constant.
+export const TOKEN_TTL_SECONDS = 60 * 60 // 1 hour
 const ALG = "HS256"
 
 // Subprotocol prefix the extension must use when presenting the token via the

@@ -40,6 +40,7 @@
 import { Agent, callable } from "agents"
 import browserConfig from "../config/browser-config.json"
 import type { Env } from "../types"
+import { EXT_TOKEN_SUBPROTOCOL_PREFIX } from "../auth/extension-token"
 
 // @cloudflare/playwright is an OPTIONAL dep (managed headless, paid plan).
 // It's only imported when env.BROWSER is bound. To keep the free-tier build
@@ -177,7 +178,39 @@ export class BrowserRelay extends Agent<Env, BrowserRelayState> {
       if (this.liveWs === server) this.liveWs = null
     })
 
-    return new Response(null, { status: 101, webSocket: client })
+    // Echo the offered WebSocket subprotocol back on the 101 response.
+    // RFC 6455 §4.2.2: when a client offers Sec-WebSocket-Protocol, the
+    // server's 101 response MUST echo exactly one of the offered values, or
+    // the BROWSER aborts the handshake — onopen never fires, onclose fires
+    // immediately, and targetKind() stays "none" forever. The extension
+    // authenticates by offering `ja-ext-token.<jwt>` as the subprotocol; we
+    // pick that one and echo it so the handshake completes. Without this,
+    // liveWs was set then immediately nulled by the close handler.
+    const offeredProtocols =
+      request.headers.get("sec-websocket-protocol") ?? ""
+    let selectedProtocol: string | null = null
+    if (offeredProtocols) {
+      for (const p of offeredProtocols.split(",").map(s => s.trim())) {
+        if (p.startsWith(EXT_TOKEN_SUBPROTOCOL_PREFIX)) {
+          selectedProtocol = p
+          break
+        }
+      }
+    }
+
+    console.log(
+      `[browser-relay] WS upgrade accepted — storing live target. ` +
+        `echoedSubprotocol=${selectedProtocol ? "yes" : "no"} ` +
+        `ua=${request.headers.get("user-agent") ?? "?"}`,
+    )
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: selectedProtocol
+        ? { "sec-websocket-protocol": selectedProtocol }
+        : undefined,
+    })
   }
 
   // -------------------------------------------------------------------------

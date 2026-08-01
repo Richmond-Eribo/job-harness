@@ -27,8 +27,16 @@ import {
   issueExtensionTokenRoute,
   userIdFromRelayRequest,
 } from "./auth/extension-token"
+import {
+  createPairingCodeRoute,
+  redeemPairingCodeRoute,
+  refreshAccessTokenRoute,
+  revokeAllRefreshTokensRoute,
+} from "./auth/extension-pairing"
+import { exportAccountRoute, deleteAccountRoute } from "./auth/account-routes"
 import { getAgents, getHarnessForUser } from "./utils/get-agents"
 import { getRateLimiter } from "./utils/get-agents"
+import { errorResponse } from "./utils/error-response"
 
 // Re-export all Durable Object classes (required by Cloudflare)
 export {
@@ -42,7 +50,38 @@ export {
 // Hono app
 // =============================================================================
 
+// Sensible starter job sources offered during onboarding (subject to the
+// user opting in via `seedDefaultJobSources: true`). Both are public, login-
+// free boards — deliberately NOT login-walled sites like LinkedIn/Indeed
+// here, since those require the extension to be paired first. A user with no
+// sources configured sees a "Needed" pre-flight item on the dashboard; this
+// seed removes that friction without forcing them to learn the Sources UI on
+// day one. Templates use the {query}/{location}/{page} placeholders the
+// agent's search_site tool fills (see src/agents/job-agent.ts).
+const DEFAULT_JOB_SOURCES = [
+  {
+    name: "Reed",
+    baseUrl: "https://www.reed.co.uk",
+    searchUrlTemplate: "https://www.reed.co.uk/jobs/{query}-jobs-in-{location}",
+    notes: "Default seeded source — public, no login required.",
+  },
+  {
+    name: "HN Who Is Hiring",
+    baseUrl: "https://news.ycombinator.com",
+    searchUrlTemplate:
+      "https://hn.algolia.com/api/v1/search_by_date?tags=story,job&query={query}",
+    notes: "Default seeded source — Hacker News job postings.",
+  },
+]
+
 const app = new Hono<AppEnv>()
+
+// ── Health check — unauthenticated liveness probe for uptime monitoring. ──
+// Deliberately mounted BEFORE CORS/auth middleware: an uptime monitor hitting
+// this from an arbitrary network location shouldn't need CORS headers or a
+// session. Returns 200 + a timestamp only — no user data, no DO/D1 round trip
+// (a true liveness probe should never depend on the things it's monitoring).
+app.get("/healthz", c => c.json({ ok: true, ts: new Date().toISOString() }))
 
 // CORS on everything (preflight handled automatically by the middleware).
 //
@@ -169,6 +208,33 @@ app.post("/api/onboarding", async c => {
     await jobAgent.setProfile(profilePatch)
   }
 
+  // Optional: seed a couple of sensible default job sources so a brand-new
+  // user doesn't land on the dashboard with zero configured sites (which
+  // would make their first run a guaranteed no-op). Only inserts if the user
+  // has NO sources yet AND explicitly opted in via `seedDefaultJobSources:
+  // true` in the request body — never silently override an operator's
+  // existing configuration. The two defaults are well-known public boards
+  // that don't require login (so they work even before the extension is
+  // paired); the user can edit/remove them from the Jobs → Sources UI.
+  if (body?.seedDefaultJobSources) {
+    try {
+      const existing = await jobAgent.listJobSources()
+      if (existing.length === 0) {
+        for (const src of DEFAULT_JOB_SOURCES) {
+          await jobAgent.addJobSource(src)
+        }
+      }
+    } catch (e) {
+      // Non-fatal — onboarding still succeeds; the user just won't have the
+      // defaults and will see the pre-flight "add a job source" checklist
+      // item on the dashboard instead.
+      console.warn(
+        `[api] POST /api/onboarding — failed to seed default job sources for ${userId}:`,
+        e instanceof Error ? e.message : e,
+      )
+    }
+  }
+
   // Mark onboarding complete in D1. The user can edit their profile later via
   // PUT /api/profile; this flag just unlocks the rest of the app.
   // Columns are camelCase to match migrations/0002_camelcase.sql (Better Auth
@@ -235,6 +301,15 @@ app.all("/browser/relay", async c => {
     c.req.raw.headers,
   )
   if (!userId) {
+    // Visible in `wrangler tail`. The extension's silent reconnect loop hides
+    // this by default — surface the rejection so operators don't blame pairing
+    // when the real cause is a clock-skew rejection or a secret mismatch
+    // (mint ran on AUTH_SECRET, verify runs on EXTENSION_TOKEN_SECRET).
+    console.warn(
+      `[/browser/relay] 401 — token missing/invalid. ` +
+        `protoHdr=${c.req.raw.headers.get("sec-websocket-protocol") ? "present" : "absent"} ` +
+        `tokenQuery=${url.searchParams.has("token") ? "present" : "absent"}`,
+    )
     return c.json({ error: "Missing or invalid extension token" }, 401)
   }
   const relay: any = await getAgentByName(c.env.BROWSER_RELAY, userId)
@@ -276,6 +351,87 @@ app.post("/api/browser/extension-token", async c => {
   return issueExtensionTokenRoute(c)
 })
 
+// ── Extension pairing (replaces manual token copy/paste) ───────────────────
+// See src/auth/extension-pairing.ts for the full flow rationale. Summary:
+//   1. POST /api/browser/pair          (session)    → {code, expiresIn}
+//   2. POST /api/browser/pair/redeem   (NO session)  → {refreshToken, accessToken}
+//   3. POST /api/browser/refresh       (NO session)  → {accessToken}
+//   4. POST /api/browser/unpair        (session)     → revoke all refresh tokens
+//
+// (2) and (3) are deliberately NOT session-gated — the extension has no way
+// to present a session cookie on these calls, and the code/refresh-token
+// itself IS the credential (same trust model as a password-reset token).
+app.post("/api/browser/pair", async c => {
+  const userId = c.var.userId
+  const rateLimiter = await getRateLimiter(c.env)
+  // Reuses the existing extension-token rate-limit bucket shape: 5 pairing
+  // attempts per hour is plenty for legitimate use (one per new device) and
+  // bounds a stolen-session-cookie attacker's ability to mint codes.
+  const windowSeconds = 60 * 60
+  const limit = 5
+  const { count } = await rateLimiter.check({
+    key: "extension-pair",
+    userId,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json(
+      { error: "Too many pairing attempts. Please try again later." },
+      429,
+    )
+  }
+  await rateLimiter.consume({ key: "extension-pair", userId, windowSeconds })
+  try {
+    return await createPairingCodeRoute(c)
+  } catch (e) {
+    return errorResponse(c, "POST /api/browser/pair", e)
+  }
+})
+
+app.post("/api/browser/pair/redeem", async c => {
+  // IP-scoped rate limit (no session/userId available pre-redeem) — bounds
+  // brute-forcing the 6-char code space. rateLimiter.check/consume key on an
+  // arbitrary string, so we use the caller's IP as the "userId" bucket key.
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown"
+  const rateLimiter = await getRateLimiter(c.env)
+  const windowSeconds = 60 * 10
+  const limit = 20
+  const { count } = await rateLimiter.check({
+    key: "extension-redeem",
+    userId: ip,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json({ error: "Too many attempts. Please try again later." }, 429)
+  }
+  await rateLimiter.consume({
+    key: "extension-redeem",
+    userId: ip,
+    windowSeconds,
+  })
+  try {
+    return await redeemPairingCodeRoute(c)
+  } catch (e) {
+    return errorResponse(c, "POST /api/browser/pair/redeem", e)
+  }
+})
+
+app.post("/api/browser/refresh", async c => {
+  try {
+    return await refreshAccessTokenRoute(c)
+  } catch (e) {
+    return errorResponse(c, "POST /api/browser/refresh", e)
+  }
+})
+
+app.post("/api/browser/unpair", async c => {
+  try {
+    return await revokeAllRefreshTokensRoute(c)
+  } catch (e) {
+    return errorResponse(c, "POST /api/browser/unpair", e)
+  }
+})
+
 app.get("/api/browser/status", async c => {
   const relay: any = await getAgentByName(c.env.BROWSER_RELAY, c.var.userId)
   return c.json(await relay.statusSnapshot())
@@ -289,12 +445,31 @@ app.post("/api/browser/disconnect", async c => {
 // Manual test harness — navigate + observe a URL through the connected browser
 // and return the raw result. Backs the Browser Test panel on Settings. Lets the
 // operator verify the whole chain (relay → extension → Chrome → CDP) without a
-// full agent run. No LLM call, so it's free to run repeatedly.
+// full agent run. No LLM call, so it's free to run repeatedly — but it DOES
+// drive a real browser tab, so still worth a generous rate limit to prevent a
+// runaway UI loop or scripted abuse from hammering the relay/extension.
 app.post("/api/browser/probe", async c => {
   const body = await c.req.json().catch(() => ({}))
   if (!body?.url) return c.json({ error: "url required" }, 400)
+  const userId = c.var.userId
+  const rateLimiter = await getRateLimiter(c.env)
+  const windowSeconds = 60
+  const limit = 20
+  const { count } = await rateLimiter.check({
+    key: "browser-probe",
+    userId,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json({ error: "Too many probe requests. Please slow down." }, 429)
+  }
+  await rateLimiter.consume({ key: "browser-probe", userId, windowSeconds })
   const agent: any = await getAgentByName(c.env.BROWSER_AGENT, c.var.userId)
-  return c.json(await agent.probe(body.url))
+  try {
+    return c.json(await agent.probe(body.url))
+  } catch (e) {
+    return errorResponse(c, "POST /api/browser/probe", e)
+  }
 })
 
 // =============================================================================
@@ -304,8 +479,53 @@ app.get("/api/status", async c => {
   return c.json(await harness.getFullStatus())
 })
 
+// Pre-flight requirements for a useful run. This does NOT block starting the
+// agent (a run with zero job sources still "works" — it just can't discover
+// anything) — it's advisory so the UI can show a fixable checklist instead of
+// the agent silently doing nothing. Kept as a named export so a future
+// `usePreflight` hook / test can reuse the exact same logic without
+// duplicating field lists.
+async function computePreflightGaps(
+  env: Parameters<typeof getAgents>[0],
+  userId: string,
+): Promise<string[]> {
+  const missing: string[] = []
+  const { jobAgent } = await getAgents(env, userId)
+  const [profile, sources] = await Promise.all([
+    jobAgent.getProfile(),
+    jobAgent.listJobSources(),
+  ])
+  if (!profile.cvR2Key) missing.push("cv")
+  if (sources.filter(s => s.enabled).length === 0) missing.push("job-sources")
+  const relay: any = await getAgentByName(env.BROWSER_RELAY, userId)
+  const status = await relay.statusSnapshot()
+  if (status.target === "none") missing.push("browser")
+  return missing
+}
+
+// GET-only check so the UI can show the checklist BEFORE the user clicks
+// Start (e.g. the Overview page's pre-flight banner) without side effects.
+app.get("/api/start/preflight", async c => {
+  try {
+    const missing = await computePreflightGaps(c.env, c.var.userId)
+    return c.json({ ready: missing.length === 0, missing })
+  } catch (e) {
+    return errorResponse(c, "GET /api/start/preflight", e)
+  }
+})
+
 app.post("/api/start", async c => {
   const body = await c.req.json().catch(() => ({}))
+  // NOTE: POST /api/start NO LONGER has a 428 pre-flight gate. The gate
+  // was designed to prevent silent no-op runs, but in practice it confused
+  // users who expected the button to just work. Now:
+  //   • /api/start/preflight is advisory (surfaces missing items in the UI).
+  //   • The frontend only blocks via a modal when `job-sources` is missing
+  //     (the one case where the run genuinely can't do anything); CV and
+  //     browser warnings are shown as toasts but the run starts anyway.
+  //   • {force: true} is kept in the request signature for back-compat but
+  //     is now a no-op — the server never blocks.
+  void body?.force
   const { harness } = await getAgents(c.env, c.var.userId)
   // Pass the session userId so the harness persists it + threads it through
   // buildAgentTools → every delegating tool resolves sub-agents by this user.
@@ -566,6 +786,26 @@ app.get("/api/runs/:runId", async c => {
   }
 })
 
+// ── Debug endpoints — LOCAL DEV ONLY ────────────────────────────────────────
+// Both were previously reachable by any authenticated user in every
+// environment (session-gated only, same tier as production routes). They
+// trigger a live model call / dump internal message state — useful for
+// diagnosing provider-shape drift locally, but not something any signed-in
+// user should be able to trigger against the shared LLM_API_KEY in prod.
+// Gated behind IS_LOCAL_DEV (set in .dev.vars, unset in the deployed prod
+// environment) so they simply 404 in production instead of needing a
+// separate build flag.
+app.use("/api/debug/*", async (c, next) => {
+  // Env vars from .dev.vars/wrangler secrets always arrive as STRINGS at
+  // runtime even though the type declares `boolean` (same caveat documented
+  // in auth.ts's isLocalDev detection) — so a literal string "false" would be
+  // truthy under a naive `if (!c.env.IS_LOCAL_DEV)` check. Parse explicitly.
+  const raw = c.env.IS_LOCAL_DEV as unknown
+  const isLocalDev = raw === true || raw === "true" || raw === "1"
+  if (!isLocalDev) return c.notFound()
+  return next()
+})
+
 // Model probe — sends a canned tiny request to the configured model and
 // returns the RAW shapes (response.messages, full usage incl. cache +
 // reasoning details, response.headers, providerMetadata, finishReason). The
@@ -577,8 +817,8 @@ app.get("/api/debug/model-probe", async c => {
     // Cast to any: probeModel's return type (with the model-info union) can
     // push Hono's c.json() type instantiation past its depth limit.
     return c.json((await harness.probeModel()) as any)
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+  } catch (e) {
+    return errorResponse(c, "GET /api/debug/model-probe", e)
   }
 })
 
@@ -589,8 +829,8 @@ app.get("/api/debug/validate-messages", async c => {
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json((await (harness as any).debugValidateMessages()) as any)
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+  } catch (e) {
+    return errorResponse(c, "GET /api/debug/validate-messages", e)
   }
 })
 
@@ -697,10 +937,33 @@ app.post("/api/jobs", async c => {
   return c.json(await jobAgent.addJob(body))
 })
 
+// Triggers a full LLM call — rate-limited per user so a scripted loop (or an
+// impatient double-click) can't run up the shared LLM_API_KEY's bill/limit.
 app.post("/api/jobs/:id/cover-letter", async c => {
   const jobId = Number(c.req.param("id"))
-  const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json(await jobAgent.generateCoverLetter({ jobId }))
+  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
+  const userId = c.var.userId
+  const rateLimiter = await getRateLimiter(c.env)
+  const windowSeconds = 60
+  const limit = 10
+  const { count } = await rateLimiter.check({
+    key: "cover-letter",
+    userId,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json(
+      { error: "Too many cover-letter requests. Please slow down." },
+      429,
+    )
+  }
+  await rateLimiter.consume({ key: "cover-letter", userId, windowSeconds })
+  const { jobAgent } = await getAgents(c.env, userId)
+  try {
+    return c.json(await jobAgent.generateCoverLetter({ jobId }))
+  } catch (e) {
+    return errorResponse(c, "POST /api/jobs/:id/cover-letter", e)
+  }
 })
 
 app.get("/api/jobs/:id/cover-letters", async c => {
@@ -756,10 +1019,7 @@ app.put("/api/profile", async c => {
   // Keep `fullName` in sync with firstName/lastName so any code reading the
   // legacy single-name field (and the session display name) stays correct
   // when the user edits their name on the profile page.
-  if (
-    typeof body.firstName === "string" ||
-    typeof body.lastName === "string"
-  ) {
+  if (typeof body.firstName === "string" || typeof body.lastName === "string") {
     const merged = { ...(await jobAgent.getProfile()), ...body }
     body.fullName = [merged.firstName, merged.lastName]
       .filter(Boolean)
@@ -773,6 +1033,23 @@ app.put("/api/profile", async c => {
 // The bytes never touch SQLite. Cap raised to 10 MB for real PDFs/DOCX.
 app.post("/api/profile/cv", async c => {
   const userId = c.var.userId
+  // Rate-limited: a 10 MB upload is cheap to script-spam and would otherwise
+  // let a single user burn R2 write ops / storage unbounded.
+  const rateLimiter = await getRateLimiter(c.env)
+  const windowSeconds = 60 * 10
+  const limit = 10
+  const { count } = await rateLimiter.check({
+    key: "cv-upload",
+    userId,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json(
+      { error: "Too many CV uploads. Please try again later." },
+      429,
+    )
+  }
+  await rateLimiter.consume({ key: "cv-upload", userId, windowSeconds })
   const { jobAgent } = await getAgents(c.env, userId)
   const filename = c.req.query("filename") || "cv"
   const contentType = c.req.header("Content-Type") || "application/octet-stream"
@@ -828,6 +1105,28 @@ app.get("/api/profile/cv", async c => {
 app.get("/api/follow-ups", async c => {
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.getDueFollowUps())
+})
+
+// =============================================================================
+// Account — data export + delete.
+// =============================================================================
+// Closes the gap with LandingPage's "Export or delete everything from
+// Settings whenever you want" marketing copy. See src/auth/account-routes.ts
+// for the full design (which DOs are destroyed, what's in the export).
+app.get("/api/account/export", async c => {
+  try {
+    return await exportAccountRoute(c)
+  } catch (e) {
+    return errorResponse(c, "GET /api/account/export", e)
+  }
+})
+
+app.delete("/api/account", async c => {
+  try {
+    return await deleteAccountRoute(c)
+  } catch (e) {
+    return errorResponse(c, "DELETE /api/account", e)
+  }
 })
 
 // =============================================================================
