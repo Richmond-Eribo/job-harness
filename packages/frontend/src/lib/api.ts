@@ -12,9 +12,18 @@ import { API_URL } from "./auth"
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  /**
+   * The full JSON error body, when the response was JSON-shaped. Lets
+   * callers read structured fields beyond `error` — e.g. the pre-flight gate
+   * on POST /api/start returns 428 with `{error, missing: string[]}`, and
+   * OverviewPage reads `err.body?.missing` to render a fixable checklist
+   * instead of a bare toast.
+   */
+  body?: Record<string, unknown>
+  constructor(message: string, status: number, body?: Record<string, unknown>) {
     super(message)
     this.status = status
+    this.body = body
     this.name = "ApiError"
   }
 }
@@ -36,13 +45,14 @@ async function request<T = any>(
     // 401 + 428 are handled by the router guards (they watch navigation and
     // redirect), but still throw so callers can react.
     let msg = `Request failed (${res.status})`
+    let data: Record<string, unknown> | undefined
     try {
-      const data = await res.json()
-      msg = data?.error ?? msg
+      data = await res.json()
+      msg = (data?.error as string | undefined) ?? msg
     } catch {
       // non-JSON error
     }
-    throw new ApiError(msg, res.status)
+    throw new ApiError(msg, res.status, data)
   }
 
   // Some endpoints (e.g. CV download) return non-JSON; let callers handle that

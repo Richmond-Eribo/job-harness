@@ -12,6 +12,7 @@ import { api } from "../lib/api"
 import type {
   JobListing,
   JobStatus,
+  JobSource,
   JobSearchResponse,
   TraceEvent,
   StepLogEntry,
@@ -55,7 +56,7 @@ interface RunTraceResponse {
 }
 
 /** Notifications from GET /api/notifications. */
-interface Notification {
+export interface Notification {
   id: number | string
   message: string
   createdAt?: string
@@ -173,12 +174,36 @@ export function useUpdateConfig() {
   })
 }
 
+// --- Pre-flight ("is the agent actually set up to do anything useful?") ---
+// Backs the Overview page's pre-flight checklist banner and the checklist
+// modal that opens when POST /api/start returns 428. `missing` entries are
+// "cv" | "job-sources" | "browser" — kept as free strings (not a union type)
+// so the frontend never needs a matching enum update when the backend adds a
+// new requirement.
+export interface PreflightStatus {
+  ready: boolean
+  missing: string[]
+}
+
+export function usePreflight() {
+  return useQuery({
+    queryKey: ["preflight"],
+    queryFn: () => api.get<PreflightStatus>("/start/preflight"),
+    staleTime: 10_000,
+  })
+}
+
 // --- Mutations ---
 export function useStartRun() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (goal?: string) =>
-      api.post<{ message: string }>("/start", goal ? { goal } : {}),
+    // `force: true` skips the server-side pre-flight gate — used when the
+    // user explicitly confirms "start anyway" from the checklist modal.
+    mutationFn: (opts?: { goal?: string; force?: boolean }) =>
+      api.post<{ message: string }>("/start", {
+        ...(opts?.goal ? { goal: opts.goal } : {}),
+        ...(opts?.force ? { force: true } : {}),
+      }),
     onSuccess: () => {
       // M10: invalidate all queries that depend on run state. The previous
       // code only invalidated ["status"], leaving the Jobs Kanban, the run
@@ -207,7 +232,10 @@ export function useSetJobStatus() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (p: { jobId: number; status: JobStatus; notes?: string }) =>
-      api.put<string>(`/jobs/${p.jobId}/status`, { status: p.status, notes: p.notes }),
+      api.put<string>(`/jobs/${p.jobId}/status`, {
+        status: p.status,
+        notes: p.notes,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["pipeline"] }),
   })
 }
@@ -218,5 +246,137 @@ export function useAddJob() {
     mutationFn: (job: Record<string, unknown>) =>
       api.post<{ id: number; message: string }>("/jobs", job),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["pipeline"] }),
+  })
+}
+
+// --- Job sources CRUD (was: legacy-dashboard-only UI) ---
+// Backs the JobsPage "Sources" modal + any future Settings surface.
+// Keys are scoped under ["job-sources"] so invalidations are precise.
+export function useJobSources() {
+  return useQuery({
+    queryKey: ["job-sources"],
+    queryFn: () => api.get<JobSource[]>("/job-sources"),
+    staleTime: 60_000,
+  })
+}
+
+export function useAddJobSource() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (src: {
+      name: string
+      baseUrl: string
+      searchUrlTemplate: string
+      notes?: string
+    }) => api.post<{ id: number; message: string }>("/job-sources", src),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job-sources"] }),
+  })
+}
+
+export function useUpdateJobSource() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (p: {
+      id: number
+      patch: Partial<{
+        name: string
+        baseUrl: string
+        searchUrlTemplate: string
+        notes: string
+        enabled: boolean
+      }>
+    }) => api.put<string>(`/job-sources/${p.id}`, p.patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job-sources"] }),
+  })
+}
+
+export function useDeleteJobSource() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.del<string>(`/job-sources/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job-sources"] }),
+  })
+}
+
+// --- Schedules CRUD (was: legacy-dashboard-only UI) ---
+// Backs the new Settings → Schedules tab.
+export function useAddSchedule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (p: { cron: string; focus?: string }) =>
+      api.post<string>("/schedules", { cron: p.cron, focus: p.focus ?? "all" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["schedules"] }),
+  })
+}
+
+export function useDeleteSchedule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.del<string>(`/schedules/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["schedules"] }),
+  })
+}
+
+export function useToggleSchedule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (p: { id: number; enabled: boolean }) =>
+      api.put<string>(`/schedules/${p.id}/toggle`, { enabled: p.enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["schedules"] }),
+  })
+}
+
+// --- Browser / extension pairing (GET /api/browser/status, pair/unpair) ---
+// Backs the Settings "Browser & Extension" panel — the ONLY place in the app
+// that surfaces whether the agent has a live browser target. Polled while
+// Settings is open so "Connected" flips promptly once the extension pairs.
+export interface BrowserStatus {
+  target: "none" | "live" | "managed"
+  live: { connected: boolean; connectedAt?: string; userAgent?: string | null }
+  managed: { available: boolean }
+  sessionId: string | null
+  recentEvents: Array<{ at: string; method: string }>
+  pendingCalls: number
+}
+
+export function useBrowserStatus() {
+  return useQuery({
+    queryKey: ["browser-status"],
+    queryFn: () => api.get<BrowserStatus>("/browser/status"),
+    refetchInterval: 15000,
+  })
+}
+
+export function usePairExtension() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ code: string; expiresIn: number }>("/browser/pair"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["browser-status"] }),
+  })
+}
+
+export function useDisconnectBrowser() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ disconnected: boolean }>("/browser/disconnect"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["browser-status"] }),
+  })
+}
+
+/** Revokes ALL of this user's extension refresh tokens (every paired browser). */
+export function useUnpairAllBrowsers() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<{ revoked: number }>("/browser/unpair"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["browser-status"] }),
+  })
+}
+
+export function useProbeBrowser() {
+  return useMutation({
+    mutationFn: (url: string) =>
+      api.post<Record<string, unknown>>("/browser/probe", { url }),
   })
 }
