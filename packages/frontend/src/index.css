@@ -4,7 +4,7 @@
 /* In a pnpm/npm-workspace monorepo the global CSS lives in packages/frontend,
    so the shared ui package source is two levels up. This explicit scan is a
    safety net on top of @tailwindcss/vite's module-graph detection. */
-@source "../../packages/ui/src";
+@source "../../ui/src";
 
 /* Map the `dark:` variant onto the `.dark` class on <html>. shadcn components
    ship `dark:*` utilities (e.g. `dark:bg-input/30`); without this they would

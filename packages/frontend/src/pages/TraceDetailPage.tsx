@@ -39,7 +39,7 @@ const EVENT_BADGE: Record<string, string> = {
 }
 
 export function TraceDetailPage() {
-  const { runId } = useParams({ from: "/traces/$runId" })
+  const { runId } = useParams({ from: "/_app/traces/$runId" })
   const { data, isLoading, isError, error, refetch } = useRunTrace(runId)
   const [eventFilter, setEventFilter] = useState<string>("all")
 

@@ -4,27 +4,32 @@ import {
   Link,
   HeadContent,
   Scripts,
+  Outlet,
 } from "@tanstack/react-router"
 import "../index.css"
 import { QueryClientProvider } from "@tanstack/react-query"
 import { ErrorBoundary } from "../components/ErrorBoundary"
-import { Shell, ShellSkeleton } from "../components/Layout"
 import { queryClient } from "../components/query-client"
 import { Toaster } from "@agent-harness/ui"
 
 // Root route — providers + document chrome only.
 //
 // All app-shell chrome (sidebar, topbar, mobile drawer, ExtensionStatusPill,
-// NotificationsBell) was extracted to src/components/Layout.tsx in the
-// Phase 4 consolidation. This file keeps only:
-//   • Provider tree (ErrorBoundary → QueryClientProvider → Suspense → Shell)
+// NotificationsBell) lives in src/components/Layout.tsx and is mounted ONLY
+// by the /_app layout route (src/routes/_app.tsx) — authed app pages
+// (/dashboard, /jobs, /traces, /logs, /memory, /settings). Public/auth/
+// onboarding routes (/, /login, /signup, /forgot-password, /onboarding) are
+// NOT children of /_app, so they render shell-less through the bare
+// <Outlet /> below.
+//
+// This file keeps only:
+//   • Provider tree (ErrorBoundary → QueryClientProvider → Suspense → Outlet)
 //   • Toaster (sonner) mounted at the root so any page can fire toasts
 //   • RootDocument (the <html> shell)
 //   • NotFound + FatalError route-level fallbacks
 //
-// SHELL_LESS routing + handleSignOut logic moved with the shell into
-// Layout.tsx. Route guards (requireAuth / requireOnboarding) live in
-// src/lib/guards.ts and are unchanged.
+// Route guards (requireAuth / requireOnboarding) live in src/lib/guards.ts
+// and are applied at the /_app layout route (requireAuth) + /onboarding.
 //
 // NOTE: route guards handle 401/428 the SPA-safe way via `throw redirect()`.
 // We deliberately do NOT install a global onQueryError that calls
@@ -69,10 +74,12 @@ function RootComponent() {
     <ErrorBoundary>
       <QueryClientProvider client={client}>
         {/* Suspense boundary is required for TanStack Router's lazy route
-            chunks (file-based code splitting). Reuses the same skeleton
-            layout the auth-pending shell already renders — no extra asset. */}
-        <Suspense fallback={<ShellSkeleton />}>
-          <Shell />
+            chunks (file-based code splitting). The /_app layout route owns
+            the ShellSkeleton fallback for authed pages; here we use a plain
+            spinner-shaped placeholder so public pages don't flash dashboard
+            chrome while their chunk loads. */}
+        <Suspense fallback={null}>
+          <Outlet />
         </Suspense>
         <Toaster richColors position="top-right" />
       </QueryClientProvider>
