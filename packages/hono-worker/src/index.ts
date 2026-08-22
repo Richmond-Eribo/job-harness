@@ -37,6 +37,8 @@ import { exportAccountRoute, deleteAccountRoute } from "./auth/account-routes"
 import { getAgents, getHarnessForUser } from "./utils/get-agents"
 import { getRateLimiter } from "./utils/get-agents"
 import { errorResponse } from "./utils/error-response"
+import { JOB_STATUSES } from "./agents"
+import { extractCvText } from "./utils/cv-text"
 
 // Re-export all Durable Object classes (required by Cloudflare)
 export {
@@ -971,15 +973,81 @@ app.get("/api/jobs/:id/cover-letters", async c => {
   return c.json(await jobAgent.getCoverLettersForJob(jobId))
 })
 
+// Tailored CV generation — same LLM cost shape as cover letters, so the same
+// per-user rate limit applies.
+app.post("/api/jobs/:id/tailored-cv", async c => {
+  const jobId = Number(c.req.param("id"))
+  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
+  const userId = c.var.userId
+  const rateLimiter = await getRateLimiter(c.env)
+  const windowSeconds = 60
+  const limit = 10
+  const { count } = await rateLimiter.check({
+    key: "tailored-cv",
+    userId,
+    windowSeconds,
+  })
+  if (count >= limit) {
+    return c.json(
+      { error: "Too many tailored-CV requests. Please slow down." },
+      429,
+    )
+  }
+  await rateLimiter.consume({ key: "tailored-cv", userId, windowSeconds })
+  const { jobAgent } = await getAgents(c.env, userId)
+  try {
+    return c.json(await jobAgent.generateTailoredCv({ jobId }))
+  } catch (e: any) {
+    // Missing cvText is a client-fixable state, not a server fault.
+    if (String(e?.message ?? "").includes("No parsed CV text")) {
+      return c.json({ error: e.message }, 422)
+    }
+    return errorResponse(c, "POST /api/jobs/:id/tailored-cv", e)
+  }
+})
+
+app.get("/api/jobs/:id/tailored-cvs", async c => {
+  const jobId = Number(c.req.param("id"))
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
+  return c.json(await jobAgent.getTailoredCvsForJob(jobId))
+})
+
 app.put("/api/jobs/:id/status", async c => {
   const jobId = Number(c.req.param("id"))
+  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
   const body = await c.req.json()
+  // Route-level enum guard (the DO re-validates) so a bad status is a clean
+  // 400 rather than a 500 from a thrown RPC error.
+  if (!JOB_STATUSES.includes(body.status)) {
+    return c.json(
+      {
+        error: `Invalid status "${body.status}". Valid statuses: ${JOB_STATUSES.join(", ")}`,
+      },
+      400,
+    )
+  }
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.updateStatus({
       jobId,
       status: body.status,
       notes: body.notes,
+    }),
+  })
+})
+
+// Edit a listing's mutable fields (notes/priority) from the job detail view.
+app.put("/api/jobs/:id", async c => {
+  const jobId = Number(c.req.param("id"))
+  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
+  const body = await c.req.json()
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
+  return c.json({
+    message: await jobAgent.updateJob({
+      jobId,
+      notes: typeof body.notes === "string" ? body.notes : undefined,
+      priority:
+        typeof body.priority === "number" ? body.priority : undefined,
     }),
   })
 })
@@ -1060,6 +1128,10 @@ app.post("/api/profile/cv", async c => {
   await c.env.CV_BUCKET.put(r2Key, raw, {
     httpMetadata: { contentType },
   })
+  // Parse the CV to text NOW (best-effort) — the tailoring LLM reads real
+  // content, not an R2 pointer (PROJECT_PLAN §4.3). Failure is non-blocking:
+  // cvText stays null and generation returns a clear error later.
+  const cvText = await extractCvText(raw, contentType, filename)
   // Store the pointer (NOT the bytes) in the profile kv table.
   await jobAgent.setProfile({
     cv: JSON.stringify({ r2Key, filename, contentType }),
@@ -1067,12 +1139,14 @@ app.post("/api/profile/cv", async c => {
     cvContentType: contentType,
     cvR2Key: r2Key,
     cvUploadedAt: new Date().toISOString(),
+    cvText: cvText ?? "",
   })
   return c.json({
     message: `CV uploaded (${filename}, ${raw.byteLength} bytes)`,
     r2Key,
     filename,
     contentType,
+    cvTextExtracted: cvText != null,
   })
 })
 
@@ -1104,6 +1178,31 @@ app.get("/api/profile/cv", async c => {
 app.get("/api/follow-ups", async c => {
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json(await jobAgent.getDueFollowUps())
+})
+
+// Follow-up lifecycle — complete/edit a nudge (tick off after the recruiter
+// replies, shift the due date) or remove it entirely. Backs the job detail
+// view's Follow-ups tab.
+app.put("/api/follow-ups/:id", async c => {
+  const followUpId = Number(c.req.param("id"))
+  if (!Number.isFinite(followUpId)) return c.json({ error: "invalid id" }, 400)
+  const body = await c.req.json()
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
+  return c.json({
+    message: await jobAgent.updateFollowUp({
+      followUpId,
+      completed: typeof body.completed === "boolean" ? body.completed : undefined,
+      dueDate: typeof body.dueDate === "string" ? body.dueDate : undefined,
+      note: typeof body.note === "string" ? body.note : undefined,
+    }),
+  })
+})
+
+app.delete("/api/follow-ups/:id", async c => {
+  const followUpId = Number(c.req.param("id"))
+  if (!Number.isFinite(followUpId)) return c.json({ error: "invalid id" }, 400)
+  const { jobAgent } = await getAgents(c.env, c.var.userId)
+  return c.json({ message: await jobAgent.deleteFollowUp({ followUpId }) })
 })
 
 // =============================================================================

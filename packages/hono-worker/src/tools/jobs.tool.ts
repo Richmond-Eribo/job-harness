@@ -97,6 +97,35 @@ export function makeWriteCoverLetterTool(
   })
 }
 
+export function makeWriteTailoredCvTool(
+  env: Env,
+  advance: Advance,
+  runIdRef: RunIdRef,
+  userId: string,
+) {
+  return tool({
+    description:
+      "Generate a CV tailored to a job ALREADY in your pipeline, grounded in the user's real uploaded CV — " +
+      "it re-orders and re-emphasizes real experience, never invents any. Requires a valid jobId and the user's parsed CV text. " +
+      "Use it for strong matches alongside write_cover_letter so the user can review both documents before applying.",
+    inputSchema: z.object({
+      jobId: z.number().int().describe("An existing job id from your pipeline"),
+    }),
+    execute: async ({ jobId }) => {
+      advance("write_tailored_cv", String(jobId))
+      const agent = await JOB_AGENT(env, userId)
+      try {
+        const result = await withRpcRetry(() =>
+          agent.generateTailoredCv({ jobId, runId: runIdRef.value }),
+        )
+        return JSON.stringify(result)
+      } catch (e: any) {
+        return `Could not tailor CV: ${e.message}. Confirm jobId exists via pipeline_status and that the user has uploaded a parsable CV.`
+      }
+    },
+  })
+}
+
 export function makePipelineStatusTool(env: Env, userId: string) {
   return tool({
     description:

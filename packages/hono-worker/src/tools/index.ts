@@ -11,6 +11,7 @@ import type { Env } from "../types"
 import {
   makeDiscoverJobsTool,
   makeWriteCoverLetterTool,
+  makeWriteTailoredCvTool,
   makePipelineStatusTool,
   makeListJobsTool,
   makeSetJobStatusTool,
@@ -49,6 +50,7 @@ export function buildAgentTools(
     // All resolved by userId so they operate on THIS user's data.
     discover_jobs: makeDiscoverJobsTool(env, advance, runIdRef, userId),
     write_cover_letter: makeWriteCoverLetterTool(env, advance, runIdRef, userId),
+    write_tailored_cv: makeWriteTailoredCvTool(env, advance, runIdRef, userId),
     pipeline_status: makePipelineStatusTool(env, userId),
     list_jobs: makeListJobsTool(env, userId),
     set_job_status: makeSetJobStatusTool(env, userId),

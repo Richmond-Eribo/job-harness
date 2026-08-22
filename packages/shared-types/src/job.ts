@@ -57,6 +57,36 @@ export interface CoverLetter {
   createdAt: string
 }
 
+/**
+ * A CV tailored to one job listing (markdown). Like cover letters, versions
+ * auto-increment per job so the user can compare and regenerate. Content is
+ * grounded in the user's real CV text (profile `cvText`) — the generation
+ * prompt forbids inventing employers, dates, titles, or skills.
+ */
+export interface TailoredCV {
+  id: number
+  jobId: number
+  version: number
+  content: string
+  createdAt: string
+}
+
+export interface TailoredCvRequest {
+  jobId: number
+  /** Harness run id, so the job-agent's inner-loop trace can be attributed. */
+  runId?: string
+}
+
+export interface TailoredCvResponse {
+  jobId: number
+  company: string
+  title: string
+  tailoredCv: string
+  version: number
+  /** Sub-agent inner-loop trace, nested under the write_tailored_cv call. */
+  __trace?: { agent: string; events: unknown[] }
+}
+
 export interface FollowUp {
   id: number
   jobId: number
@@ -106,6 +136,10 @@ export interface UserProfile {
   cvContentType: string | null
   cvR2Key: string | null
   cvUploadedAt: string | null
+  // Parsed CV text (PDF/DOCX → plain text), extracted on upload or lazily on
+  // first use. The tailoring prompt reads this — a file pointer alone is
+  // useless to the LLM. Null when extraction failed or hasn't run.
+  cvText: string | null
 }
 
 export interface JobSearchRequest {

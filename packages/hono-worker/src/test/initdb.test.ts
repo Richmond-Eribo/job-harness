@@ -41,10 +41,10 @@ describe("initDb SQL splitting", () => {
 
     const createTableCount = (src.match(/CREATE TABLE IF NOT EXISTS/g) || [])
       .length
-    // 5 real tables (user_profile, job_listings, cover_letters, follow_ups,
-    // job_sources) + 1 match from the doc comment "...CREATE TABLE IF NOT
-    // EXISTS is idempotent..." in ensureDb().
-    expect(createTableCount).toBe(6)
+    // 6 real tables (user_profile, job_listings, cover_letters, tailored_cvs,
+    // follow_ups, job_sources) + 1 match from the doc comment "...CREATE TABLE
+    // IF NOT EXISTS is idempotent..." in ensureDb().
+    expect(createTableCount).toBe(7)
   })
 })
 

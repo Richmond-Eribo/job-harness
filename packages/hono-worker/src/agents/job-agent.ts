@@ -8,6 +8,9 @@ import type {
   JobListing,
   JobStatus,
   CoverLetter,
+  TailoredCV,
+  TailoredCvRequest,
+  TailoredCvResponse,
   FollowUp,
   UserProfile,
   JobSearchRequest,
@@ -28,6 +31,18 @@ import obsConfig from "../config/observability-config.json"
 // parameter. See ./db.ts for the full rationale.
 import { execSql } from "../db/db"
 import type { SqlAgent } from "../db/db"
+
+// Canonical pipeline statuses — the runtime guard behind PUT /api/jobs/:id/status
+// and the DO-side updateStatus (the LLM tool path validates separately via
+// zod). shared-types is type-only by design, so the runtime list lives here.
+export const JOB_STATUSES: readonly JobStatus[] = [
+  "discovered",
+  "draft",
+  "applied",
+  "interview",
+  "offer",
+  "rejected",
+]
 
 function initDb(agent: SqlAgent) {
   // NOTE: The Agent SDK's sql tagged template executes ONE statement per call.
@@ -60,6 +75,18 @@ function initDb(agent: SqlAgent) {
   execSql(
     agent,
     `CREATE TABLE IF NOT EXISTS cover_letters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER REFERENCES job_listings(id),
+      version INTEGER DEFAULT 1,
+      content TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+  )
+  // Tailored CVs — same versioned shape as cover_letters. Grounded in the
+  // user's parsed CV text (profile `cvText`), per PROJECT_PLAN §4.3.
+  execSql(
+    agent,
+    `CREATE TABLE IF NOT EXISTS tailored_cvs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id INTEGER REFERENCES job_listings(id),
       version INTEGER DEFAULT 1,
@@ -360,6 +387,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
       cvContentType: null,
       cvR2Key: null,
       cvUploadedAt: null,
+      cvText: null,
     }
 
     for (const row of rows) {
@@ -980,6 +1008,124 @@ Generate a tailored, compelling cover letter.`
   }
 
   // ---------------------------------------------------------------------------
+  // Tailored CV generation (PROJECT_PLAN §4.3). The grounding rules are the
+  // whole point: the output mirrors the job's keywords onto the user's REAL
+  // history — reordering and re-emphasizing are allowed, fabrication is not.
+  // ---------------------------------------------------------------------------
+
+  @callable()
+  async generateTailoredCv(
+    request: TailoredCvRequest,
+  ): Promise<TailoredCvResponse> {
+    this.ensureDb()
+
+    const model = getModel(this.env)
+    const profileStr = getProfileString(this)
+
+    const jobs = execSql(this, `SELECT * FROM job_listings WHERE id = ?`, [
+      request.jobId,
+    ])
+    if (jobs.length === 0) {
+      throw new Error(`Job listing not found: ${request.jobId}`)
+    }
+    const job = jobs[0] as any
+
+    // The LLM must read actual CV content — a file pointer is useless to it.
+    const cvTextRows = execSql(
+      this,
+      `SELECT value FROM user_profile WHERE key = 'cvText'`,
+    )
+    const cvText = cvTextRows[0]?.value as string | undefined
+    if (!cvText) {
+      throw new Error(
+        "No parsed CV text available. Re-upload your CV (Settings → Profile) so it can be parsed, then try again.",
+      )
+    }
+
+    const existing = execSql(
+      this,
+      `SELECT MAX(version) as max_version FROM tailored_cvs WHERE job_id = ?`,
+      [request.jobId],
+    )
+    const nextVersion = ((existing[0] as any)?.max_version ?? 0) + 1
+
+    const runId = request.runId ?? "tailored-cv-standalone"
+    const recorder = new TraceRecorder({
+      agent: "job-agent",
+      runId,
+      redactKeys: obsConfig.logging?.redactToolArgs ?? [],
+    })
+    recorder.recordRunStart(`tailored CV: ${job.company} / ${job.title}`, 1, 0)
+
+    const systemPrompt = `You are an expert CV writer who tailors résumés to specific job postings.
+
+User Profile:
+${profileStr}
+
+The user's REAL CV (verbatim extracted text — this is the ground truth):
+"""
+${cvText}
+"""
+
+Hard rules — violating any of these makes the output worthless:
+- Use ONLY experience present in the CV or profile above.
+- NEVER invent employers, job titles, employment dates, education, certifications, or skills.
+- Reordering sections, re-weighting bullet points, and adjusting the summary to mirror the job description are allowed. Fabrication is not.
+- Keep every employer/date fact exactly as it appears in the real CV.
+- Mirror the job description's keywords and requirements onto real experience.
+- Output clean markdown: a summary paragraph, then experience, education, and skills sections.`
+
+    const userPrompt = `Tailor the CV for this position:
+
+Company: ${job.company}
+Title: ${job.title}
+Description: ${job.description ?? "Not provided"}
+URL: ${job.url ?? "Not provided"}`
+
+    recorder.recordSystem("system-prompt", systemPrompt)
+    recorder.recordPrompt(0, [{ role: "user", content: userPrompt }])
+
+    const result = await generateText({
+      model,
+      system: systemPrompt,
+      prompt: userPrompt,
+      ...getParams(this.env),
+      ...recorder.attach(),
+    })
+    recorder.flushFallback(null, Date.now(), {
+      usage: result.usage,
+      steps: result.steps,
+      response: result.response,
+      finishReason: result.finishReason,
+      warnings: result.warnings,
+    })
+
+    execSql(
+      this,
+      `INSERT INTO tailored_cvs (job_id, version, content) VALUES (?, ?, ?)`,
+      [request.jobId, nextVersion, result.text],
+    )
+
+    // Same status flip as cover letters: drafting anything moves the job
+    // discovered → draft.
+    execSql(
+      this,
+      `UPDATE job_listings SET status = 'draft', updated_at = datetime('now')
+       WHERE id = ? AND status = 'discovered'`,
+      [request.jobId],
+    )
+
+    return {
+      jobId: request.jobId,
+      company: job.company,
+      title: job.title,
+      tailoredCv: result.text,
+      version: nextVersion,
+      __trace: recorder.toSubAgentTrace(),
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Pipeline management
   // ---------------------------------------------------------------------------
 
@@ -987,6 +1133,7 @@ Generate a tailored, compelling cover letter.`
   async getJob(jobId: number): Promise<{
     listing: JobListing | null
     coverLetters: CoverLetter[]
+    tailoredCvs: TailoredCV[]
     followUps: FollowUp[]
   }> {
     this.ensureDb()
@@ -1027,6 +1174,19 @@ Generate a tailored, compelling cover letter.`
       createdAt: r.created_at,
     }))
 
+    const tcvRows = execSql(
+      this,
+      `SELECT * FROM tailored_cvs WHERE job_id = ? ORDER BY version DESC`,
+      [jobId],
+    )
+    const tailoredCvs: TailoredCV[] = tcvRows.map((r: any) => ({
+      id: r.id,
+      jobId: r.job_id,
+      version: r.version,
+      content: r.content,
+      createdAt: r.created_at,
+    }))
+
     const fuRows = execSql(
       this,
       `SELECT * FROM follow_ups WHERE job_id = ? ORDER BY due_date ASC`,
@@ -1040,7 +1200,7 @@ Generate a tailored, compelling cover letter.`
       completed: r.completed === 1,
     }))
 
-    return { listing, coverLetters, followUps }
+    return { listing, coverLetters, tailoredCvs, followUps }
   }
 
   @callable()
@@ -1050,6 +1210,23 @@ Generate a tailored, compelling cover letter.`
     notes?: string
   }): Promise<string> {
     this.ensureDb()
+
+    // Authoritative enum guard — prompt rules are advisory; this check is
+    // what actually keeps arbitrary strings out of job_listings.status.
+    if (!JOB_STATUSES.includes(params.status)) {
+      throw new Error(
+        `Invalid status "${params.status}". Valid statuses: ${JOB_STATUSES.join(", ")}`,
+      )
+    }
+
+    // Previous status, so "first transition into applied" is detectable for
+    // the auto follow-up below.
+    const prevRows = execSql(
+      this,
+      `SELECT status FROM job_listings WHERE id = ?`,
+      [params.jobId],
+    )
+    const prevStatus = prevRows[0]?.status as JobStatus | undefined
 
     const updates = params.notes
       ? `status = ?, notes = ?, updated_at = datetime('now')`
@@ -1061,12 +1238,68 @@ Generate a tailored, compelling cover letter.`
 
     execSql(this, `UPDATE job_listings SET ${updates} WHERE id = ?`, args)
 
+    // When a job FIRST lands in "applied" (a human action by design), seed a
+    // follow-up nudge ~7 days out — skipped if any open follow-up already
+    // exists for the job. Applies equally to the dashboard DnD path, the
+    // REST API, and the agent's set_job_status tool.
+    if (
+      params.status === "applied" &&
+      prevStatus !== "applied" &&
+      prevStatus !== undefined
+    ) {
+      const existing = execSql(
+        this,
+        `SELECT id FROM follow_ups WHERE job_id = ? AND completed = 0 LIMIT 1`,
+        [params.jobId],
+      )
+      if (existing.length === 0) {
+        execSql(
+          this,
+          `INSERT INTO follow_ups (job_id, due_date, note)
+             VALUES (?, date('now', '+7 days'), 'Follow up on application')`,
+          [params.jobId],
+        )
+      }
+    }
+
     return `Job ${params.jobId} updated to "${params.status}"`
+  }
+
+  // Edit the mutable, non-status fields of a listing (job detail view's
+  // Description tab). Only touches the keys that are present.
+  @callable()
+  async updateJob(params: {
+    jobId: number
+    notes?: string
+    priority?: number
+  }): Promise<string> {
+    this.ensureDb()
+
+    const sets: string[] = []
+    const args: (string | number)[] = []
+    if (params.notes !== undefined) {
+      sets.push("notes = ?")
+      args.push(params.notes)
+    }
+    if (params.priority !== undefined) {
+      sets.push("priority = ?")
+      args.push(params.priority)
+    }
+    if (sets.length === 0) return `Nothing to update for job ${params.jobId}`
+
+    sets.push(`updated_at = datetime('now')`)
+    args.push(params.jobId)
+    execSql(this, `UPDATE job_listings SET ${sets.join(", ")} WHERE id = ?`, args)
+    return `Job ${params.jobId} updated`
   }
 
   @callable()
   async deleteJob(params: { jobId: number }): Promise<string> {
     this.ensureDb()
+    // Cascade: a deleted listing must not orphan its documents/reminders.
+    execSql(this, `DELETE FROM cover_letters WHERE job_id = ?`, [params.jobId])
+    execSql(this, `DELETE FROM tailored_cvs WHERE job_id = ?`, [params.jobId])
+    execSql(this, `DELETE FROM follow_ups WHERE job_id = ?`, [params.jobId])
     execSql(this, `DELETE FROM job_listings WHERE id = ?`, [params.jobId])
     return `Removed job ${params.jobId}`
   }
@@ -1151,6 +1384,49 @@ Generate a tailored, compelling cover letter.`
     return `Follow-up scheduled for ${params.dueDate}`
   }
 
+  // Follow-up lifecycle — complete/edit (e.g. ticking off a nudge after the
+  // recruiter replies, or shifting the due date) and delete.
+  @callable()
+  async updateFollowUp(params: {
+    followUpId: number
+    completed?: boolean
+    dueDate?: string
+    note?: string
+  }): Promise<string> {
+    this.ensureDb()
+
+    const sets: string[] = []
+    const args: (string | number)[] = []
+    if (params.completed !== undefined) {
+      sets.push("completed = ?")
+      args.push(params.completed ? 1 : 0)
+    }
+    if (params.dueDate !== undefined) {
+      sets.push("due_date = ?")
+      args.push(params.dueDate)
+    }
+    if (params.note !== undefined) {
+      sets.push("note = ?")
+      args.push(params.note)
+    }
+    if (sets.length === 0) return `Nothing to update for follow-up ${params.followUpId}`
+
+    args.push(params.followUpId)
+    execSql(
+      this,
+      `UPDATE follow_ups SET ${sets.join(", ")} WHERE id = ?`,
+      args,
+    )
+    return `Follow-up ${params.followUpId} updated`
+  }
+
+  @callable()
+  async deleteFollowUp(params: { followUpId: number }): Promise<string> {
+    this.ensureDb()
+    execSql(this, `DELETE FROM follow_ups WHERE id = ?`, [params.followUpId])
+    return `Follow-up ${params.followUpId} removed`
+  }
+
   // ---------------------------------------------------------------------------
   // Stats
   // ---------------------------------------------------------------------------
@@ -1168,6 +1444,25 @@ Generate a tailored, compelling cover letter.`
     const rows = execSql(
       this,
       `SELECT * FROM cover_letters WHERE job_id = ? ORDER BY version DESC`,
+      [jobId],
+    )
+
+    return rows.map((r: any) => ({
+      id: r.id,
+      jobId: r.job_id,
+      version: r.version,
+      content: r.content,
+      createdAt: r.created_at,
+    }))
+  }
+
+  @callable()
+  async getTailoredCvsForJob(jobId: number): Promise<TailoredCV[]> {
+    this.ensureDb()
+
+    const rows = execSql(
+      this,
+      `SELECT * FROM tailored_cvs WHERE job_id = ? ORDER BY version DESC`,
       [jobId],
     )
 

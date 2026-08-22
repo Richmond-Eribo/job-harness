@@ -2,7 +2,7 @@
 // Barrel for agent Durable Object classes consumed by the Worker entry.
 // =============================================================================
 export { Harness } from "./harness"
-export { JobApplicationAgent } from "./job-agent"
+export { JobApplicationAgent, JOB_STATUSES } from "./job-agent"
 // Browser capability — reaches login-walled job sites via the user's real
 // Chrome (extension relay) or the managed headless Chromium (paid plan).
 // Multi-tenant: both are resolved by userId (this.name), so each user gets
