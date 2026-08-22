@@ -230,9 +230,9 @@ export function OverviewPage() {
       </div>
 
       {/* 6 Stage Breakdown Cards — white card, 1px border, small muted label,
-          large tabular number, thin left accent bar in the status color
-          (§10.2). Clicking deep-links to the kanban filtered to that stage. */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          large tabular number (§10.2). Two rows of three; clicking a card
+          deep-links to the kanban filtered to that stage. */}
+      <div className="grid grid-cols-3 gap-3">
         {STATUS_ORDER.map((stage, i) => (
           <Link
             key={stage}
@@ -242,16 +242,9 @@ export function OverviewPage() {
             aria-label={`View ${STATUS_META[stage].label} jobs`}
           >
             <Card
-              className="relative py-3.5 overflow-hidden animate-slide-up stagger-child transition-colors duration-150 hover:border-primary/40"
+              className="py-3.5 animate-slide-up stagger-child transition-colors duration-150 hover:border-primary/40"
               style={{ "--stagger-i": i } as React.CSSProperties}
             >
-              <span
-                aria-hidden
-                className={cn(
-                  "absolute left-0 top-3 bottom-3 w-1 rounded-full",
-                  STATUS_META[stage].barClass,
-                )}
-              />
               <CardContent className="px-4">
                 <div className="text-xs text-muted-foreground font-medium mb-1">
                   {STATUS_META[stage].label}

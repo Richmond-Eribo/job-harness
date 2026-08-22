@@ -300,7 +300,10 @@ export function JobsPage() {
       ) : isLoading ? (
         <div className="flex gap-4 overflow-x-auto pb-4 flex-1">
           {STATUS_ORDER.map(col => (
-            <Skeleton key={col} className="w-[280px] shrink-0 h-96 rounded-xl" />
+            <Skeleton
+              key={col}
+              className="w-[320px] xl:w-[360px] shrink-0 h-96 rounded-xl"
+            />
           ))}
         </div>
       ) : (
@@ -411,7 +414,7 @@ function BoardColumn({
       data-testid="kanban-column"
       data-column={status}
       className={cn(
-        "w-[280px] shrink-0 bg-card rounded-xl border-t-2 flex flex-col max-h-full animate-slide-up stagger-child transition-shadow",
+        "w-[320px] xl:w-[360px] shrink-0 bg-card rounded-xl border-t-2 flex flex-col max-h-full animate-slide-up stagger-child transition-shadow",
         meta.accentClass,
         highlighted || isOver
           ? "border-x-border border-b-border ring-2 ring-primary/40"

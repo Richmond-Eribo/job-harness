@@ -22,8 +22,6 @@ export interface StatusMeta {
   dotClass: string
   /** Left/top accent bar for cards & columns. */
   accentClass: string
-  /** Solid swatch for stat-card accent bars. */
-  barClass: string
   /** Valid forward transitions from this status. */
   next: JobStatus[]
 }
@@ -45,7 +43,6 @@ export const STATUS_META: Record<JobStatus, StatusMeta> = {
       "bg-primary/10 text-blue-700 border border-primary/20",
     dotClass: "bg-primary/50",
     accentClass: "border-t-primary/40",
-    barClass: "bg-primary/40",
     next: ["draft", "rejected"],
   },
   draft: {
@@ -53,7 +50,6 @@ export const STATUS_META: Record<JobStatus, StatusMeta> = {
     badgeClass: "bg-primary text-white border border-primary",
     dotClass: "bg-primary",
     accentClass: "border-t-primary",
-    barClass: "bg-primary",
     next: ["applied", "rejected"],
   },
   applied: {
@@ -62,7 +58,6 @@ export const STATUS_META: Record<JobStatus, StatusMeta> = {
       "bg-warning/10 text-amber-700 border border-warning/25",
     dotClass: "bg-warning",
     accentClass: "border-t-warning",
-    barClass: "bg-warning",
     next: ["interview", "rejected"],
   },
   interview: {
@@ -71,7 +66,6 @@ export const STATUS_META: Record<JobStatus, StatusMeta> = {
       "bg-interview/10 text-violet-700 border border-interview/25",
     dotClass: "bg-interview",
     accentClass: "border-t-interview",
-    barClass: "bg-interview",
     next: ["offer", "rejected"],
   },
   offer: {
@@ -80,7 +74,6 @@ export const STATUS_META: Record<JobStatus, StatusMeta> = {
       "bg-success/10 text-emerald-700 border border-success/25",
     dotClass: "bg-success",
     accentClass: "border-t-success",
-    barClass: "bg-success",
     next: [],
   },
   rejected: {
@@ -89,7 +82,6 @@ export const STATUS_META: Record<JobStatus, StatusMeta> = {
       "bg-destructive/10 text-red-700 border border-destructive/20",
     dotClass: "bg-destructive",
     accentClass: "border-t-destructive/60",
-    barClass: "bg-destructive/60",
     next: [],
   },
 }
