@@ -56,21 +56,20 @@ export {
 // here, since those require the extension to be paired first. A user with no
 // sources configured sees a "Needed" pre-flight item on the dashboard; this
 // seed removes that friction without forcing them to learn the Sources UI on
-// day one. Templates use the {query}/{location}/{page} placeholders the
-// agent's search_site tool fills (see src/agents/job-agent.ts).
+// day one. Both seeds are browse-only (no searchUrlTemplate) — the agent
+// loads the base page and navigates via fetch_page. searchUrlTemplate is now
+// fully optional across the system (see src/agents/job-agent.ts).
 const DEFAULT_JOB_SOURCES = [
   {
     name: "Reed",
     baseUrl: "https://www.reed.co.uk",
-    searchUrlTemplate: "https://www.reed.co.uk/jobs/{query}-jobs-in-{location}",
     notes: "Default seeded source — public, no login required.",
   },
   {
     name: "HN Who Is Hiring",
     baseUrl: "https://news.ycombinator.com",
-    searchUrlTemplate:
-      "https://hn.algolia.com/api/v1/search_by_date?tags=story,job&query={query}",
-    notes: "Default seeded source — Hacker News job postings.",
+    notes:
+      "Default seeded source — Hacker News Who Is Hiring thread navigation.",
   },
 ]
 

@@ -102,12 +102,13 @@ test.describe("API contract", () => {
       expect(delRes.ok()).toBe(true)
     })
 
-    test("job-sources POST + PUT + DELETE round-trip", async () => {
+    test("job-sources POST + PUT + DELETE round-trip", ;async () => {
+      // Browse-only source (no search_url_template). The optional-template
+      // contract requires this round-trip to succeed without a template.
       const postRes = await s.context.post(`${E2E_API_URL}/api/job-sources`, {
         data: {
           name: "E2E Source",
           base_url: "https://e2e-source.test",
-          search_url_template: "https://e2e-source.test/q={query}",
           notes: "created by e2e",
           enabled: true,
         },
@@ -120,13 +121,18 @@ test.describe("API contract", () => {
       expect(created, "created job-source should appear").toBeTruthy()
 
       // PUT to update.
-      const putRes = await s.context.put(`${E2E_API_URL}/api/job-sources/${created.id}`, {
-        data: { ...created, notes: "updated by e2e" },
-      })
+      const putRes = await s.context.put(
+        `${E2E_API_URL}/api/job-sources/${created.id}`,
+        {
+          data: { ...created, notes: "updated by e2e" },
+        },
+      )
       expect(putRes.ok()).toBe(true)
 
       // DELETE.
-      const delRes = await s.context.delete(`${E2E_API_URL}/api/job-sources/${created.id}`)
+      const delRes = await s.context.delete(
+        `${E2E_API_URL}/api/job-sources/${created.id}`,
+      )
       expect(delRes.ok()).toBe(true)
     })
   })

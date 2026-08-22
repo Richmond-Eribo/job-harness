@@ -263,10 +263,12 @@ export function useJobSources() {
 export function useAddJobSource() {
   const qc = useQueryClient()
   return useMutation({
+    // searchUrlTemplate is optional: without it the agent browses the base URL
+    // directly, with it the agent fills {query}/{location}/{page} server-side.
     mutationFn: (src: {
       name: string
       baseUrl: string
-      searchUrlTemplate: string
+      searchUrlTemplate?: string | null
       notes?: string
     }) => api.post<{ id: number; message: string }>("/job-sources", src),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["job-sources"] }),
@@ -281,7 +283,7 @@ export function useUpdateJobSource() {
       patch: Partial<{
         name: string
         baseUrl: string
-        searchUrlTemplate: string
+        searchUrlTemplate?: string | null
         notes: string
         enabled: boolean
       }>

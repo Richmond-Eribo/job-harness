@@ -87,12 +87,54 @@ function initDb(agent: SqlAgent) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       base_url TEXT NOT NULL,
-      search_url_template TEXT NOT NULL,
+      search_url_template TEXT,
       notes TEXT,
       enabled INTEGER DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
   )
+}
+
+// =============================================================================
+// Self-healing schema migration for job_sources — NOT NULL → nullable.
+// =============================================================================
+// SQLite cannot ALTER a column to drop its NOT NULL constraint; the only way
+// is the CREATE-TABLE…COPY…DROP…RENAME rebuild. This stays idempotent by
+// reading PRAGMA table_info and only rebuilding when it detects the OLD
+// `notnull: 1` `search_url_template` column. Fresh DOs (table not yet
+// created — pr alleles empty -> skip) and already-migrated DOs (notnull: 0)
+// short-circuit. Runs unconditionally on every ensureDb so existing users get
+// migrated the first time they hit the DO after this deploy — same additive-
+// migration shape the Harness relies on for free-tier DO SQLite. Not gated by
+// a one-shot bool (the repo's documented DO-SQLite gotcha: persisted state
+// flags silently skip mutations on existing DOs).
+function migrateJobSourcesSchema(agent: SqlAgent) {
+  const cols = execSql(agent, `PRAGMA table_info(job_sources)`).map(
+    (c: any) => ({ name: c.name, notnull: c.notnull }),
+  )
+  const col = cols.find(c => c.name === "search_url_template")
+  // Early return: table doesn't exist yet (empty pr alleles), or column is
+  // already nullable. Either way the DO is in the desired state.
+  if (!col || col.notnull === 0) return
+  execSql(
+    agent,
+    `CREATE TABLE job_sources__new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      search_url_template TEXT,
+      notes TEXT,
+      enabled INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+  )
+  execSql(
+    agent,
+    `INSERT INTO job_sources__new (id, name, base_url, search_url_template, notes, enabled, created_at)
+     SELECT id, name, base_url, search_url_template, notes, enabled, created_at FROM job_sources`,
+  )
+  execSql(agent, `DROP TABLE job_sources`)
+  execSql(agent, `ALTER TABLE job_sources__new RENAME TO job_sources`)
 }
 
 // =============================================================================
@@ -251,6 +293,10 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
     // uses; it's the cleanest way to ship additive migrations on the free-tier
     // DO SQLite without a real migration framework.
     initDb(this)
+    // Relax any pre-existing NOT NULL search_url_template column to nullable,
+    // idempotently. Safe to run on every call — short-circuits when already
+    // migrated. See migrateJobSourcesSchema for the rationale.
+    migrateJobSourcesSchema(this)
     if (!this.state.initialized) {
       this.setState({ ...this.state, initialized: true })
     }
@@ -355,11 +401,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
       runId,
       redactKeys: obsConfig.logging?.redactToolArgs ?? [],
     })
-    recorder.recordRunStart(
-      `job search: ${criteria}`,
-      maxPages * 6,
-      0,
-    )
+    recorder.recordRunStart(`job search: ${criteria}`, maxPages * 6, 0)
 
     // ── Origin guard helper ──────────────────────────────────────────────
     // The actual security boundary. Returns the source row whose origin
@@ -395,7 +437,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
     const jobSearchTools = {
       list_job_sources: tool({
         description:
-          "List the job websites the user has configured for you to search. Each has an id, name, and base_url. Use the id to call search_site.",
+          "List the job websites the user has configured for you to search. Each has an id, name and base_url. Use the id to call search_site.",
         inputSchema: z.object({}),
         execute: async () => {
           const rows = execSql(
@@ -407,7 +449,10 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
               id: r.id,
               name: r.name,
               baseUrl: r.base_url,
-              searchUrlTemplate: r.search_url_template,
+              // surfaces whether this source supports query/location filtering
+              // (has a search template) or is browse-only, so the model knows
+              // whether search_site's query arg will be effective.
+              hasSearchTemplate: !!r.search_url_template,
               notes: r.notes,
             })),
           )
@@ -416,7 +461,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
 
       search_site: tool({
         description:
-          "Run a search on a configured job site. The site's URL template is filled safely server-side — pass the sourceId and the query/location, never a hand-built URL. Returns parsed page text and links, not raw HTML.",
+          "Open a configured job site. IF the source has a search template (hasSearchTemplate=true in list_job_sources), the query/location fills the template and returns filtered results. IF it is browse-only (hasSearchTemplate=false), query/location are IGNORED and the site's base page is returned — then you navigate its links with fetch_page. Pass the sourceId (never a hand-built URL). Returns parsed page text and links, not raw HTML.",
         inputSchema: z.object({
           sourceId: z.number().int(),
           query: z
@@ -443,13 +488,20 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
               error: `source id ${sourceId} not found or disabled`,
             })
           }
-          // Safe template fill — encodeURIComponent prevents injection into
-          // query params. The model can't override the base origin.
-          const url = (src.search_url_template as string)
-            .replaceAll("{query}", encodeURIComponent(query))
-            .replaceAll("{location}", encodeURIComponent(location ?? ""))
-            .replaceAll("{page}", String(page ?? 1))
-          return await fetchAndParse(url, src.base_url as string)
+          const baseUrl = src.base_url as string
+          // Two modes: templated sources filter by query/location (safe
+          // server-side fill — encodeURIComponent prevents query-param
+          // injection and the model can't override the base origin), while
+          // browse-only sources just return the base page and rely on the
+          // model navigating links via fetch_page.
+          if (src.search_url_template) {
+            const url = (src.search_url_template as string)
+              .replaceAll("{query}", encodeURIComponent(query))
+              .replaceAll("{location}", encodeURIComponent(location ?? ""))
+              .replaceAll("{page}", String(page ?? 1))
+            return await fetchAndParse(url, baseUrl)
+          }
+          return await fetchAndParse(baseUrl, baseUrl)
         },
       }),
 
@@ -542,22 +594,30 @@ ${profileStr}
 SEARCH CRITERIA: "${criteria}"
 
 Available tools:
-- list_job_sources: see which job websites you are allowed to search.
-- search_site: run a search on one of those sites for a role/location.
+- list_job_sources: see which job websites you are allowed to search. Each
+  source shows hasSearchTemplate: true (supports query/location filtering) or
+  false (browse-only — you navigate from its home/listings page).
+- search_site: open a site. If the source has a search template, your query /
+  location filter the results; if it is browse-only, query/location are IGNORED
+  and you get back the site's base page to navigate from.
 - fetch_page: open a link you found (a job posting, or a "next page" link).
 - save_job: record a listing AFTER you have opened its page with fetch_page.
 
 How to work:
 1. Call list_job_sources first. Pick the site(s) most likely to have relevant
    roles for this search — you do not have to search every site on every run.
-2. Call search_site with a concise query derived from the criteria. Read the
-   returned links and page text.
+2. For a templated source (hasSearchTemplate=true): call search_site with a
+   concise query derived from the criteria. Read the returned links and page
+   text.
+   For a browse-only source (hasSearchTemplate=false): call search_site to load
+   its base page, then follow the links on it with fetch_page to reach the job
+   listings (e.g. a Jobs/Careers nav link, then a posting).
 3. If a result looks relevant, call fetch_page on its link to read the actual
    job posting before saving. NEVER save a listing you have not opened.
-4. If the search results are paginated and the profile match is promising, you
-   may fetch the next page (search_site again with page+1) instead of opening
-   more listings on the current page. Use your judgement — do not page through
-   a site that is returning no relevant results.
+4. If a templated source's results are paginated and the profile match is
+   promising, you may fetch the next page (search_site again with page+1)
+   instead of opening more listings on the current page. Use your judgement —
+   do not page through a site that is returning no relevant results.
 5. Only call save_job for listings you retrieved from a tool. NEVER invent a
    company, title, or URL. Every save_job call must reference a URL you
    actually fetched via fetch_page.
@@ -637,15 +697,28 @@ you found and stop rather than fabricating results to fill a quota.`
   async addJobSource(source: {
     name: string
     baseUrl: string
-    searchUrlTemplate: string
+    // Optional. When present (and containing the {query}/{location}/{page}
+    // placeholders) search_site fills it to filter results. When absent the
+    // source is browse-only — the model loads the base page and navigates via
+    // fetch_page. Optional across the board so the UI never has to force the
+    // user to hand-author a search URL template.
+    searchUrlTemplate?: string | null
     notes?: string
   }): Promise<{ id: number; message: string }> {
     this.ensureDb()
-    // Basic shape validation — template must contain {query}, baseUrl must parse.
-    if (!source.searchUrlTemplate.includes("{query}")) {
-      throw new Error(
-        "searchUrlTemplate must contain a {query} placeholder, e.g. https://example.com/jobs/{query}",
-      )
+    // Only baseUrl has a hard shape requirement. The template is fully
+    // optional; if provided we normalise empty strings to null so the table
+    // never holds a bogus empty-string template that breaks {query} fill.
+    if (
+      source.searchUrlTemplate !== undefined &&
+      source.searchUrlTemplate !== null
+    ) {
+      const trimmed = source.searchUrlTemplate.trim()
+      if (trimmed !== "" && !trimmed.includes("{query}")) {
+        throw new Error(
+          "searchUrlTemplate, when provided, must contain a {query} placeholder, e.g. https://example.com/jobs/{query}",
+        )
+      }
     }
     try {
       // eslint-disable-next-line no-new
@@ -659,7 +732,9 @@ you found and stop rather than fabricating results to fill a quota.`
       [
         source.name,
         source.baseUrl,
-        source.searchUrlTemplate,
+        source.searchUrlTemplate
+          ? source.searchUrlTemplate.trim() || null
+          : null,
         source.notes ?? null,
       ],
     )
@@ -691,7 +766,9 @@ you found and stop rather than fabricating results to fill a quota.`
     patch: Partial<{
       name: string
       baseUrl: string
-      searchUrlTemplate: string
+      // Optional/nullable: a source can be switched to browse-only by passing
+      // null here. Same contract as addJobSource.
+      searchUrlTemplate?: string | null
       notes: string
       enabled: boolean
     }>,
@@ -709,7 +786,10 @@ you found and stop rather than fabricating results to fill a quota.`
     }
     if (patch.searchUrlTemplate !== undefined) {
       sets.push("search_url_template = ?")
-      args.push(patch.searchUrlTemplate)
+      // Normalise empty-string and whitespace-only to null so the column
+      // never ends up with a fake "" template that breaks the {query} fill.
+      const v = patch.searchUrlTemplate?.trim() || null
+      args.push(v)
     }
     if (patch.notes !== undefined) {
       sets.push("notes = ?")
@@ -831,11 +911,7 @@ you found and stop rather than fabricating results to fill a quota.`
       runId,
       redactKeys: obsConfig.logging?.redactToolArgs ?? [],
     })
-    recorder.recordRunStart(
-      `cover letter: ${job.company} / ${job.title}`,
-      1,
-      0,
-    )
+    recorder.recordRunStart(`cover letter: ${job.company} / ${job.title}`, 1, 0)
 
     // Generate cover letter
     const systemPrompt = `You are an expert cover letter writer. Generate a compelling, tailored cover letter.

@@ -38,7 +38,12 @@ export interface JobSource {
   id: number
   name: string
   baseUrl: string
-  searchUrlTemplate: string
+  // Optional. When present (and containing {query}/{location}/{page}), the
+  // agent's search_site tool fills it to filter results server-side. When
+  // null, the source is browse-only — the agent loads the base page and
+  // navigates to listings via fetch_page. Kept optional so a source is just
+  // a name + base URL + (optional) notes.
+  searchUrlTemplate: string | null
   notes: string | null
   enabled: boolean
   createdAt: string

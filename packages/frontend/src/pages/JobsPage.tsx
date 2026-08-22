@@ -390,28 +390,26 @@ function SourcesDialog({
   const [draft, setDraft] = useState({
     name: "",
     baseUrl: "",
-    searchUrlTemplate: "",
     notes: "",
   })
 
   const list: JobSource[] = Array.isArray(sources) ? sources : []
 
   const handleAdd = () => {
-    if (!draft.name || !draft.baseUrl || !draft.searchUrlTemplate) {
-      toast.error("Name, base URL, and search template are required")
+    if (!draft.name || !draft.baseUrl) {
+      toast.error("Name and base URL are required")
       return
     }
     addSource.mutate(
       {
         name: draft.name,
         baseUrl: draft.baseUrl,
-        searchUrlTemplate: draft.searchUrlTemplate,
         notes: draft.notes || undefined,
       },
       {
         onSuccess: () => {
           toast.success("Source added")
-          setDraft({ name: "", baseUrl: "", searchUrlTemplate: "", notes: "" })
+          setDraft({ name: "", baseUrl: "", notes: "" })
         },
         onError: (e: { message?: string }) =>
           toast.error("Couldn't add source", { description: e?.message }),
@@ -425,10 +423,8 @@ function SourcesDialog({
         <DialogHeader>
           <DialogTitle>Job sources</DialogTitle>
           <DialogDescription>
-            Sites the agent is allowed to browse. The template must contain a{" "}
-            <code className="font-mono">{`{query}`}</code> placeholder; use{" "}
-            <code className="font-mono">{`{location}`}</code> and{" "}
-            <code className="font-mono">{`{page}`}</code> for those filters.
+            Sites the agent is allowed to browse. Provide a name and the base
+            URL; the agent loads the site and follows links to job postings.
           </DialogDescription>
         </DialogHeader>
 
@@ -448,14 +444,6 @@ function SourcesDialog({
                 className="text-xs font-mono"
               />
             </div>
-            <Input
-              placeholder="Search template: https://example.com/jobs/{query}"
-              value={draft.searchUrlTemplate}
-              onChange={e =>
-                setDraft({ ...draft, searchUrlTemplate: e.target.value })
-              }
-              className="text-xs font-mono"
-            />
             <Input
               placeholder="Notes (optional)"
               value={draft.notes}
@@ -498,7 +486,7 @@ function SourcesDialog({
                       )}
                     </div>
                     <code className="block text-[11px] text-muted-foreground font-mono truncate mt-0.5">
-                      {s.searchUrlTemplate}
+                      {s.baseUrl}
                     </code>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
