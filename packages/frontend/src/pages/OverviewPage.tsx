@@ -231,34 +231,41 @@ export function OverviewPage() {
 
       {/* 6 Stage Breakdown Cards — white card, 1px border, small muted label,
           large tabular number, thin left accent bar in the status color
-          (§10.2). */}
+          (§10.2). Clicking deep-links to the kanban filtered to that stage. */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {STATUS_ORDER.map((stage, i) => (
-          <Card
+          <Link
             key={stage}
-            className="relative py-3.5 overflow-hidden animate-slide-up stagger-child"
-            style={{ "--stagger-i": i } as React.CSSProperties}
+            to="/jobs"
+            search={{ status: stage }}
+            className="block focus-visible:rounded-xl"
+            aria-label={`View ${STATUS_META[stage].label} jobs`}
           >
-            <span
-              aria-hidden
-              className={cn(
-                "absolute left-0 top-3 bottom-3 w-1 rounded-full",
-                STATUS_META[stage].barClass,
-              )}
-            />
-            <CardContent className="px-4">
-              <div className="text-xs text-muted-foreground font-medium mb-1">
-                {STATUS_META[stage].label}
-              </div>
-              {pipelineLoading ? (
-                <Skeleton className="h-8 w-10" />
-              ) : (
-                <div className="text-2xl font-bold tabular-nums tracking-tight">
-                  {stats.byStatus?.[stage] ?? 0}
+            <Card
+              className="relative py-3.5 overflow-hidden animate-slide-up stagger-child transition-colors duration-150 hover:border-primary/40"
+              style={{ "--stagger-i": i } as React.CSSProperties}
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute left-0 top-3 bottom-3 w-1 rounded-full",
+                  STATUS_META[stage].barClass,
+                )}
+              />
+              <CardContent className="px-4">
+                <div className="text-xs text-muted-foreground font-medium mb-1">
+                  {STATUS_META[stage].label}
                 </div>
-              )}
-            </CardContent>
-          </Card>
+                {pipelineLoading ? (
+                  <Skeleton className="h-8 w-10" />
+                ) : (
+                  <div className="text-2xl font-bold tabular-nums tracking-tight">
+                    {stats.byStatus?.[stage] ?? 0}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </Link>
         ))}
       </div>
 

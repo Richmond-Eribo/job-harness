@@ -347,3 +347,24 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Print / PDF export ────────────────────────────────────────────────────
+   The job detail view's Print / PDF button prints ONLY the open document
+   version (the .print-area node), not the app chrome. Free-tier friendly —
+   no server-side rendering needed (§4.3 render/export).                       */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0 !important;
+  }
+}

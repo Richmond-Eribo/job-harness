@@ -13,7 +13,12 @@ import type {
   JobListing,
   JobStatus,
   JobSource,
+  CoverLetter,
+  TailoredCV,
+  FollowUp,
   JobSearchResponse,
+  TailoredCvResponse,
+  CoverLetterResponse,
   TraceEvent,
   StepLogEntry,
   UserProfile,
@@ -27,6 +32,14 @@ import type {
 interface PipelineResponse {
   listings: JobListing[]
   stats: JobSearchResponse["pipelineUpdate"]
+}
+
+/** The job detail response from GET /api/jobs/:id. */
+export interface JobDetailResponse {
+  listing: JobListing | null
+  coverLetters: CoverLetter[]
+  tailoredCvs: TailoredCV[]
+  followUps: FollowUp[]
 }
 
 /** The harness status from GET /api/status. */
@@ -236,7 +249,159 @@ export function useSetJobStatus() {
         status: p.status,
         notes: p.notes,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["pipeline"] }),
+    // Optimistic move — kanban DnD (and Advance) must feel instant. Cancel
+    // in-flight pipeline fetches, move the card in the cache, roll back on
+    // error. The server also auto-creates a follow-up on the first
+    // "applied" transition; onSettled's invalidation reconciles that.
+    onMutate: async p => {
+      await qc.cancelQueries({ queryKey: ["pipeline"] })
+      const prev = qc.getQueryData<PipelineResponse>(["pipeline"])
+      if (prev) {
+        const moved = prev.listings.find(j => j.id === p.jobId)
+        qc.setQueryData<PipelineResponse>(["pipeline"], {
+          ...prev,
+          listings: prev.listings.map(j =>
+            j.id === p.jobId
+              ? {
+                  ...j,
+                  status: p.status,
+                  updatedAt: new Date().toISOString(),
+                }
+              : j,
+          ),
+          stats: moved
+            ? {
+                ...prev.stats,
+                byStatus: {
+                  ...prev.stats.byStatus,
+                  [moved.status]: Math.max(
+                    0,
+                    (prev.stats.byStatus[moved.status] ?? 1) - 1,
+                  ),
+                  [p.status]: (prev.stats.byStatus[p.status] ?? 0) + 1,
+                },
+              }
+            : prev.stats,
+        })
+      }
+      return { prev }
+    },
+    onError: (_e, _p, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["pipeline"], ctx.prev)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["pipeline"] })
+      qc.invalidateQueries({ queryKey: ["follow-ups"] })
+    },
+  })
+}
+
+// --- Job detail (GET /api/jobs/:id) — backs the /jobs/$jobId detail page. ---
+export function useJob(jobId: number | null) {
+  return useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => api.get<JobDetailResponse>(`/jobs/${jobId}`),
+    enabled: jobId != null,
+  })
+}
+
+export function useUpdateJob() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (p: {
+      jobId: number
+      notes?: string
+      priority?: number
+    }) => api.put<string>(`/jobs/${p.jobId}`, p),
+    onSuccess: (_d, p) => {
+      qc.invalidateQueries({ queryKey: ["job", p.jobId] })
+      qc.invalidateQueries({ queryKey: ["pipeline"] })
+    },
+  })
+}
+
+export function useDeleteJob() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: number) => api.del<string>(`/jobs/${jobId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pipeline"] })
+      qc.invalidateQueries({ queryKey: ["follow-ups"] })
+    },
+  })
+}
+
+// LLM generation — slow calls, rate-limited server-side (10/min each).
+export function useGenerateCoverLetter() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: number) =>
+      api.post<CoverLetterResponse>(`/jobs/${jobId}/cover-letter`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job"] }),
+  })
+}
+
+export function useGenerateTailoredCv() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: number) =>
+      api.post<TailoredCvResponse>(`/jobs/${jobId}/tailored-cv`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["job"] })
+      qc.invalidateQueries({ queryKey: ["pipeline"] })
+    },
+  })
+}
+
+// --- Follow-ups ---
+export function useDueFollowUps() {
+  return useQuery({
+    queryKey: ["follow-ups"],
+    queryFn: () => api.get<FollowUp[]>("/follow-ups"),
+    refetchInterval: 60_000,
+  })
+}
+
+export function useAddFollowUp() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (p: {
+      jobId: number
+      dueDate: string
+      note?: string
+    }) => api.post<string>(`/jobs/${p.jobId}/follow-up`, p),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["follow-ups"] })
+      qc.invalidateQueries({ queryKey: ["job"] })
+    },
+  })
+}
+
+export function useUpdateFollowUp() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (p: {
+      followUpId: number
+      completed?: boolean
+      dueDate?: string
+      note?: string
+    }) => api.put<string>(`/follow-ups/${p.followUpId}`, p),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["follow-ups"] })
+      qc.invalidateQueries({ queryKey: ["job"] })
+    },
+  })
+}
+
+export function useDeleteFollowUp() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (followUpId: number) =>
+      api.del<string>(`/follow-ups/${followUpId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["follow-ups"] })
+      qc.invalidateQueries({ queryKey: ["job"] })
+    },
   })
 }
 

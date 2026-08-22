@@ -1,32 +1,70 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router"
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCorners,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core"
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import {
   ArrowRight,
+  BellRing,
   CircleAlert,
   ExternalLink,
   Inbox,
-  Search,
+  MoreHorizontal,
   Plus,
+  Search,
   Globe,
+  StickyNote,
   Trash2,
+  CornerDownRight,
 } from "lucide-react"
 import {
   usePipeline,
   useSetJobStatus,
   useAddJob,
+  useDeleteJob,
   useJobSources,
   useAddJobSource,
   useDeleteJobSource,
   useUpdateJobSource,
+  useDueFollowUps,
 } from "../hooks/queries"
 import type { JobListing, JobStatus, JobSource } from "@/types"
+import { STATUS_META, STATUS_ORDER, nextStatus, canTransition } from "@/lib/status"
+import { formatRelative } from "@/lib/format"
 import {
   Badge,
   Button,
   Card,
   CardContent,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
   Input,
   Label,
   Skeleton,
+  cn,
   Dialog,
   DialogContent,
   DialogHeader,
@@ -34,69 +72,58 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@agent-harness/ui"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { toast } from "sonner"
 
-const COLUMNS: {
-  id: JobStatus
-  label: string
-  accent: string
-  dotColor: string
-}[] = [
-  {
-    id: "discovered",
-    label: "Discovered",
-    accent: "border-t-muted-foreground/40",
-    dotColor: "bg-muted-foreground",
-  },
-  {
-    id: "draft",
-    label: "Draft",
-    accent: "border-t-primary",
-    dotColor: "bg-primary",
-  },
-  {
-    id: "applied",
-    label: "Applied",
-    accent: "border-t-warning",
-    dotColor: "bg-warning",
-  },
-  {
-    id: "interview",
-    label: "Interview",
-    accent: "border-t-violet-400",
-    dotColor: "bg-violet-400",
-  },
-  {
-    id: "offer",
-    label: "Offer",
-    accent: "border-t-success",
-    dotColor: "bg-success",
-  },
-  {
-    id: "rejected",
-    label: "Rejected",
-    accent: "border-t-destructive/60",
-    dotColor: "bg-destructive",
-  },
-]
+const isJobStatus = (s: string): s is JobStatus =>
+  (STATUS_ORDER as string[]).includes(s)
 
 export function JobsPage() {
   const { data: pipeline, isLoading, isError, error, refetch } = usePipeline()
   const setJobStatus = useSetJobStatus()
   const addJob = useAddJob()
-  const [searchQuery, setSearchQuery] = useState("")
+  const deleteJob = useDeleteJob()
+  const { data: dueFollowUps } = useDueFollowUps()
+  const navigate = useNavigate()
+  const router = useRouter()
 
-  // Add-job + Sources modal visibility. Phase 4 parity port from the
-  // legacy dashboard — these were the two missing affordances on JobsPage.
+  // URL-bound filters (?q= & ?status=) — shareable and deep-linkable from the
+  // Overview stat cards.
+  const search = useSearch({ from: "/_app/jobs" })
+  const [q, setQ] = useState(search.q ?? "")
+  useEffect(() => {
+    setQ(search.q ?? "")
+  }, [search.q])
+  const statusFilter = isJobStatus(search.status ?? "") ? search.status : null
+
   const [addJobOpen, setAddJobOpen] = useState(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
+  const [jobToDelete, setJobToDelete] = useState<JobListing | null>(null)
+
+  // ── Drag state ──────────────────────────────────────────────────────────
+  const [activeJobId, setActiveJobId] = useState<number | null>(null)
+  const [overColumn, setOverColumn] = useState<JobStatus | null>(null)
+  // After a completed drag the overlay unmounts over the card — swallow the
+  // synthetic click so dropping doesn't also open the detail page.
+  const suppressClick = useRef(false)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
 
   const listings = pipeline?.listings ?? []
+  const dueJobIds = useMemo(
+    () => new Set((dueFollowUps ?? []).map(f => f.jobId)),
+    [dueFollowUps],
+  )
 
-  // Lowercase the query once per searchQuery change, not per job.
-  const searchLower = useMemo(() => searchQuery.toLowerCase(), [searchQuery])
+  const searchLower = useMemo(() => q.toLowerCase(), [q])
 
-  // By-stage grouping is a single memoized pass over the filtered list.
   const byStage = useMemo(() => {
     const map: Record<JobStatus, JobListing[]> = {
       discovered: [],
@@ -118,21 +145,99 @@ export function JobsPage() {
     return map
   }, [listings, searchLower])
 
-  // Stable handler — only closes over setJobStatus (stable).
-  const advance = useCallback(
-    (job: JobListing, status: JobStatus) =>
+  const activeJob = activeJobId != null
+    ? listings.find(j => j.id === activeJobId) ?? null
+    : null
+
+  // ── Moves ───────────────────────────────────────────────────────────────
+  const move = useCallback(
+    (job: JobListing, status: JobStatus, silent = false) => {
+      if (job.status === status) return
       setJobStatus.mutate(
         { jobId: job.id, status },
         {
-          onSuccess: () => toast.success(`Moved job to ${status}`),
+          onSuccess: () => {
+            if (!silent) toast.success(`Moved to ${STATUS_META[status].label}`)
+          },
           onError: (e: { message?: string }) =>
             toast.error("Couldn't update job status", {
               description: e?.message,
             }),
         },
-      ),
+      )
+    },
     [setJobStatus],
   )
+
+  const openJob = useCallback(
+    (jobId: number) => navigate({ to: "/jobs/$jobId", params: { jobId } }),
+    [navigate],
+  )
+
+  // Resolve which column a drop target belongs to: either the column's own
+  // droppable id (the status string) or a sortable card inside it.
+  const statusFromOverId = (
+    overId: string | number | null | undefined,
+  ): JobStatus | null => {
+    if (overId == null) return null
+    const s = String(overId)
+    if (isJobStatus(s)) return s
+    const job = listings.find(j => j.id === Number(s))
+    return job ? job.status : null
+  }
+
+  const onDragStart = (e: DragStartEvent) => {
+    setActiveJobId(Number(e.active.id))
+  }
+
+  const onDragOver = (e: DragOverEvent) => {
+    setOverColumn(statusFromOverId(e.over?.id))
+  }
+
+  const onDragEnd = (e: DragEndEvent) => {
+    const target = statusFromOverId(e.over?.id)
+    const jobId = Number(e.active.id)
+    const job = listings.find(j => j.id === jobId)
+    setActiveJobId(null)
+    setOverColumn(null)
+    if (target && job && job.status !== target) {
+      suppressClick.current = true
+      setTimeout(() => (suppressClick.current = false), 120)
+      // Silent: a toast on every drag is noise; rollback toasts on failure.
+      move(job, target, true)
+    }
+  }
+
+  const onDragCancel = () => {
+    setActiveJobId(null)
+    setOverColumn(null)
+  }
+
+  const handleCardActivate = (job: JobListing) => {
+    if (suppressClick.current) return
+    openJob(job.id)
+  }
+
+  const handleDelete = () => {
+    if (!jobToDelete) return
+    deleteJob.mutate(jobToDelete.id, {
+      onSuccess: () => {
+        toast.success("Job removed")
+        setJobToDelete(null)
+      },
+      onError: (e: { message?: string }) =>
+        toast.error("Couldn't remove job", { description: e?.message }),
+    })
+  }
+
+  const setQuery = (value: string) => {
+    setQ(value)
+    void router.navigate({
+      to: "/jobs",
+      search: prev => ({ ...prev, q: value || undefined }),
+      replace: true,
+    })
+  }
 
   return (
     <div className="p-8 space-y-6 animate-fade-in flex flex-col h-full">
@@ -140,23 +245,22 @@ export function JobsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 border-b border-border pb-5">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            Jobs Kanban Pipeline
+            Jobs
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Manage your application stages and move positions through the
-            funnel.
+            Drag cards between stages, or open one to review its documents.
           </p>
         </div>
 
-        {/* Toolbar */}
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           <div className="relative w-64 max-w-full">
             <Search className="size-4 absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               placeholder="Search title or company…"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 text-xs"
+              value={q}
+              onChange={e => setQuery(e.target.value)}
+              className="pl-9 h-9 text-sm"
+              aria-label="Search jobs"
             />
           </div>
           <Button
@@ -174,7 +278,7 @@ export function JobsPage() {
         </div>
       </div>
 
-      {/* Kanban Board Columns */}
+      {/* Kanban Board */}
       {isError ? (
         <Card className="border-destructive/40 bg-destructive/5 flex-1">
           <CardContent className="py-8 text-center">
@@ -195,54 +299,47 @@ export function JobsPage() {
         </Card>
       ) : isLoading ? (
         <div className="flex gap-4 overflow-x-auto pb-4 flex-1">
-          {COLUMNS.map(col => (
-            <Skeleton key={col.id} className="w-80 shrink-0 h-96 rounded-xl" />
+          {STATUS_ORDER.map(col => (
+            <Skeleton key={col} className="w-[280px] shrink-0 h-96 rounded-xl" />
           ))}
         </div>
       ) : (
-        <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start">
-          {COLUMNS.map((col, colIdx) => {
-            const jobs = byStage[col.id]
-            return (
-              <div
-                key={col.id}
-                className={`w-80 shrink-0 bg-card rounded-xl border-t-2 ${col.accent} border border-border flex flex-col max-h-full animate-slide-up stagger-child`}
-                style={{ "--stagger-i": colIdx } as React.CSSProperties}
-              >
-                {/* Column Sticky Header */}
-                <div className="bg-card px-4 py-3.5 flex items-center justify-between border-b border-border rounded-t-xl shrink-0">
-                  <span className="text-sm font-semibold flex items-center gap-2">
-                    <span className={`size-2 rounded-full ${col.dotColor}`} />
-                    {col.label}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className="font-mono text-xs px-2 py-0.5"
-                  >
-                    {jobs.length}
-                  </Badge>
-                </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={onDragStart}
+          onDragOver={onDragOver}
+          onDragEnd={onDragEnd}
+          onDragCancel={onDragCancel}
+        >
+          <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start">
+            {STATUS_ORDER.map((status, colIdx) => (
+              <BoardColumn
+                key={status}
+                status={status}
+                jobs={byStage[status]}
+                colIdx={colIdx}
+                highlighted={overColumn === status}
+                filtered={statusFilter === status}
+                dueJobIds={dueJobIds}
+                onCardActivate={handleCardActivate}
+                onMove={move}
+                onOpen={openJob}
+                onDelete={setJobToDelete}
+              />
+            ))}
+          </div>
 
-                {/* Cards Container */}
-                <div className="p-3 flex flex-col gap-2.5 overflow-y-auto min-h-[160px]">
-                  {jobs.map((job: JobListing) => (
-                    <JobCard
-                      key={job.id}
-                      job={job}
-                      onAdvance={status => advance(job, status)}
-                    />
-                  ))}
-                  {jobs.length === 0 && (
-                    <div className="flex-1 flex flex-col items-center justify-center py-12 text-muted-foreground/40 border border-dashed border-border/60 rounded-lg">
-                      <Inbox className="size-6 mb-2" />
-                      <span className="text-xs">No positions</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
+          <DragOverlay>
+            {activeJob ? (
+              <JobCard
+                job={activeJob}
+                due={dueJobIds.has(activeJob.id)}
+                dragging
+              />
+            ) : null}
+          </DragOverlay>
+        </DndContext>
       )}
 
       <AddJobDialog
@@ -262,7 +359,356 @@ export function JobsPage() {
       />
 
       <SourcesDialog open={sourcesOpen} onOpenChange={setSourcesOpen} />
+
+      <ConfirmDialog
+        open={jobToDelete != null}
+        onOpenChange={v => {
+          if (!v) setJobToDelete(null)
+        }}
+        title={`Remove "${jobToDelete?.title ?? ""}"?`}
+        description="This permanently deletes the job, its cover letters, tailored CVs, and follow-ups."
+        confirmLabel="Remove job"
+        onConfirm={handleDelete}
+        pending={deleteJob.isPending}
+      />
     </div>
+  )
+}
+
+// ── Kanban column ──────────────────────────────────────────────────────────
+function BoardColumn({
+  status,
+  jobs,
+  colIdx,
+  highlighted,
+  filtered,
+  dueJobIds,
+  onCardActivate,
+  onMove,
+  onOpen,
+  onDelete,
+}: {
+  status: JobStatus
+  jobs: JobListing[]
+  colIdx: number
+  highlighted: boolean
+  filtered: boolean
+  dueJobIds: Set<number>
+  onCardActivate: (job: JobListing) => void
+  onMove: (job: JobListing, status: JobStatus, silent?: boolean) => void
+  onOpen: (jobId: number) => void
+  onDelete: (job: JobListing) => void
+}) {
+  const meta = STATUS_META[status]
+  // The card list itself is the drop zone, so EMPTY columns accept drops too.
+  const { setNodeRef, isOver } = useDroppable({
+    id: status,
+    data: { type: "column", status },
+  })
+
+  return (
+    <div
+      className={cn(
+        "w-[280px] shrink-0 bg-card rounded-xl border-t-2 flex flex-col max-h-full animate-slide-up stagger-child transition-shadow",
+        meta.accentClass,
+        highlighted || isOver
+          ? "border-x-border border-b-border ring-2 ring-primary/40"
+          : "border border-border",
+        filtered && "border-x-primary/40 border-b-primary/40",
+      )}
+      style={{ "--stagger-i": colIdx } as React.CSSProperties}
+    >
+      {/* Column header — dot + label + count */}
+      <div className="bg-card px-4 py-3.5 flex items-center justify-between border-b border-border rounded-t-xl shrink-0">
+        <span className="text-sm font-semibold flex items-center gap-2">
+          <span className={cn("size-2 rounded-full", meta.dotClass)} />
+          {meta.label}
+        </span>
+        <Badge variant="secondary" className="font-mono text-xs px-2 py-0.5">
+          {jobs.length}
+        </Badge>
+      </div>
+
+      {/* Cards container (drop zone) */}
+      <SortableContext
+        items={jobs.map(j => j.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div
+          ref={setNodeRef}
+          className="p-3 flex flex-col gap-2.5 overflow-y-auto min-h-[160px]"
+        >
+          {jobs.map(job => (
+            <SortableJobCard
+              key={job.id}
+              job={job}
+              due={dueJobIds.has(job.id)}
+              onActivate={() => onCardActivate(job)}
+              onMove={onMove}
+              onOpen={onOpen}
+              onDelete={onDelete}
+            />
+          ))}
+          {jobs.length === 0 && (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 text-muted-foreground/50 border border-dashed border-border rounded-lg">
+              <Inbox className="size-6 mb-2" />
+              <span className="text-xs">No positions here yet</span>
+            </div>
+          )}
+        </div>
+      </SortableContext>
+    </div>
+  )
+}
+
+// ── Sortable wrapper around the visual card ───────────────────────────────
+function SortableJobCard({
+  job,
+  due,
+  onActivate,
+  onMove,
+  onOpen,
+  onDelete,
+}: {
+  job: JobListing
+  due: boolean
+  onActivate: () => void
+  onMove: (job: JobListing, status: JobStatus, silent?: boolean) => void
+  onOpen: (jobId: number) => void
+  onDelete: (job: JobListing) => void
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: job.id, data: { type: "job", status: job.status } })
+
+  // Enter opens the detail page; every other key (Space to lift, arrows to
+  // move) still reaches the KeyboardSensor's own handler.
+  const sensorKeyDown = listeners?.onKeyDown as
+    | ((e: React.KeyboardEvent) => void)
+    | undefined
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Translate.toString(transform),
+        transition,
+      }}
+      className={isDragging ? "opacity-40" : undefined}
+      {...attributes}
+      {...listeners}
+      onKeyDown={e => {
+        if (e.key === "Enter") {
+          e.preventDefault()
+          onActivate()
+          return
+        }
+        sensorKeyDown?.(e)
+      }}
+    >
+      <JobCard
+        job={job}
+        due={due}
+        onActivate={onActivate}
+        onMove={onMove}
+        onOpen={onOpen}
+        onDelete={onDelete}
+      />
+    </div>
+  )
+}
+
+// ── The visual card (list + DragOverlay share it) ─────────────────────────
+function JobCard({
+  job,
+  due,
+  dragging,
+  onActivate,
+  onMove,
+  onOpen,
+  onDelete,
+}: {
+  job: JobListing
+  due: boolean
+  dragging?: boolean
+  onActivate?: () => void
+  onMove?: (job: JobListing, status: JobStatus, silent?: boolean) => void
+  onOpen?: (jobId: number) => void
+  onDelete?: (job: JobListing) => void
+}) {
+  const next = nextStatus(job.status)
+  const score = job.matchScore != null ? Math.round(job.matchScore * 100) : null
+  const targets = STATUS_ORDER.filter(s => canTransition(job.status, s))
+
+  return (
+    <Card
+      data-testid="job-card"
+      data-job-status={job.status}
+      className={cn(
+        "py-3 px-3.5 transition-colors duration-150 border-border",
+        dragging
+          ? "shadow-lg rotate-1 cursor-grabbing"
+          : "cursor-grab hover:border-primary/40",
+      )}
+    >
+      <CardContent className="p-0 space-y-2.5">
+        <div
+          className="flex items-start justify-between gap-2"
+          onClick={onActivate}
+        >
+          <div className="min-w-0">
+            <div className="font-semibold text-sm leading-snug text-foreground truncate">
+              {job.title}
+            </div>
+            <div className="text-xs text-muted-foreground font-medium truncate">
+              {job.company}
+            </div>
+          </div>
+          {score != null && (
+            <Badge
+              variant="ghost"
+              className="font-mono text-[11px] shrink-0 bg-primary/10 text-blue-700 border-primary/20"
+            >
+              {score}%
+            </Badge>
+          )}
+        </div>
+
+        {/* Metadata row — source, relative date, notes, due follow-up */}
+        <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+          {job.source && (
+            <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-medium">
+              {job.source}
+            </span>
+          )}
+          <span>{formatRelative(job.createdAt)}</span>
+          {job.notes && (
+            <StickyNote
+              className="size-3 text-muted-foreground/70"
+              aria-label="Has notes"
+            />
+          )}
+          {due && (
+            <span className="inline-flex items-center gap-1 text-amber-700 bg-warning/10 border border-warning/25 rounded px-1.5 py-0.5 font-medium">
+              <BellRing className="size-3" />
+              Follow up
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between pt-1 border-t border-border/60">
+          {job.url ? (
+            <a
+              href={job.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+              onClick={e => e.stopPropagation()}
+              aria-label={`Open posting for ${job.title}`}
+            >
+              Link <ExternalLink className="size-3" />
+            </a>
+          ) : (
+            <span />
+          )}
+
+          <div
+            className="flex items-center gap-1"
+            onPointerDown={e => e.stopPropagation()}
+          >
+            {next && onMove && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => onMove(job, next)}
+              >
+                Advance <ArrowRight className="size-3 ml-1" />
+              </Button>
+            )}
+            {onOpen && onDelete && onMove && (
+              <CardMenu
+                job={job}
+                targets={targets}
+                onOpen={() => onOpen(job.id)}
+                onMove={s => onMove(job, s)}
+                onDelete={() => onDelete(job)}
+              />
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── Card overflow menu — Open / Move to… / Reject / Remove ────────────────
+function CardMenu({
+  job,
+  targets,
+  onOpen,
+  onMove,
+  onDelete,
+}: {
+  job: JobListing
+  targets: JobStatus[]
+  onOpen: () => void
+  onMove: (status: JobStatus) => void
+  onDelete: () => void
+}) {
+  const forward = targets.filter(s => s !== "rejected")
+  const canReject = targets.includes("rejected")
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 text-muted-foreground hover:text-foreground"
+          aria-label={`Actions for ${job.title}`}
+          data-testid="job-card-menu"
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onOpen}>
+          <ExternalLink className="size-4" />
+          Open details
+        </DropdownMenuItem>
+        {forward.length > 0 && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <CornerDownRight className="size-4" />
+              Move to…
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {forward.map(s => (
+                <DropdownMenuItem key={s} onSelect={() => onMove(s)}>
+                  {STATUS_META[s].label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+        {canReject && (
+          <DropdownMenuItem onSelect={() => onMove("rejected")}>
+            Mark rejected
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+          <Trash2 className="size-4" />
+          Remove
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -318,12 +764,7 @@ function AddJobDialog({
         </DialogHeader>
         <div className="flex flex-col gap-3 py-2">
           <div className="space-y-1.5">
-            <Label
-              htmlFor="job-title"
-              className="text-xs text-muted-foreground"
-            >
-              Title
-            </Label>
+            <Label htmlFor="job-title">Title</Label>
             <Input
               id="job-title"
               placeholder="e.g. Senior TypeScript Engineer"
@@ -332,12 +773,7 @@ function AddJobDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label
-              htmlFor="job-company"
-              className="text-xs text-muted-foreground"
-            >
-              Company
-            </Label>
+            <Label htmlFor="job-company">Company</Label>
             <Input
               id="job-company"
               placeholder="e.g. Acme"
@@ -346,9 +782,7 @@ function AddJobDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="job-url" className="text-xs text-muted-foreground">
-              URL (optional)
-            </Label>
+            <Label htmlFor="job-url">URL (optional)</Label>
             <Input
               id="job-url"
               placeholder="https://…"
@@ -375,7 +809,7 @@ function AddJobDialog({
 // Job-source CRUD — backs GET/POST/PUT/DELETE /api/job-sources. The agent
 // refuses to browse any URL whose origin doesn't match an enabled row here
 // (the runtime guard lives in src/agents/job-agent.ts → search_site /
-// fetch_page). Replaces the legacy dashboard's Sources modal.
+// fetch_page).
 function SourcesDialog({
   open,
   onOpenChange,
@@ -435,20 +869,21 @@ function SourcesDialog({
                 placeholder="Name (e.g. Reed)"
                 value={draft.name}
                 onChange={e => setDraft({ ...draft, name: e.target.value })}
-                className="text-xs"
+                aria-label="Source name"
               />
               <Input
                 placeholder="Base URL (https://example.com)"
                 value={draft.baseUrl}
                 onChange={e => setDraft({ ...draft, baseUrl: e.target.value })}
                 className="text-xs font-mono"
+                aria-label="Source base URL"
               />
             </div>
             <Input
               placeholder="Notes (optional)"
               value={draft.notes}
               onChange={e => setDraft({ ...draft, notes: e.target.value })}
-              className="text-xs"
+              aria-label="Source notes"
             />
             <Button
               size="sm"
@@ -536,75 +971,5 @@ function SourcesDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-function JobCard({
-  job,
-  onAdvance,
-}: {
-  job: JobListing
-  onAdvance: (status: JobStatus) => void
-}) {
-  const order: JobStatus[] = [
-    "discovered",
-    "draft",
-    "applied",
-    "interview",
-    "offer",
-  ]
-  const idx = order.indexOf(job.status)
-  const next: JobStatus | null =
-    idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null
-  const score = job.matchScore != null ? Math.round(job.matchScore * 100) : null
-
-  return (
-    <Card className="py-3 px-3.5 transition-all duration-150 hover:border-primary/40 shadow-sm">
-      <CardContent className="p-0 space-y-2.5">
-        <div className="flex items-start justify-between gap-2">
-          <div className="font-semibold text-sm leading-snug text-foreground">
-            {job.title}
-          </div>
-          {score != null && (
-            <Badge
-              variant="secondary"
-              className="font-mono text-[11px] shrink-0 bg-primary/10 text-primary border-primary/20"
-            >
-              {score}%
-            </Badge>
-          )}
-        </div>
-
-        <div className="text-xs text-muted-foreground font-medium">
-          {job.company}
-        </div>
-
-        <div className="flex items-center justify-between pt-1 border-t border-border/60">
-          {job.url ? (
-            <a
-              href={job.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-primary hover:underline inline-flex items-center gap-1"
-            >
-              Link <ExternalLink className="size-3" />
-            </a>
-          ) : (
-            <span />
-          )}
-
-          {next && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => onAdvance(next)}
-            >
-              Advance <ArrowRight className="size-3 ml-1" />
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
   )
 }
