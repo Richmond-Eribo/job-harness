@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { Link } from "@tanstack/react-router"
 import {
   useStatus,
@@ -6,6 +6,7 @@ import {
   useStartRun,
   useStopRun,
   usePreflight,
+  useDueFollowUps,
 } from "../hooks/queries"
 import type { JobListing } from "@/types"
 import {
@@ -28,7 +29,9 @@ import {
 import { STATUS_META, STATUS_ORDER } from "@/lib/status"
 import { toast } from "sonner"
 import {
+  BellRing,
   Briefcase,
+  ChevronRight,
   PlayCircle,
   StopCircle,
   Search,
@@ -39,7 +42,9 @@ import {
   FileText,
   Globe,
   Chrome,
+  StickyNote,
 } from "lucide-react"
+import { formatRelative } from "@/lib/format"
 
 // Pre-flight requirement metadata — mirrors the `missing` string keys the
 // backend's computePreflightGaps() emits (src/index.ts). Kept as a lookup
@@ -89,8 +94,15 @@ export function OverviewPage() {
     refetch: refetchPipeline,
   } = usePipeline()
   const { data: preflight } = usePreflight()
+  const { data: dueFollowUps } = useDueFollowUps()
   const startRun = useStartRun()
   const stopRun = useStopRun()
+
+  // Jobs with an open, due follow-up — flagged on the recent-listing rows.
+  const dueJobIds = useMemo(
+    () => new Set((dueFollowUps ?? []).map(f => f.jobId)),
+    [dueFollowUps],
+  )
 
   // The checklist modal's contents — either populated from a proactive
   // usePreflight() read (banner "Review setup" click) or from the 428 the
@@ -271,15 +283,19 @@ export function OverviewPage() {
               <Briefcase className="size-4 text-primary" />
               Recent Job Listings
             </h2>
-            <span className="text-xs text-muted-foreground font-mono">
-              {listings.length} discovered listings
-            </span>
+            <Link
+              to="/jobs"
+              className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+            >
+              View board ({listings.length})
+              <ArrowUpRight className="size-3" />
+            </Link>
           </div>
 
           {pipelineLoading ? (
             <div className="flex flex-col gap-3">
               {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-20 w-full rounded-xl" />
+                <Skeleton key={i} className="h-[88px] w-full rounded-xl" />
               ))}
             </div>
           ) : listings.length === 0 ? (
@@ -297,58 +313,14 @@ export function OverviewPage() {
             </Card>
           ) : (
             <div className="flex flex-col gap-3">
-              {listings.slice(0, 8).map((job: JobListing, i: number) => {
-                const score =
-                  job.matchScore != null
-                    ? Math.round(job.matchScore * 100)
-                    : null
-                return (
-                  <Card
-                    key={job.id}
-                    className="py-3.5 px-4 transition-all duration-150 hover:border-primary/40 animate-slide-up stagger-child"
-                    style={{ "--stagger-i": i } as React.CSSProperties}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-sm text-foreground truncate">
-                            {job.title}
-                          </h3>
-                          <Badge
-                            variant="ghost"
-                            className={cn(
-                              "text-[11px] font-medium shrink-0",
-                              STATUS_META[job.status].badgeClass,
-                            )}
-                          >
-                            {STATUS_META[job.status].label}
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {job.company}
-                        </p>
-                      </div>
-
-                      {score != null && (
-                        <div className="text-right shrink-0 w-24">
-                          <div className="text-xs font-semibold tabular-nums text-foreground">
-                            {score}%
-                            <span className="text-[10px] text-muted-foreground font-normal">
-                              {" "}
-                              match
-                            </span>
-                          </div>
-                          <Progress
-                            value={score}
-                            className="h-1.5 mt-1.5"
-                            aria-label={`Match score ${score}%`}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </Card>
-                )
-              })}
+              {listings.slice(0, 8).map((job: JobListing, i: number) => (
+                <JobRow
+                  key={job.id}
+                  job={job}
+                  due={dueJobIds.has(job.id)}
+                  idx={i}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -482,6 +454,105 @@ export function OverviewPage() {
         startingAnyway={startRun.isPending}
       />
     </div>
+  )
+}
+
+// ── Recent-listing row ─────────────────────────────────────────────────────
+// The whole row deep-links to the job's detail page (/jobs/$jobId): stage
+// badge, source + age, a one-line description excerpt, follow-up/notes
+// indicators, and the match bar with its value spelled out (§10.2).
+function JobRow({
+  job,
+  due,
+  idx,
+}: {
+  job: JobListing
+  due: boolean
+  idx: number
+}) {
+  const score = job.matchScore != null ? Math.round(job.matchScore * 100) : null
+  const meta = STATUS_META[job.status]
+
+  return (
+    <Link
+      to="/jobs/$jobId"
+      params={{ jobId: job.id }}
+      className="block rounded-xl animate-slide-up stagger-child focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      style={{ "--stagger-i": idx } as React.CSSProperties}
+      aria-label={`Open ${job.title} at ${job.company}`}
+    >
+      <Card className="py-3.5 px-4 transition-colors duration-150 hover:border-primary/40 hover:bg-accent/20">
+        <CardContent className="p-0">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1 min-w-0 space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-semibold text-sm text-foreground truncate">
+                  {job.title}
+                </h3>
+                <Badge
+                  variant="ghost"
+                  className={cn(
+                    "text-[11px] font-medium shrink-0",
+                    meta.badgeClass,
+                  )}
+                >
+                  {meta.label}
+                </Badge>
+                {due && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 bg-warning/10 border border-warning/25 rounded px-1.5 py-0.5 shrink-0">
+                    <BellRing className="size-3" />
+                    Follow up
+                  </span>
+                )}
+                {job.notes && (
+                  <StickyNote
+                    className="size-3 text-muted-foreground/70 shrink-0"
+                    aria-label="Has notes"
+                  />
+                )}
+              </div>
+
+              <p className="text-xs text-muted-foreground truncate">
+                {job.company}
+                {job.source && (
+                  <span className="text-muted-foreground/70"> · {job.source}</span>
+                )}
+                <span className="text-muted-foreground/70">
+                  {" "}
+                  · added {formatRelative(job.createdAt)}
+                </span>
+              </p>
+
+              {job.description && (
+                <p className="text-xs text-muted-foreground/80 line-clamp-1">
+                  {job.description}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0">
+              {score != null && (
+                <div className="text-right w-20 hidden sm:block">
+                  <div className="text-xs font-semibold tabular-nums text-foreground">
+                    {score}%
+                    <span className="text-[10px] text-muted-foreground font-normal">
+                      {" "}
+                      match
+                    </span>
+                  </div>
+                  <Progress
+                    value={score}
+                    className="h-1.5 mt-1.5"
+                    aria-label={`Match score ${score}%`}
+                  />
+                </div>
+              )}
+              <ChevronRight className="size-4 text-muted-foreground" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
   )
 }
 
