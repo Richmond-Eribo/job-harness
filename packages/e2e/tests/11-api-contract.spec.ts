@@ -102,7 +102,7 @@ test.describe("API contract", () => {
       expect(delRes.ok()).toBe(true)
     })
 
-    test("job-sources POST + PUT + DELETE round-trip", ;async () => {
+    test("job-sources POST + PUT + DELETE round-trip", async () => {
       // Browse-only source (no search_url_template). The optional-template
       // contract requires this round-trip to succeed without a template.
       const postRes = await s.context.post(`${E2E_API_URL}/api/job-sources`, {
