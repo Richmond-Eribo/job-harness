@@ -7,12 +7,32 @@
   //
   // `main` is the virtual server entry TanStack Start provides; the Cloudflare
   // vite plugin resolves it at build time into .output/server/index.js.
-  "name": "agent-harness-app",
-  "compatibility_date": "2025-09-24",
+  "name": "job-agent-web",
+  "compatibility_date": "2026-05-24",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
 
+  // Custom domain — the public web origin. Requires richmonderibo.dev to be
+  // a zone in the same Cloudflare account (DNS record auto-created). The
+  // GitHub workflow bakes VITE_API_URL into the bundle at build time — set
+  // the repo secret to https://api-job-agent.richmonderibo.dev.
+  "routes": [
+    { "pattern": "job-agent.richmonderibo.dev", "custom_domain": true },
+  ],
+
+  // Serve ONLY on the custom domain — the *.workers.dev subdomain would
+  // render but its API calls would fail CORS (only the custom origins are
+  // trusted by the API worker).
+  "workers_dev": false,
+
   "observability": {
-    "enabled": true
-  }
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true, // optional, default = true
+      "head_sampling_rate": 1, // optional, default = 1
+    },
+    "traces": {
+      "enabled": true, // automatic tracing, open beta
+    },
+  },
 }
