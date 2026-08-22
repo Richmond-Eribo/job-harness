@@ -175,19 +175,19 @@ export function ProfilePage() {
             </a>
             <a
               href="#preferences"
-              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Briefcase className="size-4" /> Preferences & Targets
             </a>
             <a
               href="#links"
-              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Link2 className="size-4" /> Links & Authorization
             </a>
             <a
               href="#cv"
-              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <FileText className="size-4" /> CV & Résumé
             </a>
@@ -518,7 +518,7 @@ export function ProfilePage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 {profile?.cvFilename && (
-                  <div className="flex items-center justify-between p-3.5 bg-secondary/40 rounded-lg border border-border">
+                  <div className="flex items-center justify-between p-3.5 bg-muted/50 rounded-lg border border-border">
                     <div className="flex items-center gap-3">
                       <FileText className="size-5 text-primary shrink-0" />
                       <div>

@@ -93,7 +93,7 @@ export function TraceDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4 text-xs">
-              <div className="flex items-center justify-between p-2.5 bg-secondary/40 rounded-lg border border-border">
+              <div className="flex items-center justify-between p-2.5 bg-muted/50 rounded-lg border border-border">
                 <span className="text-muted-foreground">Execution Status</span>
                 <Badge
                   variant={
@@ -160,7 +160,7 @@ export function TraceDetailPage() {
                   className={`px-3 py-1.5 text-xs font-medium rounded-lg capitalize transition-colors ${
                     eventFilter === tab
                       ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent"
                   }`}
                 >
                   {tab.replace("_", " ")}
@@ -240,7 +240,7 @@ function StepCard({
       <div className="absolute left-3 top-4 size-3 rounded-full bg-primary/20 border-2 border-primary z-10" />
 
       <Card className="overflow-hidden py-0 gap-0">
-        <CardHeader className="px-4 py-3 flex-row items-center justify-between border-b border-border bg-secondary/30">
+        <CardHeader className="px-4 py-3 flex-row items-center justify-between border-b border-border bg-muted/40">
           <span className="text-xs font-mono font-bold text-foreground">
             {stepNum === "_pre" ? "INITIALIZATION" : `STEP ${stepNum}`}
           </span>

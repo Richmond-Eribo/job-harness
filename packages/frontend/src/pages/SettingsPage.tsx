@@ -42,6 +42,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tabs,
+  TabsList,
+  TabsTrigger,
 } from "@agent-harness/ui"
 import { toast } from "sonner"
 import { ProfilePage } from "./ProfilePage"
@@ -80,38 +83,30 @@ export function SettingsPage() {
       </div>
 
       {/* Tab bar */}
-      <div className="flex items-center gap-1 border-b border-border">
-        <TabButton
-          active={tab === "profile"}
-          onClick={() => setTab("profile")}
-          icon={<UserIcon className="size-4" />}
-          label="Profile"
-        />
-        <TabButton
-          active={tab === "llm"}
-          onClick={() => setTab("llm")}
-          icon={<Cpu className="size-4" />}
-          label="LLM Config"
-        />
-        <TabButton
-          active={tab === "browser"}
-          onClick={() => setTab("browser")}
-          icon={<Chrome className="size-4" />}
-          label="Browser & Extension"
-        />
-        <TabButton
-          active={tab === "schedules"}
-          onClick={() => setTab("schedules")}
-          icon={<Calendar className="size-4" />}
-          label="Schedules"
-        />
-        <TabButton
-          active={tab === "account"}
-          onClick={() => setTab("account")}
-          icon={<UserCog className="size-4" />}
-          label="Account"
-        />
-      </div>
+      <Tabs value={tab} onValueChange={v => setTab(v as Tab)}>
+        <TabsList className="h-auto flex-wrap justify-start">
+          <TabsTrigger value="profile">
+            <UserIcon className="size-4" />
+            Profile
+          </TabsTrigger>
+          <TabsTrigger value="llm">
+            <Cpu className="size-4" />
+            LLM Config
+          </TabsTrigger>
+          <TabsTrigger value="browser">
+            <Chrome className="size-4" />
+            Browser &amp; Extension
+          </TabsTrigger>
+          <TabsTrigger value="schedules">
+            <Calendar className="size-4" />
+            Schedules
+          </TabsTrigger>
+          <TabsTrigger value="account">
+            <UserCog className="size-4" />
+            Account
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {/* Tab body */}
       {tab === "profile" ? (
@@ -126,33 +121,6 @@ export function SettingsPage() {
         <BrowserExtensionTab />
       )}
     </div>
-  )
-}
-
-function TabButton({
-  active,
-  onClick,
-  icon,
-  label,
-}: {
-  active: boolean
-  onClick: () => void
-  icon: React.ReactNode
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-        active
-          ? "border-primary text-primary"
-          : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/40"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
   )
 }
 

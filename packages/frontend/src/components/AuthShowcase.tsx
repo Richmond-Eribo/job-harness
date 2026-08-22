@@ -9,18 +9,9 @@ import { Search } from "lucide-react"
 export function AuthShowcase() {
   return (
     <aside
-      className="relative hidden lg:flex lg:w-1/2 flex-col justify-between overflow-hidden border-r border-border bg-background p-10 xl:p-14"
+      className="relative hidden lg:flex lg:w-1/2 flex-col justify-between overflow-hidden border-r border-border bg-muted/30 p-10 xl:p-14"
       aria-hidden
     >
-      {/* Faint blue ambient — same treatment as the landing hero */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(55% 60% at 30% 0%, color-mix(in oklab, var(--primary) 14%, transparent), transparent 70%)",
-        }}
-      />
-
       {/* Brand */}
       <Link to="/" className="relative flex items-center gap-2.5 text-foreground">
         <span
@@ -43,8 +34,8 @@ export function AuthShowcase() {
         </h2>
         <p className="mt-6 text-[15px] leading-relaxed text-muted-foreground">
           The agent reads the boards you trust, scores every listing against
-          your profile, and drafts a cover letter for each match — while you do
-          literally anything else.
+          your profile, and drafts a tailored CV and cover letter for each
+          match — while you do literally anything else.
         </p>
       </div>
 

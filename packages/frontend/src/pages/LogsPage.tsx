@@ -53,7 +53,7 @@ export function LogsPage() {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             {/* Column headers */}
-            <div className="grid grid-cols-[5rem_4rem_minmax(7rem,auto)_1fr] items-center gap-3 px-4 py-2 border-b border-border bg-secondary/30 text-[10px] text-muted-foreground/60 uppercase tracking-wider font-mono">
+            <div className="grid grid-cols-[5rem_4rem_minmax(7rem,auto)_1fr] items-center gap-3 px-4 py-2 border-b border-border bg-muted/40 text-[10px] text-muted-foreground/60 uppercase tracking-wider font-mono">
               <span>Time</span>
               <span>Step</span>
               <span>Action</span>
@@ -66,7 +66,7 @@ export function LogsPage() {
                 <div
                   key={l.createdAt ? `${l.createdAt}-${l.stepNumber}-${i}` : i}
                   className={`px-4 py-2.5 grid grid-cols-[5rem_4rem_minmax(7rem,auto)_1fr] items-center gap-3 text-sm transition-colors hover:bg-accent/30 ${
-                    i % 2 === 0 ? "" : "bg-secondary/10"
+                    i % 2 === 0 ? "" : "bg-muted/20"
                   }`}
                 >
                   <span className="text-xs text-muted-foreground/70 font-mono tabular-nums">

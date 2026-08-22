@@ -147,39 +147,6 @@
   }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
-   Landing page — scoped tokens (TEMPORARY).
-   The legacy landing/auth marketing surface still uses this near-black zinc
-   set. It is retired together with the LandingPage light rebuild — until
-   then these stay namespaced under --landing-* so the dashboard's light
-   token system is untouched.
-   ───────────────────────────────────────────────────────────────────────── */
-:root {
-  --landing-ground: #0a0a0b; /* near-black, slightly warm */
-  --landing-surface: #141416; /* raised cards */
-  --landing-surface-2: #1c1c20; /* the trace card */
-  --landing-hairline: #27272a; /* zinc-800 */
-  --landing-ink: #fafafa; /* zinc-50 */
-  --landing-ink-muted: #a1a1aa; /* zinc-400 */
-  --landing-ink-faint: #71717a; /* zinc-500 */
-  --landing-accent: #3b82f6; /* blue-500 — accent text on dark */
-  --landing-accent-soft: #60a5fa; /* blue-400 */
-  --landing-accent-strong: #2563eb; /* blue-600 — button fill so white text clears AA */
-}
-
-@theme inline {
-  --color-landing-ground: var(--landing-ground);
-  --color-landing-surface: var(--landing-surface);
-  --color-landing-surface-2: var(--landing-surface-2);
-  --color-landing-hairline: var(--landing-hairline);
-  --color-landing-ink: var(--landing-ink);
-  --color-landing-ink-muted: var(--landing-ink-muted);
-  --color-landing-ink-faint: var(--landing-ink-faint);
-  --color-landing-accent: var(--landing-accent);
-  --color-landing-accent-soft: var(--landing-accent-soft);
-  --color-landing-accent-strong: var(--landing-accent-strong);
-}
-
 /* Trace-card event entrance. Each row fades + lifts in on load, staggered by
    inline --trace-i. Reduced-motion users see the final state instantly. */
 @keyframes trace-in {
@@ -264,24 +231,6 @@ body {
 .font-mono {
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1, "zero" 1;
-}
-
-/* The trace card's ambient blue glow — placed behind the card, not the page.
-   Scoped to .trace-glow so it only appears on the landing hero. */
-.trace-glow::before {
-  content: "";
-  position: absolute;
-  inset: -20% -10% auto auto;
-  width: 80%;
-  height: 80%;
-  pointer-events: none;
-  background: radial-gradient(
-    60% 60% at 70% 30%,
-    color-mix(in oklab, var(--landing-accent) 22%, transparent),
-    transparent 70%
-  );
-  filter: blur(20px);
-  z-index: 0;
 }
 
 /* ── Entrance animations ─────────────────────────────────────────────────

@@ -4,21 +4,20 @@ import { Button } from "@agent-harness/ui"
 
 // Public marketing landing page — `/`.
 //
-// Design: big-type minimal, in the studio tradition (Vercel / Linear).
-// One neo-grotesque (Inter) drives the whole page; the hero headline spans
-// the viewport. Mono is the "data voice" — eyebrows, numerals, and the trace
-// card that sits beneath the hero statement as a live readout. Black/zinc
-// ground, blue reserved strictly as the accent (never a surface).
+// Design (§10.2 light identity): white/#F8FAFC ground, one blue accent doing
+// all the emphasis work, flat 1px borders, zero gradients. Geist drives the
+// display type; mono stays the "data voice" — eyebrows, numerals, and the
+// trace readout beneath the hero statement.
 
 export function LandingPage() {
   return (
-    <div className="min-h-screen bg-landing-ground text-landing-ink antialiased selection:bg-landing-accent/30 selection:text-landing-ink">
+    <div className="min-h-screen bg-background text-foreground antialiased selection:bg-primary/20 selection:text-foreground">
       {/* ── Nav ───────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-20 border-b border-landing-hairline bg-landing-ground/80 backdrop-blur-md">
+      <header className="sticky top-0 z-20 border-b border-border bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-[88rem] items-center justify-between px-6 lg:px-10">
-          <Link to="/" className="flex items-center gap-3 text-landing-ink">
+          <Link to="/" className="flex items-center gap-3 text-foreground">
             <span
-              className="grid size-6 place-items-center rounded-[5px] bg-landing-ink text-[11px] font-bold text-landing-ground"
+              className="grid size-6 place-items-center rounded-[5px] bg-primary text-[11px] font-bold text-white"
               aria-hidden
             >
               J
@@ -26,8 +25,8 @@ export function LandingPage() {
             <span className="text-[15px] font-semibold tracking-[-0.01em]">
               Job Agent
             </span>
-            <span className="ml-1 hidden items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-landing-ink-faint sm:inline-flex">
-              <span className="size-1 rounded-full bg-landing-accent" aria-hidden />
+            <span className="ml-1 hidden items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70 sm:inline-flex">
+              <span className="size-1 rounded-full bg-primary" aria-hidden />
               v1
             </span>
           </Link>
@@ -36,15 +35,11 @@ export function LandingPage() {
               asChild
               variant="ghost"
               size="sm"
-              className="text-landing-ink-muted hover:bg-white/5 hover:text-landing-ink"
+              className="text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Link to="/login">Sign in</Link>
             </Button>
-            <Button
-              asChild
-              size="sm"
-              className="bg-landing-accent-strong text-white hover:bg-landing-accent"
-            >
+            <Button asChild size="sm">
               <Link to="/signup">
                 Get started
                 <ArrowRight />
@@ -55,47 +50,33 @@ export function LandingPage() {
       </header>
 
       {/* ── Hero — full-width typographic statement ──────────────────── */}
-      <section className="relative overflow-hidden">
-        {/* Faint blue ambient at the top — barely there, reinforces "live" */}
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-[60vh]"
-          aria-hidden
-          style={{
-            background:
-              "radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, var(--landing-accent) 10%, transparent), transparent 70%)",
-          }}
-        />
-
-        <div className="relative mx-auto max-w-[88rem] px-6 pb-16 pt-20 sm:pt-28 lg:px-10 lg:pb-20 lg:pt-36">
+      <section>
+        <div className="mx-auto max-w-[88rem] px-6 pb-16 pt-20 sm:pt-28 lg:px-10 lg:pb-20 lg:pt-36">
           {/* Eyebrow */}
-          <p className="eyebrow mb-8 flex items-center gap-2.5 text-landing-ink-muted">
-            <span className="size-1.5 rounded-full bg-landing-accent" aria-hidden />
+          <p className="eyebrow mb-8 flex items-center gap-2.5 text-muted-foreground">
+            <span className="size-1.5 rounded-full bg-primary" aria-hidden />
             Autonomous job search
           </p>
 
           {/* The statement — spans the viewport */}
-          <h1 className="text-display-1 max-w-[16ch] text-landing-ink">
+          <h1 className="text-display-1 max-w-[16ch] text-foreground">
             A job search
             <br />
             that runs
             <br />
-            <span className="text-landing-accent">itself.</span>
+            <span className="text-primary">itself.</span>
           </h1>
 
           {/* Supporting line + CTAs — beneath the headline, not beside */}
           <div className="mt-12 flex flex-col gap-10 lg:flex-row lg:items-end lg:justify-between">
-            <p className="max-w-xl text-[17px] leading-[1.6] text-landing-ink-muted lg:text-[19px] lg:leading-[1.55]">
+            <p className="max-w-xl text-[17px] leading-[1.6] text-muted-foreground lg:text-[19px] lg:leading-[1.55]">
               The agent reads the boards you trust, scores every listing against
-              your profile, and drafts a cover letter for each match — while you
-              do literally anything else.
+              your profile, and drafts a tailored CV and cover letter for each
+              match — while you do literally anything else.
             </p>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <Button
-                asChild
-                size="lg"
-                className="bg-landing-accent-strong text-white hover:bg-landing-accent"
-              >
+              <Button asChild size="lg">
                 <Link to="/signup">
                   Start free
                   <ArrowRight />
@@ -105,42 +86,42 @@ export function LandingPage() {
                 asChild
                 size="lg"
                 variant="ghost"
-                className="text-landing-ink-muted hover:bg-white/5 hover:text-landing-ink"
+                className="text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 <Link to="/login">I have an account</Link>
               </Button>
             </div>
           </div>
 
-          <p className="eyebrow mt-7 text-landing-ink-faint">
+          <p className="eyebrow mt-7 text-muted-foreground/70">
             No card · 2-minute setup · cancel anytime
           </p>
         </div>
       </section>
 
       {/* ── The trace — wide live readout beneath the statement ───────── */}
-      <section className="border-t border-landing-hairline">
+      <section className="border-t border-border">
         <TraceCard />
       </section>
 
       {/* ── Proof bar ────────────────────────────────────────────────── */}
-      <section className="border-y border-landing-hairline bg-landing-surface/30">
+      <section className="border-y border-border bg-muted/40">
         <div className="mx-auto max-w-[88rem] px-6 py-5 lg:px-10">
-          <p className="eyebrow text-center text-landing-ink-muted">
-            <span className="text-landing-ink-faint">Reads the boards you trust —</span>{" "}
-            <span className="text-landing-ink normal-case tracking-normal">Hacker News</span>
-            <span className="text-landing-ink-faint"> · </span>
-            <span className="text-landing-ink normal-case tracking-normal">LinkedIn</span>
-            <span className="text-landing-ink-faint"> · </span>
-            <span className="text-landing-ink normal-case tracking-normal">your own list</span>
+          <p className="eyebrow text-center text-muted-foreground">
+            <span className="text-muted-foreground/70">Reads the boards you trust —</span>{" "}
+            <span className="text-foreground normal-case tracking-normal">Hacker News</span>
+            <span className="text-muted-foreground/70"> · </span>
+            <span className="text-foreground normal-case tracking-normal">LinkedIn</span>
+            <span className="text-muted-foreground/70"> · </span>
+            <span className="text-foreground normal-case tracking-normal">your own list</span>
           </p>
         </div>
       </section>
 
       {/* ── How it works — big numerals as architecture ──────────────── */}
       <section className="mx-auto max-w-[88rem] px-6 py-24 lg:px-10 lg:py-32">
-        <p className="eyebrow mb-6 text-landing-ink-faint">How it works</p>
-        <h2 className="text-display-2 max-w-[20ch] text-landing-ink">
+        <p className="eyebrow mb-6 text-muted-foreground/70">How it works</p>
+        <h2 className="text-display-2 max-w-[20ch] text-foreground">
           Three steps. Then you stop scrolling job boards.
         </h2>
 
@@ -148,32 +129,32 @@ export function LandingPage() {
           {STEPS.map((step, i) => (
             <div
               key={step.title}
-              className="grid grid-cols-1 gap-y-4 border-t border-landing-hairline py-10 sm:grid-cols-[6rem_1fr] sm:gap-x-12 lg:py-14"
+              className="grid grid-cols-1 gap-y-4 border-t border-border py-10 sm:grid-cols-[6rem_1fr] sm:gap-x-12 lg:py-14"
             >
               {/* Oversized mono numeral — the architecture, not decoration */}
-              <div className="text-numeral text-landing-ink-faint">
+              <div className="text-numeral text-muted-foreground/40">
                 {String(i + 1).padStart(2, "0")}
               </div>
               <div className="max-w-2xl">
-                <h3 className="text-display-2 text-[1.75rem] text-landing-ink sm:text-[2rem]">
+                <h3 className="text-display-2 text-[1.75rem] text-foreground sm:text-[2rem]">
                   {step.title}
                 </h3>
-                <p className="mt-4 text-[16px] leading-[1.65] text-landing-ink-muted lg:text-[17px]">
+                <p className="mt-4 text-[16px] leading-[1.65] text-muted-foreground lg:text-[17px]">
                   {step.body}
                 </p>
-                <p className="eyebrow mt-5 text-landing-accent">{step.tag}</p>
+                <p className="eyebrow mt-5 text-primary">{step.tag}</p>
               </div>
             </div>
           ))}
-          <div className="border-t border-landing-hairline" />
+          <div className="border-t border-border" />
         </div>
       </section>
 
       {/* ── Trust ────────────────────────────────────────────────────── */}
-      <section className="border-t border-landing-hairline bg-landing-surface/30">
+      <section className="border-t border-border bg-muted/40">
         <div className="mx-auto max-w-2xl px-6 py-24 text-center lg:py-32">
-          <p className="eyebrow text-landing-ink-faint">Your data stays yours</p>
-          <p className="mt-7 text-[17px] leading-[1.65] text-landing-ink-muted lg:text-[19px] lg:leading-[1.6]">
+          <p className="eyebrow text-muted-foreground/70">Your data stays yours</p>
+          <p className="mt-7 text-[17px] leading-[1.65] text-muted-foreground lg:text-[19px] lg:leading-[1.6]">
             Every account runs in its own isolated runtime. Your profile, jobs,
             and memory are never shared with another user. CVs live in encrypted
             object storage, not a shared database. Export or delete everything
@@ -184,17 +165,13 @@ export function LandingPage() {
 
       {/* ── Final CTA ────────────────────────────────────────────────── */}
       <section className="mx-auto max-w-[88rem] px-6 py-32 text-center lg:px-10 lg:py-40">
-        <h2 className="text-display-1 mx-auto max-w-[14ch] text-landing-ink">
+        <h2 className="text-display-1 mx-auto max-w-[14ch] text-foreground">
           Let the agent
           <br />
-          <span className="text-landing-accent">go to work.</span>
+          <span className="text-primary">go to work.</span>
         </h2>
         <div className="mt-12 flex justify-center">
-          <Button
-            asChild
-            size="lg"
-            className="bg-landing-accent-strong text-white hover:bg-landing-accent"
-          >
+          <Button asChild size="lg">
             <Link to="/signup">
               Create your free account
               <ArrowRight />
@@ -204,18 +181,18 @@ export function LandingPage() {
       </section>
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
-      <footer className="border-t border-landing-hairline">
+      <footer className="border-t border-border">
         <div className="mx-auto flex max-w-[88rem] flex-col items-center justify-between gap-3 px-6 py-8 lg:flex-row lg:px-10">
           <div className="flex items-center gap-2.5">
             <span
-              className="grid size-5 place-items-center rounded-[4px] bg-landing-ink text-[10px] font-bold text-landing-ground"
+              className="grid size-5 place-items-center rounded-[4px] bg-primary text-[10px] font-bold text-white"
               aria-hidden
             >
               J
             </span>
-            <span className="text-[13px] text-landing-ink-muted">Job Agent</span>
+            <span className="text-[13px] text-muted-foreground">Job Agent</span>
           </div>
-          <p className="eyebrow text-landing-ink-faint">
+          <p className="eyebrow text-muted-foreground/70">
             © {new Date().getFullYear()} Job Agent
           </p>
         </div>
@@ -234,26 +211,26 @@ export function LandingPage() {
 const TRACE_EVENTS = [
   { t: "09:41", action: "search", source: "hn/whoishiring", n: "47 found" },
   { t: "09:41", action: "score", source: "vs. your profile", n: "47 → 12" },
-  { t: "09:42", action: "draft", source: "cover letters", n: "3 written" },
+  { t: "09:42", action: "tailor", source: "CV + cover letters", n: "3 drafted" },
   { t: "09:42", action: "queue", source: "for your review", n: "12 ready" },
 ] as const
 
 function TraceCard() {
   return (
     <div className="mx-auto max-w-[88rem] px-6 py-16 lg:px-10 lg:py-20">
-      <div className="overflow-hidden rounded-xl border border-landing-hairline bg-landing-surface-2 shadow-2xl shadow-black/40">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
         {/* Run header / window chrome */}
-        <div className="flex items-center justify-between border-b border-landing-hairline px-5 py-3.5 sm:px-7">
+        <div className="flex items-center justify-between border-b border-border bg-muted/30 px-5 py-3.5 sm:px-7">
           <div className="flex items-center gap-2.5">
-            <span className="size-2.5 rounded-full bg-landing-hairline" aria-hidden />
-            <span className="size-2.5 rounded-full bg-landing-hairline" aria-hidden />
-            <span className="size-2.5 rounded-full bg-landing-hairline" aria-hidden />
-            <span className="ml-3 eyebrow text-landing-ink-faint">run.log</span>
+            <span className="size-2.5 rounded-full bg-border" aria-hidden />
+            <span className="size-2.5 rounded-full bg-border" aria-hidden />
+            <span className="size-2.5 rounded-full bg-border" aria-hidden />
+            <span className="ml-3 eyebrow text-muted-foreground/70">run.log</span>
           </div>
-          <div className="flex items-center gap-2 font-mono text-[11px] text-landing-ink-faint">
+          <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground/70">
             <span className="hidden sm:inline">RUN · just now</span>
-            <span className="flex items-center gap-1.5 text-landing-accent">
-              <span className="size-1.5 animate-pulse rounded-full bg-landing-accent" aria-hidden />
+            <span className="flex items-center gap-1.5 text-primary">
+              <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />
               live
             </span>
           </div>
@@ -264,7 +241,7 @@ function TraceCard() {
           {TRACE_EVENTS.map((ev, i) => (
             <div
               key={`${ev.t}-${ev.action}`}
-              className="grid grid-cols-[3.5rem_5rem_1fr_auto] items-center gap-x-3 border-b border-landing-hairline/60 py-3 last:border-b-0 sm:grid-cols-[4rem_5.5rem_1fr_auto] sm:gap-x-6 sm:py-3.5"
+              className="grid grid-cols-[3.5rem_5rem_1fr_auto] items-center gap-x-3 border-b border-border/60 py-3 last:border-b-0 sm:grid-cols-[4rem_5.5rem_1fr_auto] sm:gap-x-6 sm:py-3.5"
               style={{
                 // Stagger the entrance so the trace "types itself" in. The
                 // global prefers-reduced-motion rule clamps this to instant.
@@ -273,10 +250,10 @@ function TraceCard() {
                 animationDelay: `${200 + i * 120}ms`,
               }}
             >
-              <span className="text-landing-ink-faint tabular-nums">{ev.t}</span>
-              <span className="text-landing-ink">{ev.action}</span>
-              <span className="truncate text-landing-ink-muted">{ev.source}</span>
-              <span className="text-landing-accent tabular-nums">{ev.n}</span>
+              <span className="text-muted-foreground/70 tabular-nums">{ev.t}</span>
+              <span className="text-foreground">{ev.action}</span>
+              <span className="truncate text-muted-foreground">{ev.source}</span>
+              <span className="text-primary tabular-nums">{ev.n}</span>
             </div>
           ))}
         </div>
@@ -284,9 +261,9 @@ function TraceCard() {
         {/* Footer / open the trace */}
         <Link
           to="/signup"
-          className="flex items-center justify-between border-t border-landing-hairline px-5 py-3.5 text-[13px] text-landing-ink-muted transition-colors hover:bg-white/[0.03] hover:text-landing-ink sm:px-7"
+          className="flex items-center justify-between border-t border-border px-5 py-3.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground sm:px-7"
         >
-          <span className="eyebrow text-landing-ink-muted">Open the trace</span>
+          <span className="eyebrow text-muted-foreground">Open the trace</span>
           <ArrowRight className="size-3.5" />
         </Link>
       </div>
@@ -309,7 +286,7 @@ const STEPS = [
   },
   {
     title: "You review and apply.",
-    body: "Approve the shortlist. Tweak the drafted cover letter. Apply. Repeat weekly without the grind — the agent remembers what you liked and what to skip.",
+    body: "Approve the shortlist. Tweak the tailored CV and drafted cover letter. Apply — the agent can even help you fill the form in your own browser. Repeat weekly without the grind.",
     tag: "you · 10 min",
   },
 ]
