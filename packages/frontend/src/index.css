@@ -1,5 +1,6 @@
-/* Geist (display/UI) + Open Sans (body) — the only two families. Trace/log
-   payloads fall back to the system mono stack (see --font-mono). */
+/* Geist (display/UI/data) + Open Sans (body) — the only two families. The
+   "data voice" (trace payloads, logs, cron expressions, eyebrows) is Geist
+   as well, per the two-family rule. */
 @import url('https://fonts.googleapis.com/css2?family=Geist:ital,wght@0,100..900;1,100..900&family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -60,6 +61,11 @@
 
   /* 8px inputs/buttons (sm), 12px cards (lg), 16px modals (xl). */
   --radius: 0.75rem;
+
+  /* Type-scale floor: body text defaults to 16px and the smallest named
+     step (text-xs) is 14px — no 12px dashboard text. */
+  --text-xs: 0.875rem;
+  --text-xs--line-height: 1.25rem;
 }
 
 /* Map CSS variables onto Tailwind utility names (--color-* → bg-*, text-*,
@@ -105,15 +111,14 @@
      active slot shows no blinking caret. */
   --animate-caret-blink: caret-blink 1.25s ease-out infinite;
 
-  /* Type system: Geist is the display/UI voice, Open Sans the reading voice.
-     Mono is the system stack — reserved for trace payloads, logs, and cron
-     expressions (per §10.2 typography rules). */
+  /* Type system: Geist is the display/UI voice AND the data voice (traces,
+     logs, cron expressions); Open Sans is the reading voice. Two families,
+     no third. */
   --font-display: "Geist", "Open Sans", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, sans-serif;
   --font-sans: "Open Sans", "Geist", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --font-mono: "Geist", "Open Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
 @keyframes accordion-down {
@@ -160,6 +165,20 @@
   }
 }
 
+/* ── Global border color ──────────────────────────────────────────────────
+   Tailwind v4's bare `border` utility sets width only — the color falls
+   back to currentColor, which on the light theme painted DARK borders on
+   every element that used `border` without an explicit color class. Pin the
+   default to the light token globally (the shadcn base-layer rule this
+   stylesheet was missing). */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+}
+
 /* Global resets + base styling for the light SPA. */
 html,
 body,
@@ -167,8 +186,13 @@ body,
   height: 100%;
 }
 
+html {
+  font-size: 100%; /* 16px root — text-base stays 16, text-sm 14 */
+}
+
 body {
   font-family: var(--font-sans);
+  font-size: 1rem; /* body defaults to 16px; secondary text is 14px (text-sm) */
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -227,7 +251,8 @@ body {
   font-feature-settings: "tnum" 1;
 }
 
-/* Monospace helper for the trace card + numeric readouts. */
+/* Monospace *slot* helper for the trace card + numeric readouts — renders
+   in Geist (the data voice), keeping tabular numerals for aligned columns. */
 .font-mono {
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1, "zero" 1;
