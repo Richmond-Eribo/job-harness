@@ -47,18 +47,16 @@ export const Route = createRootRouteWithContext()({
         content:
           "An AI agent that finds jobs, scores them, and writes cover letters.",
       },
-      { name: "color-scheme", content: "dark light" },
+      { name: "color-scheme", content: "light" },
     ],
     links: [
+      // Fonts (Geist + Open Sans) load via the @import at the top of
+      // index.css; these preconnects warm up the font origins.
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       {
         rel: "preconnect",
         href: "https://fonts.gstatic.com",
         crossOrigin: "anonymous",
-      },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap",
       },
     ],
   }),
@@ -89,7 +87,7 @@ function RootComponent() {
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <head>
         <HeadContent />
       </head>

@@ -45,6 +45,12 @@ import {
 } from "lucide-react"
 import { authClient, signOutClient } from "../lib/auth"
 import { Button, Skeleton } from "@agent-harness/ui"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@agent-harness/ui"
 import { useBrowserStatus, useNotifications } from "../hooks/queries"
 import { queryClient } from "./query-client"
 
@@ -162,7 +168,7 @@ export function Shell() {
                 Job Agent
               </span>
             </Link>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-muted-foreground bg-secondary rounded border border-border">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-muted-foreground bg-muted rounded border border-border">
               <Sparkles className="size-3 text-primary" />
               v1.0
             </span>
@@ -195,10 +201,12 @@ export function Shell() {
                 <Link
                   key={item.id}
                   to={item.id}
-                  className={`group relative flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-all duration-150 ${
+                  className={`group relative flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors duration-150 ${
                     active
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                      ? // nav-state-active: muted-blue pill + primary-blue
+                        // icon/text per §10.2.
+                        "bg-accent text-primary font-medium"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                   }`}
                 >
                   <div className="flex items-center gap-3">
@@ -216,9 +224,10 @@ export function Shell() {
           </nav>
         </div>
 
-        {/* User Profile Footer */}
+        {/* User Profile Footer — sign-out stays visually separated
+            (destructive-nav-separation per §10.2): its own bordered row. */}
         <div className="p-3 border-t border-border bg-card">
-          <div className="flex items-center justify-between p-2 rounded-lg bg-background/50 border border-border mb-2">
+          <div className="flex items-center justify-between p-2 rounded-lg bg-muted/50 border border-border mb-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="size-7 rounded-full bg-primary/20 text-primary grid place-items-center text-xs font-semibold shrink-0">
                 {monogram}
@@ -243,7 +252,7 @@ export function Shell() {
       {/* Right Content Area with Header Bar */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Top Header Bar */}
-        <header className="h-14 border-b border-border bg-card/50 px-4 sm:px-6 flex items-center justify-between shrink-0">
+        <header className="h-14 border-b border-border bg-card px-4 sm:px-6 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             {/* Mobile hamburger — toggles the off-canvas drawer (lg:hidden). */}
             <Button
@@ -267,8 +276,8 @@ export function Shell() {
                 silently invisible. Links to Settings → Browser tab. */}
             <ExtensionStatusPill />
             <NotificationsBell />
-            <span className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground font-mono bg-background border border-border px-2.5 py-1 rounded-md">
-              <span className="size-2 rounded-full bg-success animate-pulse" />
+            <span className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground bg-card border border-border px-2.5 py-1 rounded-md">
+              <span className="size-2 rounded-full bg-success" />
               <span>Runtime Online</span>
             </span>
           </div>
@@ -306,10 +315,11 @@ export function ExtensionStatusPill() {
       : target === "managed"
         ? "Managed browser"
         : "No browser"
+  // color-not-only: the dot always carries a text label (§10.2).
   const dotClass = isOk
     ? target === "managed"
       ? "bg-primary"
-      : "bg-success animate-pulse"
+      : "bg-success"
     : "bg-destructive"
 
   return (
@@ -320,13 +330,13 @@ export function ExtensionStatusPill() {
           ? "Browser relay connected — click to manage"
           : "No browser connected — click to pair the extension"
       }
-      className="flex items-center gap-2 text-xs font-mono bg-background border border-border px-2.5 py-1 rounded-md hover:border-primary/40 hover:bg-accent/30 transition-colors"
+      className="flex items-center gap-2 text-xs bg-card border border-border px-2.5 py-1 rounded-md hover:border-primary/40 hover:bg-accent/40 transition-colors"
     >
-      <Chrome className={`size-3.5 ${isOk ? "" : "text-destructive"}`} />
+      <Chrome className={`size-3.5 ${isOk ? "text-muted-foreground" : "text-destructive"}`} />
       <span className={`size-2 rounded-full ${dotClass}`} />
       <span
         className={`hidden md:inline ${
-          isOk ? "text-muted-foreground" : "text-destructive"
+          isOk ? "text-muted-foreground" : "text-destructive font-medium"
         }`}
       >
         {label}
@@ -335,98 +345,70 @@ export function ExtensionStatusPill() {
   )
 }
 
-// Notifications bell — surfaces the previously-dead useNotifications hook
-// (added in v4 but never rendered anywhere). Lightweight dropdown: click the
-// bell, see the latest N notifications, click one to dismiss. Built without a
-// full DropdownMenu primitive (not in @agent-harness/ui yet — see plan
-// Phase 1.5) using a controlled visibility state + outside-click handler.
-// Polls every 15s via useNotifications' refetchInterval.
+// Notifications bell — surfaces the useNotifications hook (polled every 15s)
+// in a Radix DropdownMenu. Focus management, Escape, and outside-click are
+// handled by the primitive — no hand-rolled listeners.
 export function NotificationsBell() {
   const { data } = useNotifications()
-  const [open, setOpen] = useState(false)
-
-  // Close on Escape + on outside click. Simpler than wiring Radix Popover
-  // (which would work but add a dep on the not-yet-added @agent-harness/ui
-  // Popover primitive).
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false)
-    }
-    const onPointer = (e: PointerEvent) => {
-      // The dropdown + button both live inside a single wrapping container
-      // with data-notification-root — anything else is an outside click.
-      const root = document.querySelector("[data-notification-root]")
-      if (root && !root.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("keydown", onKey)
-    document.addEventListener("pointerdown", onPointer)
-    return () => {
-      document.removeEventListener("keydown", onKey)
-      document.removeEventListener("pointerdown", onPointer)
-    }
-  }, [open])
 
   const items = Array.isArray(data) ? data.slice(0, 12) : []
   const count = items.length
 
   return (
-    <div className="relative" data-notification-root>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="relative"
-        aria-label={`Notifications${count > 0 ? ` (${count} new)` : ""}`}
-        onClick={() => setOpen(o => !o)}
-      >
-        <Bell className="size-4" />
-        {count > 0 && (
-          <span
-            className="absolute -top-0.5 -right-0.5 size-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold grid place-items-center"
-            aria-hidden
-          >
-            {count > 9 ? "9+" : count}
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="relative"
+          aria-label={`Notifications${count > 0 ? ` (${count} new)` : ""}`}
+        >
+          <Bell className="size-4" />
+          {count > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 size-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold grid place-items-center"
+              aria-hidden
+            >
+              {count > 9 ? "9+" : count}
+            </span>
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80 max-w-[calc(100vw-2rem)] p-0">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+          <DropdownMenuLabel className="p-0 text-xs font-semibold text-foreground uppercase tracking-wider">
+            Notifications
+          </DropdownMenuLabel>
+          <span className="text-[10px] text-muted-foreground font-mono">
+            {count} recent
           </span>
-        )}
-      </Button>
-
-      {open && (
-        <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden animate-fade-in">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <span className="text-xs font-semibold text-foreground uppercase tracking-wider">
-              Notifications
-            </span>
-            <span className="text-[10px] text-muted-foreground font-mono">
-              {count} recent
-            </span>
-          </div>
-          <div className="max-h-96 overflow-auto">
-            {count === 0 ? (
-              <div className="p-6 text-center text-xs text-muted-foreground">
-                Nothing needs you right now.
-              </div>
-            ) : (
-              <ul className="divide-y divide-border">
-                {items.map(n => (
-                  <li
-                    key={String(n.id ?? `${n.message}-${n.createdAt ?? ""}`)}
-                    className="px-4 py-3 hover:bg-accent/30 transition-colors"
-                  >
-                    <p className="text-xs text-foreground leading-relaxed">
-                      {n.message}
-                    </p>
-                    {n.createdAt && (
-                      <p className="text-[10px] text-muted-foreground mt-1 font-mono">
-                        {new Date(n.createdAt).toLocaleString()}
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
         </div>
-      )}
-    </div>
+        <div className="max-h-96 overflow-auto">
+          {count === 0 ? (
+            <div className="p-6 text-center text-xs text-muted-foreground">
+              Nothing needs you right now.
+            </div>
+          ) : (
+            <ul className="divide-y divide-border">
+              {items.map(n => (
+                <li
+                  key={String(n.id ?? `${n.message}-${n.createdAt ?? ""}`)}
+                  className="px-4 py-3"
+                >
+                  <p className="text-xs text-foreground leading-relaxed">
+                    {n.message}
+                  </p>
+                  {n.createdAt && (
+                    <p className="text-[10px] text-muted-foreground mt-1 font-mono">
+                      {new Date(n.createdAt).toLocaleString()}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

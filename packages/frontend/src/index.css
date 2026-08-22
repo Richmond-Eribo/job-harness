@@ -1,3 +1,6 @@
+/* Geist (display/UI) + Open Sans (body) — the only two families. Trace/log
+   payloads fall back to the system mono stack (see --font-mono). */
+@import url('https://fonts.googleapis.com/css2?family=Geist:ital,wght@0,100..900;1,100..900&family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -8,59 +11,60 @@
 
 /* Map the `dark:` variant onto the `.dark` class on <html>. shadcn components
    ship `dark:*` utilities (e.g. `dark:bg-input/30`); without this they would
-   key off prefers-color-scheme instead of the class. */
+   key off prefers-color-scheme instead of the class. The app is light-only —
+   no .dark class is set — so those utilities stay inert. */
 @custom-variant dark (&:is(.dark *));
 
 /* ─────────────────────────────────────────────────────────────────────────
-   shadcn/ui semantic tokens (Tailwind v4). The app is dark-first: the dark
-   values live directly in :root so there's no theme toggle, and the same
-   values are mirrored under .dark so dark:-scoped utilities resolve to them.
-   Each value already includes hsl() so @theme inline can reference the bare
-   variable and opacity modifiers (bg-primary/90) resolve via color-mix().
+   shadcn/ui semantic tokens (Tailwind v4) — light, flat, professional SaaS
+   per docs/PROJECT_PLAN.md §10.2: white surfaces, one blue accent (#2563EB)
+   doing all the emphasis work, 1px #E2E8F0 borders instead of shadows.
    ───────────────────────────────────────────────────────────────────────── */
-:root,
-.dark {
-  --background: hsl(222 47% 11%); /* ink-950 #0f172a */
-  --foreground: hsl(213 31% 92%); /* soft slate-100 */
+:root {
+  --background: #f8fafc; /* app canvas */
+  --foreground: #1e293b; /* body text on white */
 
-  --card: hsl(222 44% 15%); /* slightly lighter than bg for layering */
-  --card-foreground: hsl(213 31% 92%);
+  --card: #ffffff;
+  --card-foreground: #1e293b;
 
-  --popover: hsl(222 47% 14%);
-  --popover-foreground: hsl(213 31% 92%);
+  --popover: #ffffff;
+  --popover-foreground: #1e293b;
 
-  --primary: hsl(217 91% 60%); /* blue-500 */
-  --primary-foreground: hsl(0 0% 100%);
+  --primary: #2563eb; /* CTAs, active nav, links, focus, data accents */
+  --primary-foreground: #ffffff;
 
-  --secondary: hsl(215 28% 24%); /* raised slate surface */
-  --secondary-foreground: hsl(213 31% 92%);
+  --secondary: #3b82f6; /* hover state of primary, secondary buttons */
+  --secondary-foreground: #ffffff;
 
-  --muted: hsl(215 25% 22%);
-  --muted-foreground: hsl(215 20% 60%); /* softer, more legible than before */
+  --muted: #e9eff8; /* subtle fills, hover rows, skeleton bases */
+  --muted-foreground: #64748b; /* secondary text, labels, timestamps */
 
-  --accent: hsl(217 35% 26%);
-  --accent-foreground: hsl(213 31% 92%);
+  --accent: #e9eff8; /* nav/hover surface */
+  --accent-foreground: #1e293b;
 
-  --destructive: hsl(0 72% 51%);
-  --destructive-foreground: hsl(0 0% 100%);
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
 
-  --success: hsl(152 56% 48%);
-  --success-foreground: hsl(0 0% 100%);
+  --success: #059669; /* Ready / Connected states */
+  --success-foreground: #ffffff;
 
-  --warning: hsl(38 92% 55%);
-  --warning-foreground: hsl(0 0% 100%);
+  --warning: #d97706; /* Paused / degraded states */
+  --warning-foreground: #ffffff;
 
-  --border: hsl(215 25% 26%);
-  --input: hsl(215 25% 24%);
-  --ring: hsl(217 91% 60%);
+  --interview: #7c3aed; /* kanban Interview status accent */
+  --interview-foreground: #ffffff;
 
-  --radius: 0.625rem;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #2563eb;
+
+  /* 8px inputs/buttons (sm), 12px cards (lg), 16px modals (xl). */
+  --radius: 0.75rem;
 }
 
 /* Map CSS variables onto Tailwind utility names (--color-* → bg-*, text-*,
    border-*). `inline` substitutes the var reference directly so runtime
-   alpha modifiers work via color-mix(). The `ink` slate palette is kept as
-   literal colors for the few legacy pages still using ink-* classes. */
+   alpha modifiers work via color-mix(). */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -82,18 +86,11 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-interview: var(--interview);
+  --color-interview-foreground: var(--interview-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-
-  /* Legacy slate palette (kept until the dashboard restyle removes all ink-*). */
-  --color-ink-950: #0f172a;
-  --color-ink-900: #1e293b;
-  --color-ink-800: #334155;
-  --color-ink-700: #475569;
-  --color-ink-500: #64748b;
-  --color-ink-300: #cbd5e1;
-  --color-ink-100: #e2e8f0;
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -107,6 +104,16 @@
      Without this --animate-* entry the keyframes below never wire up and the
      active slot shows no blinking caret. */
   --animate-caret-blink: caret-blink 1.25s ease-out infinite;
+
+  /* Type system: Geist is the display/UI voice, Open Sans the reading voice.
+     Mono is the system stack — reserved for trace payloads, logs, and cron
+     expressions (per §10.2 typography rules). */
+  --font-display: "Geist", "Open Sans", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Open Sans", "Geist", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
 }
 
 @keyframes accordion-down {
@@ -141,14 +148,13 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Landing page — scoped tokens & type.
-   The marketing surface uses a black/zinc ground with blue reserved as the
-   accent (never a surface). These are namespaced under --landing-* and mapped
-   to Tailwind via @theme inline below, so they don't disturb the dashboard's
-   dark-first token system.
+   Landing page — scoped tokens (TEMPORARY).
+   The legacy landing/auth marketing surface still uses this near-black zinc
+   set. It is retired together with the LandingPage light rebuild — until
+   then these stay namespaced under --landing-* so the dashboard's light
+   token system is untouched.
    ───────────────────────────────────────────────────────────────────────── */
-:root,
-.dark {
+:root {
   --landing-ground: #0a0a0b; /* near-black, slightly warm */
   --landing-surface: #141416; /* raised cards */
   --landing-surface-2: #1c1c20; /* the trace card */
@@ -172,15 +178,6 @@
   --color-landing-accent: var(--landing-accent);
   --color-landing-accent-soft: var(--landing-accent-soft);
   --color-landing-accent-strong: var(--landing-accent-strong);
-
-  /* Display + mono faces for the landing page. The display is Inter — a
-     neo-grotesque — driven hard at large sizes with tight tracking. One
-     family carries the whole design; JetBrains Mono is the "data voice"
-     for eyebrows, labels, numerals, and the trace card. */
-  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
-    monospace;
 }
 
 /* Trace-card event entrance. Each row fades + lifts in on load, staggered by
@@ -196,7 +193,7 @@
   }
 }
 
-/* Global resets + base styling for the dark SPA. */
+/* Global resets + base styling for the light SPA. */
 html,
 body,
 #root {
@@ -204,8 +201,7 @@ body,
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -215,27 +211,23 @@ body {
   color: var(--foreground);
 }
 
-/* ─── Landing typography ─────────────────────────────────────────────────
-   One neo-grotesque (Inter) drives the whole design. The display scale uses
-   fluid clamps so the headline spans the viewport on desktop and stays
-   controlled on mobile. Tracking tightens as size grows (standard grotesque
-   practice). Tabular numerals everywhere there's data.
-   ─────────────────────────────────────────────────────────────────────── */
+/* ─── Display typography ──────────────────────────────────────────────────
+   Geist drives headings/display; the landing scale uses fluid clamps so the
+   headline spans the viewport on desktop and stays controlled on mobile.
+   Tabular numerals everywhere there's data.                       */
 .font-display {
   font-family: var(--font-display);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* The hero statement. Spans the viewport on desktop, breathes on mobile.
-   ~88px → ~112px between the common breakpoints. */
+/* The hero statement. Spans the viewport on desktop, breathes on mobile. */
 .text-display-1 {
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: -0.045em;
   line-height: 0.92;
   font-size: clamp(2.75rem, 9vw, 7rem);
-  font-feature-settings: "ss01" 1, "cv11" 1; /* alt single-story a, etc. */
 }
 
 /* Section titles. */
@@ -318,14 +310,14 @@ body {
 .stagger-child { animation-delay: calc(var(--stagger-i, 0) * 60ms); }
 
 /* ── Focus-visible ──────────────────────────────────────────────────────
-   Consistent keyboard-focus ring across all interactive elements.         */
+   Consistent 2px keyboard-focus ring across all interactive elements.     */
 :focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
 
-/* Thin scrollbars to match the dark theme. */
+/* Thin light scrollbars to match the light theme. */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -334,7 +326,7 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--secondary);
+  background: var(--border);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: padding-box;

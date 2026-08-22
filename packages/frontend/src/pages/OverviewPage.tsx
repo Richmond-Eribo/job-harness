@@ -15,7 +15,9 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Progress,
   Skeleton,
+  cn,
   Dialog,
   DialogContent,
   DialogHeader,
@@ -23,6 +25,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@agent-harness/ui"
+import { STATUS_META, STATUS_ORDER } from "@/lib/status"
 import { toast } from "sonner"
 import {
   Briefcase,
@@ -67,23 +70,8 @@ const PREFLIGHT_ITEMS: Record<
   },
 }
 
-const STAGES = [
-  "discovered",
-  "draft",
-  "applied",
-  "interview",
-  "offer",
-  "rejected",
-] as const
-
-const STAGE_ACCENT: Record<string, string> = {
-  discovered: "border-t-muted-foreground/40",
-  draft: "border-t-primary",
-  applied: "border-t-warning",
-  interview: "border-t-violet-400",
-  offer: "border-t-success",
-  rejected: "border-t-destructive/60",
-}
+// Stat-card / kanban accents come from the shared STATUS_META map
+// (src/lib/status.ts) — one source of truth for status colors everywhere.
 
 export function OverviewPage() {
   const {
@@ -241,22 +229,31 @@ export function OverviewPage() {
         </div>
       </div>
 
-      {/* 6 Stage Breakdown Cards Grid */}
+      {/* 6 Stage Breakdown Cards — white card, 1px border, small muted label,
+          large tabular number, thin left accent bar in the status color
+          (§10.2). */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        {STAGES.map((stage, i) => (
+        {STATUS_ORDER.map((stage, i) => (
           <Card
             key={stage}
-            className={`py-3.5 border-t-2 ${STAGE_ACCENT[stage]} animate-slide-up stagger-child`}
+            className="relative py-3.5 overflow-hidden animate-slide-up stagger-child"
             style={{ "--stagger-i": i } as React.CSSProperties}
           >
+            <span
+              aria-hidden
+              className={cn(
+                "absolute left-0 top-3 bottom-3 w-1 rounded-full",
+                STATUS_META[stage].barClass,
+              )}
+            />
             <CardContent className="px-4">
-              <div className="text-xs text-muted-foreground capitalize font-medium mb-1">
-                {stage}
+              <div className="text-xs text-muted-foreground font-medium mb-1">
+                {STATUS_META[stage].label}
               </div>
               {pipelineLoading ? (
                 <Skeleton className="h-8 w-10" />
               ) : (
-                <div className="text-2xl font-bold font-mono tabular-nums tracking-tight">
+                <div className="text-2xl font-bold tabular-nums tracking-tight">
                   {stats.byStatus?.[stage] ?? 0}
                 </div>
               )}
@@ -318,10 +315,13 @@ export function OverviewPage() {
                             {job.title}
                           </h3>
                           <Badge
-                            variant="secondary"
-                            className="capitalize text-[11px] font-medium shrink-0"
+                            variant="ghost"
+                            className={cn(
+                              "text-[11px] font-medium shrink-0",
+                              STATUS_META[job.status].badgeClass,
+                            )}
                           >
-                            {job.status}
+                            {STATUS_META[job.status].label}
                           </Badge>
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
@@ -330,19 +330,19 @@ export function OverviewPage() {
                       </div>
 
                       {score != null && (
-                        <div className="text-right shrink-0">
-                          <div className="text-xs font-mono font-semibold text-foreground">
-                            {score}%{" "}
-                            <span className="text-[10px] text-muted-foreground font-sans">
+                        <div className="text-right shrink-0 w-24">
+                          <div className="text-xs font-semibold tabular-nums text-foreground">
+                            {score}%
+                            <span className="text-[10px] text-muted-foreground font-normal">
+                              {" "}
                               match
                             </span>
                           </div>
-                          <div className="w-16 bg-secondary h-1.5 rounded-full mt-1.5 overflow-hidden">
-                            <div
-                              className="bg-primary h-full rounded-full transition-all"
-                              style={{ width: `${score}%` }}
-                            />
-                          </div>
+                          <Progress
+                            value={score}
+                            className="h-1.5 mt-1.5"
+                            aria-label={`Match score ${score}%`}
+                          />
                         </div>
                       )}
                     </div>
@@ -364,7 +364,7 @@ export function OverviewPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between p-3 bg-secondary/40 rounded-lg border border-border">
+              <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border border-border">
                 <span className="text-xs text-muted-foreground">
                   Execution State
                 </span>
@@ -402,7 +402,7 @@ export function OverviewPage() {
                       </span>
                       <span
                         className={`font-medium ${
-                          ok ? "text-success" : "text-warning"
+                          ok ? "text-emerald-700" : "text-amber-700"
                         }`}
                       >
                         {ok ? "Ready" : "Needed"}
