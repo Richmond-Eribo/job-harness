@@ -61,3 +61,8 @@ IS_LOCAL_DEV="true"
 # Setting a dedicated value lets you rotate extension tokens without
 # invalidating every web session. Generate one: `openssl rand -hex 32`
 # EXTENSION_TOKEN_SECRET=""
+
+# E2E-only OTP bypass: when "1", verification codes are the deterministic
+# "999999" so the Playwright suite can complete signup without reading email.
+# Local dev ONLY — never set in production deploys.
+# E2E_OTP_BYPASS=1

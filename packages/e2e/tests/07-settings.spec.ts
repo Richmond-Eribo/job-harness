@@ -24,19 +24,22 @@ test.describe("settings", () => {
     await expect(page.getByRole("heading", { name: /^settings$/i })).toBeVisible()
 
     // The form hydrates from GET /api/profile. Wait for the location field.
-    const location = page.getByLabel(/location/i)
+    // Exact match — "Target locations" also matches /location/i.
+    const location = page.getByLabel("Current Location", { exact: true })
     await expect(location).toBeVisible({ timeout: 15_000 })
 
     // Edit a field with a unique value.
     const newLocation = `E2E City ${Date.now()}`
     await location.fill(newLocation)
 
-    await page.getByRole("button", { name: /save profile/i }).click()
+    await page.getByRole("button", { name: /save all settings/i }).click()
     await expect(page.getByText(/profile saved/i)).toBeVisible({ timeout: 10_000 })
 
     // Reload — the saved value should round-trip from the API.
     await page.reload()
-    await expect(page.getByLabel(/location/i)).toHaveValue(newLocation, { timeout: 15_000 })
+    await expect(
+      page.getByLabel("Current Location", { exact: true }),
+    ).toHaveValue(newLocation, { timeout: 15_000 })
   })
 
   test("CV upload + download round-trip", async ({ userAPage: page }) => {
@@ -47,7 +50,7 @@ test.describe("settings", () => {
 
     // Upload the fixture PDF.
     await cvInput.setInputFiles(CV_PATH)
-    await page.getByRole("button", { name: /^upload$/i }).click()
+    await page.getByRole("button", { name: /upload cv/i }).click()
 
     // Either the success toast appears (happy path) OR — if the relative-URL
     // bug is still present — an error toast. Surface both outcomes explicitly.

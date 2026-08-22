@@ -10,10 +10,12 @@ import { E2E_WEB_URL } from "../fixtures/env"
 test.describe("activity log", () => {
   test("logs page renders", async ({ userAPage: page }) => {
     await page.goto(`${E2E_WEB_URL}/logs`)
-    await expect(page.getByRole("heading", { name: /activity console/i })).toBeVisible()
+    await expect(page.getByRole("heading", { name: /activity log/i })).toBeVisible()
 
-    // The search filter should be present regardless of whether entries exist.
-    await expect(page.getByPlaceholder(/search log action or output payload/i)).toBeVisible()
+    // The page subtitle — present regardless of whether entries exist.
+    await expect(
+      page.getByText(/chronological record of every agent action/i),
+    ).toBeVisible()
   })
 
   test("log entries (if any) render as a list", async ({ userAPage: page }) => {

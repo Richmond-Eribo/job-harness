@@ -289,9 +289,14 @@ export function useSetJobStatus() {
     onError: (_e, _p, ctx) => {
       if (ctx?.prev) qc.setQueryData(["pipeline"], ctx.prev)
     },
-    onSettled: () => {
+    onSettled: (_data, _error, p) => {
       qc.invalidateQueries({ queryKey: ["pipeline"] })
       qc.invalidateQueries({ queryKey: ["follow-ups"] })
+      if (p?.jobId != null) {
+        // The job detail page reads its own ["job", id] cache — refresh it so
+        // the header badge + auto-created follow-up appear without a remount.
+        qc.invalidateQueries({ queryKey: ["job", p.jobId] })
+      }
     },
   })
 }

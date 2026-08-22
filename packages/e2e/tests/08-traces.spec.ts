@@ -13,7 +13,7 @@ test.describe("traces", () => {
   test("traces list page renders", async ({ userAPage: page }) => {
     await page.goto(`${E2E_WEB_URL}/traces`)
     await expect(
-      page.getByRole("heading", { name: /agent execution traces/i }),
+      page.getByRole("heading", { name: /traces/i }),
     ).toBeVisible()
     // The page either shows run cards or an empty state — either is fine; we
     // just assert the shell rendered.

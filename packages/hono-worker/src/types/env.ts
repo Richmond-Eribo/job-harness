@@ -78,6 +78,10 @@ export interface Env {
   // Resend API key for magic-link delivery. When empty, magic links are logged
   // to the console + surfaced via a dev-only response header (no email sent).
   RESEND_API_KEY?: string
+  // E2E-only: when "1", verification OTPs are the deterministic "999999" so
+  // the Playwright suite can complete signup without reading email. Set ONLY
+  // in local .dev.vars — never in production. (See auth.ts generateOTP.)
+  E2E_OTP_BYPASS?: string
   // Public base URL of the API deployment (e.g. https://api.example.com). Used
   // by Better Auth to build absolute callback URLs and as a trusted CORS origin.
   BETTER_AUTH_URL?: string

@@ -24,7 +24,13 @@ import { AuthShowcase } from "../components/AuthShowcase"
 //   2. Verify   — 6-digit OTP via the segmented input-otp component → verifyEmail
 //                 → writes names to profile KV → navigate to /dashboard.
 type Step = "account" | "verify"
-type SignupState = { error?: string }
+// `nonce` bumps on every completed action. React 19's post-action form reset
+// blanks the DOM value of controlled inputs (name/email) while their state is
+// unchanged — no re-render restores them, and their `required` constraint then
+// silently blocks every resubmit. Rekeying the form on the nonce remounts the
+// controls from state after each attempt, restoring the visible values and
+// keeping submits flowing.
+type SignupState = { error?: string; nonce?: number }
 
 export function SignupPage() {
   const navigate = useNavigate()
@@ -109,6 +115,11 @@ export function SignupPage() {
     SignupState,
     FormData
   >(async (_prev, fd) => {
+    // Every terminal return carries a fresh nonce — see SignupState.
+    const fail = (error: string): SignupState => ({
+      error,
+      nonce: Date.now(),
+    })
     const fn = String(fd.get("firstName") ?? "").trim()
     const ln = String(fd.get("lastName") ?? "").trim()
     // P2-1: trim email (a leading space from paste/autocap silently breaks
@@ -117,26 +128,26 @@ export function SignupPage() {
     const password = String(fd.get("password") ?? "")
     const confirm = String(fd.get("confirm") ?? "")
     if (!fn || !ln) {
-      return { error: "First name and last name are required." }
+      return fail("First name and last name are required.")
     }
     // P3-6/M3 defense-in-depth: basic shape check so a malformed email doesn't
     // round-trip to the server. The real authority is Better Auth.
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
-      return { error: "Please enter a valid email address." }
+      return fail("Please enter a valid email address.")
     }
     if (password.length < 8) {
-      return { error: "Password must be at least 8 characters." }
+      return fail("Password must be at least 8 characters.")
     }
     if (password !== confirm) {
-      return { error: "Passwords don't match." }
+      return fail("Passwords don't match.")
     }
     // C5: pre-flight the client-side bombing guard BEFORE sending the OTP.
     const guard = otpSendBlocked(e)
     if (guard.blocked) {
       const mins = Math.ceil((guard.remainingMs ?? 0) / 60_000)
-      return {
-        error: `Too many verification codes sent to this address. Please try again in ${mins} minute${mins === 1 ? "" : "s"}.`,
-      }
+      return fail(
+        `Too many verification codes sent to this address. Please try again in ${mins} minute${mins === 1 ? "" : "s"}.`,
+      )
     }
     try {
       // Use the nested path form (signUp.email) so the client's kebab-case
@@ -195,7 +206,7 @@ export function SignupPage() {
       })
       return {}
     } catch (err: any) {
-      return { error: err.message }
+      return fail(err.message)
     }
   }, {})
 
@@ -344,7 +355,14 @@ export function SignupPage() {
                 </p>
               </div>
 
-              <form action={accountAction} className="flex flex-col gap-4">
+              <form
+                action={accountAction}
+                // Rekeyed per completed attempt (SignupState.nonce) so the
+                // controlled inputs remount from state after React's
+                // post-action form reset — see the type comment above.
+                key={accountState?.nonce ?? "initial"}
+                className="flex flex-col gap-4"
+              >
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="su-first">First name</Label>

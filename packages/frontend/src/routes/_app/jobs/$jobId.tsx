@@ -1,5 +1,5 @@
 import { createFileRoute, notFound } from "@tanstack/react-router"
-import { JobDetailPage } from "../../pages/JobDetailPage"
+import { JobDetailPage } from "../../../pages/JobDetailPage"
 
 // `/jobs/$jobId` — the job detail view: description + notes editing, versioned
 // cover letters and tailored CVs (generate / regenerate / print), follow-ups,

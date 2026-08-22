@@ -40,6 +40,7 @@ const ONBOARDING_EXEMPT_PREFIXES = [
   "/api/profile", // reading/writing profile is needed during onboarding
   "/api/profile/cv", // CV upload happens during onboarding
   "/api/auth/", // sign-out from the onboarding page
+  "/api/browser/status", // step 3 of the wizard polls relay status live
 ]
 
 // Static asset paths may still hit the Worker if a stale config references them;

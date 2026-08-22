@@ -89,7 +89,7 @@ export function JobsPage() {
 
   // URL-bound filters (?q= & ?status=) — shareable and deep-linkable from the
   // Overview stat cards.
-  const search = useSearch({ from: "/_app/jobs" })
+  const search = useSearch({ from: "/_app/jobs/" })
   const [q, setQ] = useState(search.q ?? "")
   useEffect(() => {
     setQ(search.q ?? "")
@@ -408,6 +408,8 @@ function BoardColumn({
 
   return (
     <div
+      data-testid="kanban-column"
+      data-column={status}
       className={cn(
         "w-[280px] shrink-0 bg-card rounded-xl border-t-2 flex flex-col max-h-full animate-slide-up stagger-child transition-shadow",
         meta.accentClass,

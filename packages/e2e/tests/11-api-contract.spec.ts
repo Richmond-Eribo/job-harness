@@ -16,6 +16,9 @@ test.describe("API contract", () => {
   })
 
   test("428 on protected path when not onboarded", async ({ request }) => {
+    // Uses the seeded not-onboarded user. Spec 03 (which completes this
+    // user's onboarding as part of its flow) restores the flag afterward —
+    // if this fails with a 200, that restoration didn't run.
     const s = await loginAs(USER_NOT_ONBOARDED.email, USER_NOT_ONBOARDED.password)
     try {
       const res = await s.context.get(`${E2E_API_URL}/api/status`)
@@ -108,7 +111,7 @@ test.describe("API contract", () => {
       const postRes = await s.context.post(`${E2E_API_URL}/api/job-sources`, {
         data: {
           name: "E2E Source",
-          base_url: "https://e2e-source.test",
+          baseUrl: "https://e2e-source.test",
           notes: "created by e2e",
           enabled: true,
         },
@@ -134,6 +137,122 @@ test.describe("API contract", () => {
         `${E2E_API_URL}/api/job-sources/${created.id}`,
       )
       expect(delRes.ok()).toBe(true)
+    })
+
+    test("job status rejects invalid enum values with 400", async () => {
+      const postRes = await s.context.post(`${E2E_API_URL}/api/jobs`, {
+        data: {
+          title: `E2E Status ${Date.now()}`,
+          company: "E2E Corp",
+          url: `https://example.test/status-${Date.now()}`,
+        },
+      })
+      expect(postRes.ok()).toBe(true)
+      const jobId = (await postRes.json()).id
+
+      try {
+        const badRes = await s.context.put(
+          `${E2E_API_URL}/api/jobs/${jobId}/status`,
+          { data: { status: "definitely-not-a-status" } },
+        )
+        expect(badRes.status()).toBe(400)
+        expect((await badRes.json()).error).toMatch(/invalid status/i)
+
+        // Valid value still works after the rejection.
+        const goodRes = await s.context.put(
+          `${E2E_API_URL}/api/jobs/${jobId}/status`,
+          { data: { status: "draft" } },
+        )
+        expect(goodRes.ok()).toBe(true)
+      } finally {
+        await s.context.delete(`${E2E_API_URL}/api/jobs/${jobId}`)
+      }
+    })
+
+    test("moving a job to applied auto-creates a follow-up", async () => {
+      const postRes = await s.context.post(`${E2E_API_URL}/api/jobs`, {
+        data: {
+          title: `E2E Applied ${Date.now()}`,
+          company: "E2E Corp",
+          url: `https://example.test/applied-${Date.now()}`,
+        },
+      })
+      const jobId = (await postRes.json()).id
+
+      try {
+        // First transition into applied seeds the nudge.
+        const moveRes = await s.context.put(
+          `${E2E_API_URL}/api/jobs/${jobId}/status`,
+          { data: { status: "applied" } },
+        )
+        expect(moveRes.ok()).toBe(true)
+
+        const detailRes = await s.context.get(`${E2E_API_URL}/api/jobs/${jobId}`)
+        const detail = await detailRes.json()
+        const open = (detail.followUps ?? []).filter((f: any) => !f.completed)
+        expect(open.length).toBe(1)
+        expect(open[0].note).toMatch(/follow up/i)
+
+        // Lifecycle: complete it, then delete it.
+        const putRes = await s.context.put(
+          `${E2E_API_URL}/api/follow-ups/${open[0].id}`,
+          { data: { completed: true } },
+        )
+        expect(putRes.ok()).toBe(true)
+
+        const delRes = await s.context.delete(
+          `${E2E_API_URL}/api/follow-ups/${open[0].id}`,
+        )
+        expect(delRes.ok()).toBe(true)
+
+        const afterRes = await s.context.get(`${E2E_API_URL}/api/jobs/${jobId}`)
+        const after = await afterRes.json()
+        expect((after.followUps ?? []).length).toBe(0)
+      } finally {
+        await s.context.delete(`${E2E_API_URL}/api/jobs/${jobId}`)
+      }
+    })
+
+    test("job detail includes cover letters + tailored CVs; editing works", async () => {
+      const postRes = await s.context.post(`${E2E_API_URL}/api/jobs`, {
+        data: {
+          title: `E2E Detail ${Date.now()}`,
+          company: "E2E Corp",
+          url: `https://example.test/detail-${Date.now()}`,
+          description: "A job description for contract testing.",
+        },
+      })
+      const jobId = (await postRes.json()).id
+
+      try {
+        const getRes = await s.context.get(`${E2E_API_URL}/api/jobs/${jobId}`)
+        expect(getRes.ok()).toBe(true)
+        const detail = await getRes.json()
+        expect(detail.listing?.id).toBe(jobId)
+        expect(Array.isArray(detail.coverLetters)).toBe(true)
+        expect(Array.isArray(detail.tailoredCvs)).toBe(true)
+        expect(Array.isArray(detail.followUps)).toBe(true)
+
+        // The tailored-CV document list endpoint exists (empty for a new job).
+        const cvsRes = await s.context.get(
+          `${E2E_API_URL}/api/jobs/${jobId}/tailored-cvs`,
+        )
+        expect(cvsRes.ok()).toBe(true)
+        expect(await cvsRes.json()).toEqual([])
+
+        // Notes/priority edit round-trip.
+        const putRes = await s.context.put(`${E2E_API_URL}/api/jobs/${jobId}`, {
+          data: { notes: "contract note", priority: 2 },
+        })
+        expect(putRes.ok()).toBe(true)
+
+        const updatedRes = await s.context.get(`${E2E_API_URL}/api/jobs/${jobId}`)
+        const updated = await updatedRes.json()
+        expect(updated.listing?.notes).toBe("contract note")
+        expect(updated.listing?.priority).toBe(2)
+      } finally {
+        await s.context.delete(`${E2E_API_URL}/api/jobs/${jobId}`)
+      }
     })
   })
 })

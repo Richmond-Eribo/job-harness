@@ -134,6 +134,13 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
 
     plugins: [
       emailOTP({
+        // E2E/local-dev bypass (fixtures/env.ts E2E_OTP_FOR returns "999999"):
+        // when E2E_OTP_BYPASS=1 the code is deterministic so tests can verify
+        // without reading real email. The flag lives ONLY in local .dev.vars —
+        // never set it in production deploys. Returning undefined falls back
+        // to the plugin's secure random generator.
+        generateOTP: () =>
+          env.E2E_OTP_BYPASS === "1" ? "999999" : undefined,
         // Delivers the 6-digit code via Resend. Throws if the key/sender is
         // missing — no silent dev fallback, by design.
         sendVerificationOTP: async ({ email, otp }) => {

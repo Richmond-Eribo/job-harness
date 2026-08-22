@@ -15,7 +15,7 @@ import { test, expect } from "./../fixtures/auth"
 import { E2E_WEB_URL } from "../fixtures/env"
 
 test.describe("dashboard run [@llm]", () => {
-  test("start → running → run appears in traces → stop", ;async ({ userAPage: page }) => {
+  test("start → running → run appears in traces → stop", async ({ userAPage: page }) => {
     test.setTimeout(180_000) // real agent runs take a while
 
     await page.goto(`${E2E_WEB_URL}/dashboard`)

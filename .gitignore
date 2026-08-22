@@ -26,4 +26,5 @@ docs/
 prompts/
 docs
 
-/packages/frontend/.tanstack
+/packages/frontend/.tanstack.playwright-mcp/
+packages/frontend/.tanstack/
