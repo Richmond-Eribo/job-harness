@@ -53,7 +53,13 @@ import { formatRelative } from "@/lib/format"
 // ever adds a new requirement before the frontend catches up.
 const PREFLIGHT_ITEMS: Record<
   string,
-  { label: string; hint: string; to: string; icon: typeof FileText }
+  {
+    label: string
+    hint: string
+    to: string
+    icon: typeof FileText
+    search?: Record<string, string>
+  }
 > = {
   cv: {
     label: "Upload your CV",
@@ -71,6 +77,7 @@ const PREFLIGHT_ITEMS: Record<
     label: "Connect your browser",
     hint: "Pair the Chrome extension so the agent can reach login-walled listings.",
     to: "/settings",
+    search: { tab: "browser" },
     icon: Chrome,
   },
 }
@@ -608,7 +615,9 @@ function PreflightDialog({
                   </p>
                 </div>
                 <Button asChild size="sm" variant="outline">
-                  <Link to={item.to}>Fix</Link>
+                  <Link to={item.to} search={item.search as never}>
+                    Fix
+                  </Link>
                 </Button>
               </li>
             )

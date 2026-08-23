@@ -22,6 +22,7 @@ import { makeFinishTool } from "./finish.tool"
 import {
   makeBrowserNavigateTool,
   makeBrowserObserveTool,
+  makeBrowserReadTool,
   makeBrowserActTool,
   makeBrowserExtractTool,
   makeBrowserBrowseTool,
@@ -63,6 +64,7 @@ export function buildAgentTools(
     // All resolved by userId so they hit THIS user's Chrome connection.
     browser_navigate: makeBrowserNavigateTool(env, advance, userId),
     browser_observe: makeBrowserObserveTool(env, advance, userId),
+    browser_read: makeBrowserReadTool(env, advance, userId),
     browser_act: makeBrowserActTool(env, advance, userId),
     browser_extract: makeBrowserExtractTool(env, advance, runIdRef, userId),
     browser_browse: makeBrowserBrowseTool(env, advance, runIdRef, userId),

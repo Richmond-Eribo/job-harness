@@ -13,8 +13,10 @@
 //     the gap with the LandingPage's "Export or delete everything from
 //     Settings whenever you want" marketing claim.
 //
-// The tabs are pure local state — no URL hash — so refresh resets to
-// Profile. Fine for now; add ?tab=... if users complain.
+// The selected tab is URL state (?tab=… via useTabParam/nuqs) — refresh-safe,
+// deep-linkable (/settings?tab=browser is linked from the ExtensionStatusPill
+// and the Overview preflight checklist), and back/forward works. Selecting
+// the default tab clears the param.
 
 import { useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
@@ -46,13 +48,11 @@ import {
 import { toast } from "sonner"
 import { queryClient } from "../components/query-client"
 import { ProfilePage } from "./ProfilePage"
+import { ConnectBrowserCard } from "../components/ConnectBrowserCard"
 import {
   useConfig,
   useUpdateConfig,
   useBrowserStatus,
-  usePairExtension,
-  useDisconnectBrowser,
-  useUnpairAllBrowsers,
   useProbeBrowser,
   useSchedules,
   useAddSchedule,
@@ -62,11 +62,13 @@ import {
 import { api } from "../lib/api"
 import { signOutClient } from "../lib/auth"
 import type { ScheduleEntry } from "@/types"
+import { useTabParam } from "../hooks/use-tab-param"
 
-type Tab = "profile" | "llm" | "browser" | "schedules" | "account"
+const SETTINGS_TABS = ["profile", "llm", "browser", "schedules", "account"] as const
+type Tab = (typeof SETTINGS_TABS)[number]
 
 export function SettingsPage() {
-  const [tab, setTab] = useState<Tab>("profile")
+  const [tab, setTab] = useTabParam("tab", SETTINGS_TABS, "profile")
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6 animate-fade-in">
@@ -333,50 +335,15 @@ function LlmConfigTab() {
   )
 }
 
-// Browser & Extension tab — the ONLY place in the React app that surfaces
-// whether the agent has a live browser target (previously this existed only
-// in the now-deleted legacy public/ dashboard). Backs GET /api/browser/status
-// and the pairing flow (POST /api/browser/pair → a 6-char code the extension
-// popup redeems).
+// Browser & Extension tab — the dashboard-side home of the browser relay.
+// Backs GET /api/browser/status and the pairing flow (POST /api/browser/pair
+// → a 6-char code the extension popup redeems). The install + pair funnel
+// itself lives in the shared ConnectBrowserCard (also used by onboarding);
+// this tab adds the Browser test probe below it.
 function BrowserExtensionTab() {
-  const { data: status, isLoading, isError, error, refetch } = useBrowserStatus()
-  const pair = usePairExtension()
-  const disconnect = useDisconnectBrowser()
-  const unpairAll = useUnpairAllBrowsers()
+  const { isLoading, isError, error, refetch } = useBrowserStatus()
   const probe = useProbeBrowser()
   const [probeUrl, setProbeUrl] = useState("")
-  const [pairing, setPairing] = useState<{ code: string; expiresAt: number } | null>(null)
-
-  const handlePair = () => {
-    pair.mutate(undefined, {
-      onSuccess: data => {
-        setPairing({ code: data.code, expiresAt: Date.now() + data.expiresIn * 1000 })
-      },
-      onError: (e: { message?: string }) =>
-        toast.error("Couldn't generate a pairing code", { description: e?.message }),
-    })
-  }
-
-  const handleDisconnect = () => {
-    disconnect.mutate(undefined, {
-      onSuccess: () => toast.success("Browser disconnected"),
-      onError: (e: { message?: string }) =>
-        toast.error("Couldn't disconnect", { description: e?.message }),
-    })
-  }
-
-  const handleUnpairAll = () => {
-    unpairAll.mutate(undefined, {
-      onSuccess: d =>
-        toast.success(
-          d.revoked > 0
-            ? `Revoked ${d.revoked} paired browser${d.revoked === 1 ? "" : "s"}`
-            : "No paired browsers to revoke",
-        ),
-      onError: (e: { message?: string }) =>
-        toast.error("Couldn't revoke pairings", { description: e?.message }),
-    })
-  }
 
   const handleProbe = () => {
     if (!probeUrl.trim()) return
@@ -412,82 +379,9 @@ function BrowserExtensionTab() {
     )
   }
 
-  const target = status?.target ?? "none"
-  const targetLabel =
-    target === "live" ? "Connected (your Chrome)" : target === "managed" ? "Connected (managed)" : "Not connected"
-  const targetVariant = target === "none" ? "outline" : "default"
-
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <Chrome className="size-4 text-primary" />
-                Browser connection
-              </CardTitle>
-              <CardDescription className="text-xs mt-1">
-                The agent needs a connected browser to read login-walled job
-                sites and (eventually) fill applications for your review.
-              </CardDescription>
-            </div>
-            <Badge variant={targetVariant}>{targetLabel}</Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {target === "live" && status?.live?.connectedAt && (
-            <p className="text-xs text-muted-foreground">
-              Connected since {new Date(status.live.connectedAt).toLocaleString()}
-              {status.live.userAgent ? ` · ${status.live.userAgent}` : ""}
-            </p>
-          )}
-
-          {!pairing ? (
-            <div className="flex items-center gap-2">
-              <Button onClick={handlePair} disabled={pair.isPending} size="sm">
-                {pair.isPending ? "Generating…" : "Pair new browser"}
-              </Button>
-              {target !== "none" && (
-                <Button
-                  onClick={handleDisconnect}
-                  disabled={disconnect.isPending}
-                  variant="outline"
-                  size="sm"
-                >
-                  Disconnect
-                </Button>
-              )}
-              <Button
-                onClick={handleUnpairAll}
-                disabled={unpairAll.isPending}
-                variant="ghost"
-                size="sm"
-                className="text-destructive hover:text-destructive"
-              >
-                Forget all paired browsers
-              </Button>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-border bg-muted/30 p-4 flex flex-col items-center gap-2">
-              <p className="text-xs text-muted-foreground">
-                Open the extension popup, enter this worker URL and code:
-              </p>
-              <p className="text-3xl font-mono font-bold tracking-[0.3em] text-primary">
-                {pairing.code}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Expires{" "}
-                {Math.max(0, Math.round((pairing.expiresAt - Date.now()) / 1000 / 60))} min
-                from now · single use
-              </p>
-              <Button variant="ghost" size="sm" onClick={() => setPairing(null)}>
-                Done
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <ConnectBrowserCard />
 
       <Card>
         <CardHeader className="pb-3">

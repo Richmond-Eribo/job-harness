@@ -325,10 +325,11 @@ export function ExtensionStatusPill() {
   return (
     <Link
       to="/settings"
+      search={{ tab: "browser" }}
       title={
         isOk
           ? "Browser relay connected — click to manage"
-          : "No browser connected — click to pair the extension"
+          : "No browser connected — click to install & pair the extension"
       }
       className="flex items-center gap-2 text-xs bg-card border border-border px-2.5 py-1 rounded-md hover:border-primary/40 hover:bg-accent/40 transition-colors"
     >

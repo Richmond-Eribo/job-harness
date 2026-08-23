@@ -158,23 +158,31 @@ work **without vision** by default, with vision as an opt-in upgrade.
 
 ### 5.1 Structure-based interaction (primary, no vision)
 
-- **`browser_observe`** returns the **accessibility tree** / a serialized DOM
-  snapshot with **stable element IDs**:
-  ```json
-  [
-    {"elementId": "btn-7", "role": "button", "name": "Sign in", "loc": "..."},
-    {"elementId": "inp-2", "role": "textbox", "name": "Email", "loc": "..."}
-  ]
+- **`browser_observe`** returns the page as a compact **accessibility-tree
+  YAML** with refs (the token-efficiency pattern proven by Playwright MCP —
+  structure only, no full page text):
+  ```yaml
+  - heading "Sign in" [level=1]
+  - textbox "Email" [ref=e4]
+  - button "Sign in" [ref=e7]
   ```
-  This is pure text the model can reason over.
-- **`browser_act`** takes **semantic actions keyed by elementId**, not
+  Interactive nodes get a `data-ref` attribute stamped in the DOM so act()
+  can resolve them. The whole tree is capped (`snapshot.maxChars` /
+  `maxElements` in browser-config.json).
+- **`browser_read`** is the lazy companion: it pulls the TEXT the model
+  actually needs — a specific element (`{elementRef:"e4"}`) or the main
+  content region (no args) — instead of shipping body text on every observe.
+- **`browser_act`** takes **semantic actions keyed by elementRef**, not
   coordinates:
   ```json
-  {"action": "click", "elementId": "btn-7"}
-  {"action": "type",  "elementId": "inp-2", "text": "..."}
+  {"action": "click", "elementRef": "e7"}
+  {"action": "type",  "elementRef": "e4", "text": "..."}
+  {"action": "press", "key": "Enter"}
   ```
-- The relay resolves `elementId` → real node → CDP action internally. The
-  model never sees raw CDP or coordinates.
+- The agent resolves `elementRef` → real node → CDP action internally
+  (clicks fall back to re-resolving role+name when an SPA re-render wiped
+  the attribute; press/type use REAL CDP input events — Enter submits
+  forms). The model never sees raw CDP or coordinates.
 
 ### 5.2 Vision mode (opt-in)
 
@@ -187,8 +195,8 @@ work **without vision** by default, with vision as an opt-in upgrade.
 
 | `vision` | `browser_observe` returns | `browser_act` accepts |
 |---|---|---|
-| `false` (default) | element list (a11y tree) | `{action, elementId}` |
-| `true` | element list **+ base64 screenshot** | `{action, elementId}` **or** `{action, x, y}` |
+| `false` (default) | a11y tree YAML (+ `browser_read` for text) | `{action, elementRef}` |
+| `true` | tree **+ base64 screenshot** | `{action, elementRef}` **or** `{action, x, y}` |
 
 ## 6. Credentials safety (non-negotiable)
 

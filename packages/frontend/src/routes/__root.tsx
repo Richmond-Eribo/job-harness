@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router"
 import "../index.css"
 import { QueryClientProvider } from "@tanstack/react-query"
+import { NuqsAdapter } from "nuqs/adapters/tanstack-router"
 import { ErrorBoundary } from "../components/ErrorBoundary"
 import { queryClient } from "../components/query-client"
 import { Toaster } from "@agent-harness/ui"
@@ -48,6 +49,11 @@ export const Route = createRootRouteWithContext()({
           "An AI agent that finds jobs, scores them, and writes cover letters.",
       },
       { name: "color-scheme", content: "light" },
+      // Marker for the browser extension's detect.js content script: pages
+      // declaring this tag are ours, and only there does the extension
+      // announce its presence (dataset.agentHarnessExt) — see
+      // extension/detect.js + useExtensionInstalled.
+      { name: "agent-harness-site", content: "1" },
     ],
     links: [
       // Fonts (Geist + Open Sans) load via the @import at the top of
@@ -76,10 +82,17 @@ function RootComponent() {
             the ShellSkeleton fallback for authed pages; here we use a plain
             spinner-shaped placeholder so public pages don't flash dashboard
             chrome while their chunk loads. */}
-        <Suspense fallback={null}>
-          <Outlet />
-        </Suspense>
-        <Toaster richColors position="top-right" />
+        {/* NuqsAdapter powers URL-backed state (useTabParam in
+            src/hooks/use-tab-param.ts). The nuqs TanStack Router adapter is
+            experimental and doesn't officially cover TanStack Start yet —
+            all reads/writes are contained behind useTabParam so a fallback
+            to native validateSearch is a one-file swap. */}
+        <NuqsAdapter>
+          <Suspense fallback={null}>
+            <Outlet />
+          </Suspense>
+          <Toaster richColors position="top-right" />
+        </NuqsAdapter>
       </QueryClientProvider>
     </ErrorBoundary>
   )

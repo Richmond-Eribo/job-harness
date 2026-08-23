@@ -510,6 +510,14 @@ export interface BrowserStatus {
   sessionId: string | null
   recentEvents: Array<{ at: string; method: string }>
   pendingCalls: number
+  /** How this deployment distributes the extension — drives the Install step
+   *  of ConnectBrowserCard (unpacked walkthrough vs Chrome Web Store link).
+   *  Optional so older workers without it still render. */
+  distribution?: {
+    mode: "unpacked" | "store"
+    storeUrl?: string
+    guideUrl?: string
+  }
 }
 
 export function useBrowserStatus() {

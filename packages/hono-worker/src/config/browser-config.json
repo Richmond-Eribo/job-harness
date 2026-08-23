@@ -12,6 +12,21 @@
     "enabledByBinding": true
   },
 
+  "snapshot": {
+    "$doc": "observe() token-efficiency knobs. observe() returns a compact accessibility-tree YAML (roles + names + refs like [ref=e5]), NOT raw HTML or full body text — the pattern proven by Playwright MCP (~2-5KB per page vs 10-100x for HTML/DOM dumps). maxChars caps the whole tree; maxElements caps node count; readMaxChars caps the lazy browser_read() tool (the model pulls full text only for regions it actually needs); waitForLoadMs is the extra settle time after document.readyState === 'complete' for SPA renders.",
+    "maxChars": 6000,
+    "maxElements": 120,
+    "readMaxChars": 4000,
+    "waitForLoadMs": 600
+  },
+
+  "distribution": {
+    "$doc": "How users get the extension — drives the Install step of the dashboard's ConnectBrowserCard (surfaced via GET /api/browser/status). 'unpacked' = self-hosted repo install (chrome://extensions → Load unpacked; see extension/README.md); 'store' = Chrome Web Store listing — set storeUrl once published (see docs/extension-store-publishing.md). guideUrl is an optional link to fuller install docs.",
+    "mode": "unpacked",
+    "storeUrl": "",
+    "guideUrl": ""
+  },
+
   "safety": {
     "$doc": "Credentials NEVER touch our system. The agent assumes the user is already logged in via the relay target. observe() detects login walls and STOPS — it never attempts login itself.",
     "loginWallUrlPatterns": ["/login", "/signin", "/sign-in", "/auth", "/account/login", "/session/new", "/users/sign_in"],

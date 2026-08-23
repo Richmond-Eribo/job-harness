@@ -30,12 +30,18 @@
 // =============================================================================
 
 let ws = null
+// Bumped every time a NEW WebSocket is assigned. In-flight CDP commands
+// capture the generation before awaiting chrome.debugger.sendCommand and
+// DROP the reply if the socket changed underneath them — without this, a
+// reply from a dead socket could be sent on the new socket, where the
+// server's id correlation no longer knows it.
+let wsGeneration = 0
 let connectedAt = null
 let reconnectTimer = null
 let reconnectAttempt = 0 // resets to 0 on a successful OPEN; drives backoff
 let didOpenThisCycle = false // did the CURRENT ws instance ever reach OPEN?
 let triedAutoRefreshThisCycle = false // guards the one-shot refresh-then-retry
-const TARGET_VERSION = "1.1.0"
+const TARGET_VERSION = "1.2.0"
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 30000
 const REFRESH_SKEW_MS = 5 * 60 * 1000 // refresh if expiring within 5 minutes
@@ -222,6 +228,7 @@ export async function connectRelay(workerUrl) {
   didOpenThisCycle = false
   try {
     ws = new WebSocket(wsUrl, ["ja-ext-token." + accessToken])
+    wsGeneration++
   } catch (e) {
     publishState("invalid URL")
     scheduleReconnect(workerUrl)
@@ -444,8 +451,36 @@ async function detachTab() {
 }
 
 function onDebugEvent(_source, method, params) {
+  // Track main-frame navigations for the popup's activity view (throttled —
+  // cdp-events fire constantly, storage writes don't need to).
+  if (method === "Page.frameNavigated" && params?.frame && !params.frame.parentId) {
+    publishActivity({ lastUrl: params.frame.url || "" })
+  }
   // Forward unsolicited browser events (Page.frameNavigated, etc.) to the relay.
   safeSend({ t: "cdp-event", method, params })
+}
+
+// ── Activity (popup display): last page the agent opened + last CDP command.
+// Written to chrome.storage.local at most once a second; the popup reads it
+// through the same storage-watch pattern it uses for relayState.
+let lastActivityWrite = 0
+function publishActivity(entry) {
+  const now = Date.now()
+  if (now - lastActivityWrite < 1000) return
+  lastActivityWrite = now
+  try {
+    chrome.storage.local.get("agentActivity").then(({ agentActivity }) => {
+      chrome.storage.local.set({
+        agentActivity: {
+          lastUrl: entry.lastUrl ?? agentActivity?.lastUrl ?? null,
+          lastCommand: entry.lastCommand ?? agentActivity?.lastCommand ?? null,
+          at: now,
+        },
+      })
+    })
+  } catch {
+    // storage unavailable transiently — non-fatal
+  }
 }
 
 // ── Handle a frame from the relay: run the CDP command, reply. ────────────
@@ -475,14 +510,30 @@ async function onMessage(raw) {
     })
   }
 
+  const gen = wsGeneration
+  publishActivity({ lastCommand: msg.method })
   try {
-    const result = await chrome.debugger.sendCommand(
-      { tabId: agentTabId },
-      msg.method,
-      msg.params || {},
-    )
+    // Local timeout mirrors the server's 15s relay timeout (+1s slack) so a
+    // stuck debugger command can never leak a promise forever.
+    const result = await Promise.race([
+      chrome.debugger.sendCommand(
+        { tabId: agentTabId },
+        msg.method,
+        msg.params || {},
+      ),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("cdp command timed out in extension")),
+          16000,
+        ),
+      ),
+    ])
+    // Socket was replaced while the command ran — the server has re-armed its
+    // own timeouts on the new connection and no longer expects this id.
+    if (gen !== wsGeneration) return
     safeSend({ t: "cdp-res", id: msg.id, result: result ?? {} })
   } catch (e) {
+    if (gen !== wsGeneration) return
     safeSend({
       t: "cdp-res",
       id: msg.id,

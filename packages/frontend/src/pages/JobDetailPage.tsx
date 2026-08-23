@@ -61,6 +61,11 @@ import {
 } from "@agent-harness/ui"
 import { ConfirmDialog } from "../components/ConfirmDialog"
 import { toast } from "sonner"
+import { useTabParam } from "../hooks/use-tab-param"
+
+// Tab values for the detail view (?tab=… in the URL — shareable/refresh-safe).
+const JOB_TABS = ["description", "cover-letters", "tailored-cvs", "follow-ups"] as const
+type JobTab = (typeof JOB_TABS)[number]
 
 export function JobDetailPage() {
   const { jobId } = useParams({ from: "/_app/jobs/$jobId" })
@@ -81,6 +86,7 @@ export function JobDetailPage() {
   const startRun = useStartRun()
 
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [jobTab, setJobTab] = useTabParam("tab", JOB_TABS, "description")
 
   const listing = data?.listing ?? null
   const coverLetters = data?.coverLetters ?? []
@@ -352,7 +358,7 @@ export function JobDetailPage() {
       </div>
 
       {/* ── Tabs ───────────────────────────────────────────────────────── */}
-      <Tabs defaultValue="description">
+      <Tabs value={jobTab} onValueChange={v => setJobTab(v as JobTab)}>
         <TabsList>
           <TabsTrigger value="description">Description</TabsTrigger>
           <TabsTrigger value="cover-letters">

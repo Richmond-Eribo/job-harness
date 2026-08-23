@@ -28,6 +28,7 @@ const $status = document.getElementById("status")
 const $state = document.getElementById("state")
 const $pairedWorkerUrl = document.getElementById("paired-worker-url")
 const $pairedExpiry = document.getElementById("paired-expiry")
+const $activity = document.getElementById("activity")
 
 async function init() {
   const { workerUrl } = await chrome.storage.local.get("workerUrl")
@@ -36,7 +37,7 @@ async function init() {
   await render()
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && (changes.relayState || changes.refreshToken || changes.workerUrl)) {
+    if (area === "local" && (changes.relayState || changes.refreshToken || changes.workerUrl || changes.agentActivity)) {
       render()
     }
   })
@@ -44,12 +45,13 @@ async function init() {
 }
 
 async function render() {
-  const { refreshToken, workerUrl, accessTokenExpiresAt, relayState } =
+  const { refreshToken, workerUrl, accessTokenExpiresAt, relayState, agentActivity } =
     await chrome.storage.local.get([
       "refreshToken",
       "workerUrl",
       "accessTokenExpiresAt",
       "relayState",
+      "agentActivity",
     ])
 
   const paired = !!refreshToken
@@ -66,6 +68,22 @@ async function render() {
     $pairedExpiry.textContent = "—"
   }
 
+  // Agent activity — last page opened (shortened) or last CDP command, with
+  // how long ago. Published by bridge.js (throttled) on navigations/commands.
+  if (agentActivity && (agentActivity.lastUrl || agentActivity.lastCommand)) {
+    const ago = agentActivity.at
+      ? Math.max(0, Math.round((Date.now() - agentActivity.at) / 60000))
+      : null
+    const agoText = ago == null ? "" : ago < 1 ? "just now" : `${ago}m ago`
+    const what = agentActivity.lastUrl
+      ? shortUrl(agentActivity.lastUrl)
+      : agentActivity.lastCommand || ""
+    $activity.textContent = what
+    $activity.title = `${what}${agoText ? ` · ${agoText}` : ""}`
+  } else {
+    $activity.textContent = "idle"
+  }
+
   const s = relayState || { connected: false }
   if (s.connected) {
     $state.innerHTML =
@@ -73,6 +91,17 @@ async function render() {
       (s.activeTabId != null ? " · tab " + s.activeTabId : "")
   } else {
     $state.innerHTML = '<span class="dot off"></span>' + (s.reason || "disconnected")
+  }
+}
+
+/** https://example.com/jobs/123?q=1 → example.com/jobs/123 (fits the row). */
+function shortUrl(url) {
+  try {
+    const u = new URL(url)
+    const path = u.pathname.length > 24 ? u.pathname.slice(0, 24) + "…" : u.pathname
+    return u.host + path
+  } catch {
+    return (url || "").slice(0, 32)
   }
 }
 

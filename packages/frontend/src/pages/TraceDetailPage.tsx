@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
 import { useRunTrace } from "../hooks/queries"
+import { useTabParam } from "../hooks/use-tab-param"
 import type { TraceEvent } from "@/types"
 import {
   Badge,
@@ -41,7 +42,9 @@ const EVENT_BADGE: Record<string, string> = {
 export function TraceDetailPage() {
   const { runId } = useParams({ from: "/_app/traces/$runId" })
   const { data, isLoading, isError, error, refetch } = useRunTrace(runId)
-  const [eventFilter, setEventFilter] = useState<string>("all")
+  // URL state (?filter=…) so a filtered transcript view is shareable and
+  // survives refresh (useTabParam — same mechanism as the Settings tabs).
+  const [eventFilter, setEventFilter] = useTabParam("filter", EVENT_FILTERS, "all")
 
   const events = data?.events ?? data?.trace ?? []
   const run = data?.run
@@ -63,7 +66,10 @@ export function TraceDetailPage() {
   const stepCount = steps.size
 
   // Single stable handler for all filter tabs, keyed on the tab string.
-  const onSelectFilter = useCallback((tab: string) => setEventFilter(tab), [])
+  const onSelectFilter = useCallback(
+    (tab: (typeof EVENT_FILTERS)[number]) => setEventFilter(tab),
+    [],
+  )
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6 animate-fade-in">

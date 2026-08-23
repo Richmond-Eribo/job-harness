@@ -66,6 +66,7 @@ import {
   scheduleToggleSchema,
   startRunSchema,
 } from "./utils/validation"
+import browserConfig from "./config/browser-config.json"
 
 // Re-export all Durable Object classes (required by Cloudflare)
 export {
@@ -458,7 +459,19 @@ app.post("/api/browser/unpair", async c => {
 
 app.get("/api/browser/status", async c => {
   const relay: any = await getAgentByName(c.env.BROWSER_RELAY, c.var.userId)
-  return c.json(await relay.statusSnapshot())
+  const snapshot = await relay.statusSnapshot()
+  // Distribution info for the dashboard's ConnectBrowserCard Install step
+  // (unpacked walkthrough vs Chrome Web Store link). Config-driven so a
+  // deployment that publishes to the store just edits browser-config.json.
+  const dist = (browserConfig as any).distribution ?? {}
+  return c.json({
+    ...snapshot,
+    distribution: {
+      mode: dist.mode === "store" ? "store" : "unpacked",
+      storeUrl: typeof dist.storeUrl === "string" ? dist.storeUrl : undefined,
+      guideUrl: typeof dist.guideUrl === "string" ? dist.guideUrl : undefined,
+    },
+  })
 })
 
 app.post("/api/browser/disconnect", async c => {

@@ -3,11 +3,9 @@ import { useNavigate } from "@tanstack/react-router"
 import {
   CircleAlert,
   Sparkles,
-  Check,
   ChevronRight,
   ChevronLeft,
   FileText,
-  Chrome,
 } from "lucide-react"
 import {
   Alert,
@@ -26,7 +24,7 @@ import {
 import { API_URL } from "../lib/auth"
 import { api } from "../lib/api"
 import { AuthShowcase } from "../components/AuthShowcase"
-import { useBrowserStatus, usePairExtension } from "../hooks/queries"
+import { ConnectBrowserCard } from "../components/ConnectBrowserCard"
 
 const NONE = "__none__"
 type Step = 0 | 1 | 2
@@ -376,99 +374,16 @@ function StepCv({
 }
 
 // ── Step 3 — Connect browser ───────────────────────────────────────────────
-// Reuses the same pairing-code UX as Settings → Browser & Extension. This
-// step is GENUINELY live — it polls GET /api/browser/status and flips to
-// "connected" the moment the extension pairs, so onboarding completes on a
-// green confirmation rather than sending the user to the dashboard blind.
-// Skipping is allowed (the extension can be paired any time from Settings).
+// Delegates to the shared ConnectBrowserCard funnel (also used by Settings →
+// Browser & Extension): explicit install instructions, live extension
+// detection, the pairing code with auto-mint, and a green flip the moment the
+// extension connects (GET /api/browser/status is polled). Skipping is allowed
+// (the extension can be paired any time from Settings).
 function StepConnectBrowser() {
-  const { data: status } = useBrowserStatus()
-  const pair = usePairExtension()
-  const [code, setCode] = useState<{ code: string; expiresAt: number } | null>(
-    null,
-  )
-
-  const connected = status?.target === "live" || status?.target === "managed"
-
-  const handlePair = () => {
-    pair.mutate(undefined, {
-      onSuccess: d =>
-        setCode({ code: d.code, expiresAt: Date.now() + d.expiresIn * 1000 }),
-    })
-  }
-
   return (
     <div className="flex flex-col gap-5 animate-fade-in">
       <SectionLabel>Pair your browser</SectionLabel>
-
-      {connected ? (
-        <div className="rounded-lg border border-success/40 bg-success/5 p-4 flex items-center gap-3">
-          <div className="size-8 rounded-full bg-success/20 text-success grid place-items-center">
-            <Check className="size-5" />
-          </div>
-          <div>
-            <p className="text-sm font-medium text-foreground">
-              Browser connected
-            </p>
-            <p className="text-xs text-muted-foreground">
-              The agent can read login-walled job sites through your Chrome.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <>
-          <ol className="text-xs text-muted-foreground space-y-2 list-decimal list-inside">
-            <li>
-              Install the extension (Load unpacked from the repo for now).
-            </li>
-            <li>
-              Click the extension toolbar icon and paste this code when
-              prompted.
-            </li>
-            <li>
-              The pill at the top of this page will turn green on success.
-            </li>
-          </ol>
-
-          {!code ? (
-            <Button
-              type="button"
-              size="sm"
-              onClick={handlePair}
-              disabled={pair.isPending}
-              className="self-start"
-            >
-              <Chrome className="size-4 mr-1.5" />
-              {pair.isPending ? "Generating code…" : "Generate pairing code"}
-            </Button>
-          ) : (
-            <div className="rounded-lg border border-border bg-muted/30 p-4 flex flex-col items-center gap-2">
-              <p className="text-xs text-muted-foreground">
-                Enter this code in the extension popup:
-              </p>
-              <p className="text-3xl font-mono font-bold tracking-[0.3em] text-primary">
-                {code.code}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Expires{" "}
-                {Math.max(
-                  0,
-                  Math.round((code.expiresAt - Date.now()) / 1000 / 60),
-                )}{" "}
-                min · single use
-              </p>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setCode(null)}
-              >
-                Done
-              </Button>
-            </div>
-          )}
-        </>
-      )}
+      <ConnectBrowserCard autoGenerateCode />
     </div>
   )
 }

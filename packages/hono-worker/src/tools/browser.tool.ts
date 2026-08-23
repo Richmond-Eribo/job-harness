@@ -2,12 +2,18 @@
 // Browser tools — delegation to the BrowserAgent DO (which drives the relay).
 // =============================================================================
 //  browser_navigate  → open a URL in the connected browser
-//  browser_observe   → structured snapshot of the page (elements + text);
-//                      detects login walls and stops
+//  browser_observe   → compact accessibility-tree snapshot (roles + names +
+//                      refs like [ref=e5]); detects login walls and stops
+//  browser_read      → lazy text read: a specific ref's node, or the main
+//                      content region (the token-saving companion to observe)
 //  browser_act       → click / type / scroll / press on the page
 //  browser_extract   → pull structured data off the current page via an LLM
 //  browser_browse    → navigate + observe + extract in one call (the common
 //                      path for reading a login-walled posting)
+//
+// TOKEN STRATEGY: observe() returns structure only (the tree), NOT full page
+// text — the model pulls content it needs via browser_read. This keeps each
+// observe cheap and avoids re-shipping body text the model already read.
 //
 // The agent NEVER handles credentials. observe() returns loginRequired when a
 // page needs auth, and the caller surfaces that to the operator.
@@ -54,9 +60,10 @@ export function makeBrowserNavigateTool(env: Env, advance: Advance, userId: stri
 export function makeBrowserObserveTool(env: Env, advance: Advance, userId: string) {
   return tool({
     description:
-      "Read the current browser page as a structured element list (clickable elements with stable ids) + body text. " +
+      "Read the current browser page as a compact accessibility tree: role-named nodes with refs, e.g. `- link \"Apply now\" [ref=e5]`, `- heading \"Requirements\" [level=2]`, plus short text lines. " +
+      "The tree shows STRUCTURE, not full page content — call browser_read when you need the actual text of a region or element. " +
       "Returns loginRequired if the page needs sign-in — in that case, STOP and tell the operator to log in; never attempt login. " +
-      "Works with text-only models (no screenshot needed). Always re-observe after an action that changes the page.",
+      "Works with text-only models (no screenshot needed). Always re-observe after an action that changes the page — refs go stale.",
     inputSchema: z.object({}),
     execute: async () => {
       advance("browser_observe", null)
@@ -67,17 +74,37 @@ export function makeBrowserObserveTool(env: Env, advance: Advance, userId: strin
   })
 }
 
+export function makeBrowserReadTool(env: Env, advance: Advance, userId: string) {
+  return tool({
+    description:
+      "Read page TEXT lazily (observe() only returns the structure tree). Without elementRef: the main content region's text. With an elementRef from the last observe (e.g. 'e5'): that element's text. " +
+      "Use this AFTER observe to pull only the content you actually need — cheaper than re-observing. Returns { text, truncated }.",
+    inputSchema: z.object({
+      elementRef: z
+        .string()
+        .optional()
+        .describe("ref from the last browser_observe, e.g. 'e5'. Omit to read the main content region."),
+    }),
+    execute: async ({ elementRef }) => {
+      advance("browser_read", JSON.stringify({ elementRef }).slice(0, 2000))
+      const agent = await BROWSER_AGENT(env, userId)
+      const result = await withRpcRetry(() => agent.read(elementRef))
+      return JSON.stringify(result)
+    },
+  })
+}
+
 export function makeBrowserActTool(env: Env, advance: Advance, userId: string) {
   return tool({
     description:
-      "Act on the browser page: click an element (by elementId from observe), type into an input, scroll, press a key, or wait. " +
-      "elementId-based actions are preferred (work with text-only models). Coordinate clicks (x/y) only work in vision mode.",
+      "Act on the browser page: click an element (by elementRef from observe, e.g. 'e5'), type into an input, scroll, press a key (real key events — Enter submits forms), or wait. " +
+      "elementRef-based actions are preferred (work with text-only models). Coordinate clicks (x/y) only work in vision mode.",
     inputSchema: z.object({
       action: z.enum(["click", "type", "scroll", "press", "wait"]),
-      elementId: z
+      elementRef: z
         .string()
         .optional()
-        .describe("element id from the last observe() — e.g. 'el-3'"),
+        .describe("element ref from the last observe() — e.g. 'e5'"),
       text: z.string().optional().describe("text to type (for 'type')"),
       key: z.string().optional().describe("key to press (for 'press'), e.g. 'Enter'"),
       x: z.number().optional().describe("x coordinate (vision mode click)"),

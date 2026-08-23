@@ -30,6 +30,18 @@ The extension drives a **dedicated background tab** it creates for itself via
 `chrome.debugger` — never your currently active/focused tab. You can keep
 browsing normally while a run is in progress.
 
+**Dashboard install detection:** the `detect.js` content script announces the
+extension's presence to the dashboard (and only to the dashboard — it no-ops
+on every other page unless the page declares `<meta name="agent-harness-site">`).
+This is what powers the dashboard's "Extension detected ✓" state during
+pairing, distinguishing *installed but unpaired* from *not installed*.
+
+> Publishing to the Chrome Web Store is NOT required for self-hosted use.
+> When the product is distributed publicly, see
+> `docs/extension-store-publishing.md` — the submission kit (permission
+> justifications for the `debugger` permission, privacy notes, packaging)
+> is prepared there.
+
 ## How it works
 
 ```
@@ -43,11 +55,14 @@ architecture and `docs/extension-pairing.md` for the pairing/token flow.
 
 ## Files
 
-- `manifest.json` — MV3 manifest (`debugger`, `storage`, `tabs` permissions).
+- `manifest.json` — MV3 manifest (`debugger`, `storage`, `tabs`, `alarms`
+  permissions).
 - `background.js` — service worker: connects on install/startup if already
   paired, reacts to pairing changes.
 - `bridge.js` — the WS relay + CDP adapter (frame protocol, heartbeat,
-  exponential-backoff reconnect, access-token refresh, pairing exchange).
+  exponential-backoff reconnect, access-token refresh, pairing exchange,
+  per-socket generation guard for in-flight commands).
+- `detect.js` — content script: dashboard-only presence detection (see above).
 - `popup.html` / `popup.js` — pairing UI (unpaired: code entry; paired:
-  status + "Forget this browser").
+  status + live agent activity + "Forget this browser").
 - `icon.png` — toolbar icon (replace with a real 128×128).
