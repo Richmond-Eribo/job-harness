@@ -82,11 +82,6 @@ export interface Env {
   // the Playwright suite can complete signup without reading email. Set ONLY
   // in local .dev.vars — never in production. (See auth.ts generateOTP.)
   E2E_OTP_BYPASS?: string
-  // Local-dev override for the cookie/baseURL gates in auth.ts ("true" forces
-  // dev cookie behavior, "false" forces prod behavior). Wrangler delivers
-  // vars as strings — auth.ts accepts "true"/"1" and "false"/"0" as well as
-  // real booleans. Leave unset/false in any deployed environment.
-  IS_LOCAL_DEV?: boolean | string
   // Public base URL of the API deployment (e.g. https://api.example.com). Used
   // by Better Auth to build absolute callback URLs and as a trusted CORS origin.
   BETTER_AUTH_URL?: string
@@ -102,10 +97,12 @@ export interface Env {
   // SPA can call /api/* with credentials (the session cookie).
   FRONTEND_URL?: string
 
-  // Explicit local-dev override for cookie attributes. When true, the session
-  // cookie is set SameSite=Lax without Secure (legal over http). Auto-detected
-  // from BETTER_AUTH_URL hostname when unset (see auth.ts).
-  IS_LOCAL_DEV?: boolean
+  // Explicit local-dev override for the cookie/baseURL gates in auth.ts.
+  // "true" forces dev cookie behavior (Lax, no Secure/Domain), "false" forces
+  // prod behavior — wins over the hostname auto-detection. Wrangler delivers
+  // vars as STRINGS, so auth.ts accepts "true"/"1" and "false"/"0" as well as
+  // real booleans. Leave unset/false in any deployed environment.
+  IS_LOCAL_DEV?: boolean | string
 
   // v2 non-secret knobs (sourced from wrangler.jsonc vars). Trace capture
   // toggle — "1" = on (default); any other value = off. Detailed cap values
