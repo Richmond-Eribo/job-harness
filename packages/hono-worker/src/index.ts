@@ -40,7 +40,32 @@ import { getAgents, getHarnessForUser } from "./utils/get-agents"
 import { getRateLimiter } from "./utils/get-agents"
 import { errorResponse } from "./utils/error-response"
 import { JOB_STATUSES } from "./agents"
+import type { JobStatus } from "./types"
 import { extractCvText } from "./utils/cv-text"
+import {
+  readJsonBody,
+  numericParam,
+  numericQuery,
+  sanitizeFilename,
+  browserProbeSchema,
+  configUpdateSchema,
+  CONFIG_ALLOWED_KEYS,
+  followUpCreateSchema,
+  followUpUpdateSchema,
+  goalPutSchema,
+  jobCreateSchema,
+  jobSourceCreateSchema,
+  jobSourceUpdateSchema,
+  jobStatusSchema,
+  jobUpdateSchema,
+  memoryPutSchema,
+  onboardingSchema,
+  planAdvanceSchema,
+  profilePatchSchema,
+  scheduleCreateSchema,
+  scheduleToggleSchema,
+  startRunSchema,
+} from "./utils/validation"
 
 // Re-export all Durable Object classes (required by Cloudflare)
 export {
@@ -182,33 +207,19 @@ app.use("*", requireAuth)
 
 app.post("/api/onboarding", async c => {
   const userId = c.var.userId
-  const body = await c.req.json().catch(() => ({}))
+  const parsed = await readJsonBody(c, onboardingSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
 
-  // Persist the profile fields to the user's JobApplicationAgent.
+  // Persist the profile fields to the user's JobApplicationAgent. The schema
+  // allows ONLY known profile fields, each capped at 2000 chars (audit
+  // M11 — previously unbounded strings went straight into the kv table and,
+  // via prompt interpolation, into the system prompt).
   const { jobAgent } = await getAgents(c.env, userId)
   const profilePatch: Record<string, string> = {}
-  for (const k of [
-    "firstName",
-    "lastName",
-    "fullName",
-    "email",
-    "phone",
-    "location",
-    "links",
-    "workAuth",
-    "seniority",
-    "yearsExperience",
-    "targetRoles",
-    "targetLocations",
-    "skills",
-    "preferences",
-    "workMode",
-    "jobSearchStatus",
-    "linkedinUrl",
-    "githubUrl",
-    "portfolioUrl",
-  ]) {
-    if (typeof (body as any)[k] === "string") profilePatch[k] = (body as any)[k]
+  for (const k of Object.keys(body) as (keyof typeof body)[]) {
+    const v = body[k]
+    if (typeof v === "string") profilePatch[k] = v
   }
   // Keep the D1 `name` column (the session display name) in sync with
   // firstName/lastName so the app shell shows the right thing without an
@@ -463,8 +474,11 @@ app.post("/api/browser/disconnect", async c => {
 // drive a real browser tab, so still worth a generous rate limit to prevent a
 // runaway UI loop or scripted abuse from hammering the relay/extension.
 app.post("/api/browser/probe", async c => {
-  const body = await c.req.json().catch(() => ({}))
-  if (!body?.url) return c.json({ error: "url required" }, 400)
+  // AUDIT H6: url is schema-validated — absolute http(s) only. Previously a
+  // truthiness check let ANY string through to CDP Page.navigate, including
+  // javascript:/data: URLs, in the user's real Chrome.
+  const parsed = await readJsonBody(c, browserProbeSchema)
+  if (!parsed.ok) return parsed.response
   const userId = c.var.userId
   const rateLimiter = await getRateLimiter(c.env)
   const windowSeconds = 60
@@ -480,7 +494,7 @@ app.post("/api/browser/probe", async c => {
   await rateLimiter.consume({ key: "browser-probe", userId, windowSeconds })
   const agent: any = await getAgentByName(c.env.BROWSER_AGENT, c.var.userId)
   try {
-    return c.json(await agent.probe(body.url))
+    return c.json(await agent.probe(parsed.data.url))
   } catch (e) {
     return errorResponse(c, "POST /api/browser/probe", e)
   }
@@ -529,7 +543,12 @@ app.get("/api/start/preflight", async c => {
 })
 
 app.post("/api/start", async c => {
-  const body = await c.req.json().catch(() => ({}))
+  // AUDIT H1/H2: goal is the only input; it is now schema-validated and
+  // length-capped (previously an unbounded string interpolated verbatim into
+  // the system prompt).
+  const parsed = await readJsonBody(c, startRunSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
   // NOTE: POST /api/start NO LONGER has a 428 pre-flight gate. The gate
   // was designed to prevent silent no-op runs, but in practice it confused
   // users who expected the button to just work. Now:
@@ -571,9 +590,18 @@ app.get("/api/config", async c => {
 })
 
 app.put("/api/config", async c => {
-  const body = await c.req.json()
+  // AUDIT C2/H5: the body is now schema-validated AND key-allowlisted.
+  // Previously ANY keys were persisted into the harness config table —
+  // including llmProvider/customProviderUrl, which made getModel() send the
+  // SHARED LLM_API_KEY to an attacker-chosen baseURL. Model/provider config
+  // is operator-managed (src/config/llm-config.json); users may only tune
+  // goal / maxSteps (1..1000) / tokenBudget (0..50M).
+  const parsed = await readJsonBody(c, configUpdateSchema, {
+    allowedKeys: CONFIG_ALLOWED_KEYS,
+  })
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await harness.updateConfig(body) })
+  return c.json({ message: await harness.updateConfig(parsed.data) })
 })
 
 // =============================================================================
@@ -586,24 +614,42 @@ app.get("/api/schedules", async c => {
 })
 
 app.post("/api/schedules", async c => {
-  const body = await c.req.json()
+  const parsed = await readJsonBody(c, scheduleCreateSchema)
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json({
-    message: await harness.addSchedule(body.cron, body.focus ?? "all"),
-  })
+  try {
+    return c.json({
+      message: await harness.addSchedule(parsed.data.cron, parsed.data.focus ?? "all"),
+    })
+  } catch (e) {
+    // addSchedule throws on invalid cron (cron-parser) — a client-fixable
+    // input error, surfaced as a clean 400 instead of a 500.
+    return errorResponse(
+      c,
+      "POST /api/schedules",
+      e,
+      400,
+      e instanceof Error ? e.message : "Invalid schedule",
+    )
+  }
 })
 
 app.delete("/api/schedules/:id", async c => {
-  const id = Number(c.req.param("id"))
+  const id = numericParam(c, "id")
+  if (!id.ok) return id.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await harness.removeSchedule(id) })
+  return c.json({ message: await harness.removeSchedule(id.value) })
 })
 
 app.put("/api/schedules/:id/toggle", async c => {
-  const id = Number(c.req.param("id"))
-  const body = await c.req.json()
+  const id = numericParam(c, "id")
+  if (!id.ok) return id.response
+  const parsed = await readJsonBody(c, scheduleToggleSchema)
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await harness.toggleSchedule(id, body.enabled) })
+  return c.json({
+    message: await harness.toggleSchedule(id.value, parsed.data.enabled),
+  })
 })
 
 // =============================================================================
@@ -611,20 +657,25 @@ app.put("/api/schedules/:id/toggle", async c => {
 // =============================================================================
 
 app.get("/api/log", async c => {
-  const limit = Number(c.req.query("limit") ?? "50")
+  const limit = numericQuery(c, "limit", 50, 1, 500)
+  if (!limit.ok) return limit.response
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
-    return c.json(await harness.getLog(limit))
-  } catch (e: any) {
-    console.error("[/api/log] THREW:", e?.stack ?? e)
-    return c.json({ error: e?.message ?? String(e) }, 500)
+    return c.json(await harness.getLog(limit.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/log", e)
   }
 })
 
 app.get("/api/summaries", async c => {
-  const limit = Number(c.req.query("limit") ?? "10")
+  const limit = numericQuery(c, "limit", 10, 1, 100)
+  if (!limit.ok) return limit.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json(await harness.getDailySummaries(limit))
+  try {
+    return c.json(await harness.getDailySummaries(limit.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/summaries", e)
+  }
 })
 
 // =============================================================================
@@ -635,9 +686,14 @@ app.get("/api/summaries", async c => {
 // =============================================================================
 
 app.get("/api/runs", async c => {
-  const limit = Number(c.req.query("limit") ?? "20")
+  const limit = numericQuery(c, "limit", 20, 1, 200)
+  if (!limit.ok) return limit.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json(await harness.listRuns(limit))
+  try {
+    return c.json(await harness.listRuns(limit.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/runs", e)
+  }
 })
 
 app.get("/api/run/:runId/trace", async c => {
@@ -661,13 +717,11 @@ app.get("/api/memory", async c => {
 })
 
 app.put("/api/memory", async c => {
-  const body = await c.req.json()
-  if (!body?.key || typeof body.key !== "string") {
-    return c.json({ error: "key required" }, 400)
-  }
+  const parsed = await readJsonBody(c, memoryPutSchema)
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({
-    message: await harness.setMemory(body.key, String(body.value ?? "")),
+    message: await harness.setMemory(parsed.data.key, parsed.data.value ?? ""),
   })
 })
 
@@ -690,13 +744,11 @@ app.get("/api/user-memory", async c => {
 })
 
 app.put("/api/user-memory", async c => {
-  const body = await c.req.json()
-  if (!body?.key || typeof body.key !== "string") {
-    return c.json({ error: "key required" }, 400)
-  }
+  const parsed = await readJsonBody(c, memoryPutSchema)
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({
-    message: await harness.setUserMemory(body.key, String(body.value ?? "")),
+    message: await harness.setUserMemory(parsed.data.key, parsed.data.value ?? ""),
   })
 })
 
@@ -717,12 +769,10 @@ app.get("/api/goal", async c => {
 })
 
 app.put("/api/goal", async c => {
-  const body = await c.req.json()
-  if (typeof body?.goal !== "string") {
-    return c.json({ error: "goal string required" }, 400)
-  }
+  const parsed = await readJsonBody(c, goalPutSchema)
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await harness.setGoal(body.goal) })
+  return c.json({ message: await harness.setGoal(parsed.data.goal) })
 })
 
 app.post("/api/goal/synthesize", async c => {
@@ -739,23 +789,26 @@ app.get("/api/plan", async c => {
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json({ plan: await harness.getPlan() })
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+  } catch (e) {
+    return errorResponse(c, "GET /api/plan", e)
   }
 })
 
 app.post("/api/plan/advance", async c => {
-  const body = await c.req.json().catch(() => ({}))
+  // AUDIT M6: status is now enum-checked (previously any string was persisted
+  // into plan steps).
+  const parsed = await readJsonBody(c, planAdvanceSchema)
+  if (!parsed.ok) return parsed.response
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
     const plan = await harness.advancePlan(
-      body.stepId ?? null,
-      body.status ?? "complete",
-      body.result ?? null,
+      parsed.data.stepId ?? null,
+      parsed.data.status,
+      parsed.data.result ?? null,
     )
     return c.json({ plan })
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+  } catch (e) {
+    return errorResponse(c, "POST /api/plan/advance", e)
   }
 })
 
@@ -773,12 +826,13 @@ app.post("/api/plan/advance", async c => {
 
 app.get("/api/runs/:runId/events", async c => {
   const runId = c.req.param("runId")
-  const sinceSeq = Number(c.req.query("sinceSeq") ?? "0")
+  const sinceSeq = numericQuery(c, "sinceSeq", 0, 0, 1_000_000_000)
+  if (!sinceSeq.ok) return sinceSeq.response
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
-    return c.json(await harness.getTraceEvents(runId, sinceSeq))
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+    return c.json(await harness.getTraceEvents(runId, sinceSeq.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/runs/:runId/events", e)
   }
 })
 
@@ -795,8 +849,8 @@ app.get("/api/runs/:runId", async c => {
       harness.getTraceEvents(runId, 0, 2000),
     ])
     return c.json({ run, events })
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+  } catch (e) {
+    return errorResponse(c, "GET /api/runs/:runId", e)
   }
 })
 
@@ -849,23 +903,25 @@ app.get("/api/debug/validate-messages", async c => {
 })
 
 app.get("/api/trace-events", async c => {
-  const limit = Number(c.req.query("limit") ?? "200")
+  const limit = numericQuery(c, "limit", 200, 1, 1000)
+  if (!limit.ok) return limit.response
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
-    return c.json(await harness.getRecentTraceEvents(limit))
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+    return c.json(await harness.getRecentTraceEvents(limit.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/trace-events", e)
   }
 })
 
 // Token spend grouped by day — bars for the Overview chart.
 app.get("/api/tokens-by-day", async c => {
-  const days = Number(c.req.query("days") ?? "14")
+  const days = numericQuery(c, "days", 14, 1, 90)
+  if (!days.ok) return days.response
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
-    return c.json(await harness.getTokensByDay(days))
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+    return c.json(await harness.getTokensByDay(days.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/tokens-by-day", e)
   }
 })
 
@@ -874,32 +930,33 @@ app.get("/api/turn-tokens", async c => {
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
     return c.json(await harness.getTurnTokenStats())
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+  } catch (e) {
+    return errorResponse(c, "GET /api/turn-tokens", e)
   }
 })
 
 // Notifications — recent operator-relevant happenings for the bell dropdown.
 app.get("/api/notifications", async c => {
-  const limit = Number(c.req.query("limit") ?? "12")
+  const limit = numericQuery(c, "limit", 12, 1, 50)
+  if (!limit.ok) return limit.response
   const { harness } = await getAgents(c.env, c.var.userId)
   try {
-    return c.json(await harness.getRecentNotifications(limit))
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+    return c.json(await harness.getRecentNotifications(limit.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/notifications", e)
   }
 })
 
 // Single job detail — listing + cover letters + follow-ups. Backs the Kanban
 // card → Sheet drawer.
 app.get("/api/jobs/:id", async c => {
-  const jobId = Number(c.req.param("id"))
-  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   try {
-    return c.json(await jobAgent.getJob(jobId))
-  } catch (e: any) {
-    return c.json({ error: e?.message ?? String(e) }, 500)
+    return c.json(await jobAgent.getJob(jobId.value))
+  } catch (e) {
+    return errorResponse(c, "GET /api/jobs/:id", e)
   }
 })
 
@@ -925,30 +982,67 @@ app.get("/api/job-sources", async c => {
 })
 
 app.post("/api/job-sources", async c => {
-  const body = await c.req.json()
+  const parsed = await readJsonBody(c, jobSourceCreateSchema)
+  if (!parsed.ok) return parsed.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json(await jobAgent.addJobSource(body))
+  try {
+    const s = parsed.data
+    return c.json(
+      await jobAgent.addJobSource({
+        name: s.name,
+        baseUrl: s.baseUrl,
+        searchUrlTemplate: s.searchUrlTemplate,
+        notes: s.notes ?? undefined,
+      }),
+    )
+  } catch (e) {
+    // addJobSource throws descriptive TypeErrors for bad baseUrl/template —
+    // client-fixable, so 400 (previously an RPC 500).
+    return errorResponse(
+      c,
+      "POST /api/job-sources",
+      e,
+      400,
+      e instanceof Error ? e.message : "Invalid job source",
+    )
+  }
 })
 
 app.put("/api/job-sources/:id", async c => {
-  const id = Number(c.req.param("id"))
-  const body = await c.req.json()
+  const id = numericParam(c, "id")
+  if (!id.ok) return id.response
+  const parsed = await readJsonBody(c, jobSourceUpdateSchema)
+  if (!parsed.ok) return parsed.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json({
-    message: await jobAgent.updateJobSource(id, body),
-  })
+  try {
+    return c.json({
+      message: await jobAgent.updateJobSource(id.value, {
+        ...parsed.data,
+        notes: parsed.data.notes ?? undefined,
+      }),
+    })
+  } catch (e) {
+    return errorResponse(c, "PUT /api/job-sources/:id", e)
+  }
 })
 
 app.delete("/api/job-sources/:id", async c => {
-  const id = Number(c.req.param("id"))
+  const id = numericParam(c, "id")
+  if (!id.ok) return id.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await jobAgent.removeJobSource(id) })
+  return c.json({ message: await jobAgent.removeJobSource(id.value) })
 })
 
 app.post("/api/jobs", async c => {
-  const body = await c.req.json()
+  const parsed = await readJsonBody(c, jobCreateSchema)
+  if (!parsed.ok) return parsed.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json(await jobAgent.addJob(body))
+  return c.json(
+    await jobAgent.addJob({
+      ...parsed.data,
+      url: parsed.data.url ?? undefined,
+    }),
+  )
 })
 
 // Triggers a full LLM call — rate-limited per user so a scripted loop (or an
@@ -981,9 +1075,10 @@ app.post("/api/jobs/:id/cover-letter", async c => {
 })
 
 app.get("/api/jobs/:id/cover-letters", async c => {
-  const jobId = Number(c.req.param("id"))
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json(await jobAgent.getCoverLettersForJob(jobId))
+  return c.json(await jobAgent.getCoverLettersForJob(jobId.value))
 })
 
 // Tailored CV generation — same LLM cost shape as cover letters, so the same
@@ -1020,21 +1115,23 @@ app.post("/api/jobs/:id/tailored-cv", async c => {
 })
 
 app.get("/api/jobs/:id/tailored-cvs", async c => {
-  const jobId = Number(c.req.param("id"))
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json(await jobAgent.getTailoredCvsForJob(jobId))
+  return c.json(await jobAgent.getTailoredCvsForJob(jobId.value))
 })
 
 app.put("/api/jobs/:id/status", async c => {
-  const jobId = Number(c.req.param("id"))
-  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
-  const body = await c.req.json()
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
+  const parsed = await readJsonBody(c, jobStatusSchema)
+  if (!parsed.ok) return parsed.response
   // Route-level enum guard (the DO re-validates) so a bad status is a clean
   // 400 rather than a 500 from a thrown RPC error.
-  if (!JOB_STATUSES.includes(body.status)) {
+  if (!(JOB_STATUSES as readonly string[]).includes(parsed.data.status)) {
     return c.json(
       {
-        error: `Invalid status "${body.status}". Valid statuses: ${JOB_STATUSES.join(", ")}`,
+        error: `Invalid status "${parsed.data.status}". Valid statuses: ${JOB_STATUSES.join(", ")}`,
       },
       400,
     )
@@ -1042,44 +1139,47 @@ app.put("/api/jobs/:id/status", async c => {
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.updateStatus({
-      jobId,
-      status: body.status,
-      notes: body.notes,
+      jobId: jobId.value,
+      status: parsed.data.status as JobStatus,
+      notes: parsed.data.notes,
     }),
   })
 })
 
 // Edit a listing's mutable fields (notes/priority) from the job detail view.
 app.put("/api/jobs/:id", async c => {
-  const jobId = Number(c.req.param("id"))
-  if (!Number.isFinite(jobId)) return c.json({ error: "invalid id" }, 400)
-  const body = await c.req.json()
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
+  const parsed = await readJsonBody(c, jobUpdateSchema)
+  if (!parsed.ok) return parsed.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.updateJob({
-      jobId,
-      notes: typeof body.notes === "string" ? body.notes : undefined,
-      priority:
-        typeof body.priority === "number" ? body.priority : undefined,
+      jobId: jobId.value,
+      notes: parsed.data.notes,
+      priority: parsed.data.priority,
     }),
   })
 })
 
 app.delete("/api/jobs/:id", async c => {
-  const jobId = Number(c.req.param("id"))
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await jobAgent.deleteJob({ jobId }) })
+  return c.json({ message: await jobAgent.deleteJob({ jobId: jobId.value }) })
 })
 
 app.post("/api/jobs/:id/follow-up", async c => {
-  const jobId = Number(c.req.param("id"))
-  const body = await c.req.json()
+  const jobId = numericParam(c, "id")
+  if (!jobId.ok) return jobId.response
+  const parsed = await readJsonBody(c, followUpCreateSchema)
+  if (!parsed.ok) return parsed.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.addFollowUp({
-      jobId,
-      dueDate: body.dueDate,
-      note: body.note,
+      jobId: jobId.value,
+      dueDate: parsed.data.dueDate,
+      note: parsed.data.note,
     }),
   })
 })
@@ -1094,7 +1194,14 @@ app.get("/api/profile", async c => {
 })
 
 app.put("/api/profile", async c => {
-  const body = await c.req.json()
+  // AUDIT H4: the raw body was previously written key-by-key into the
+  // user_profile kv table (mass assignment — cvR2Key and friends were
+  // client-settable, and GET /api/profile/cv then fetched ANY R2 key it
+  // pointed at). The schema allowlists exactly the editable profile fields;
+  // everything else is dropped before it reaches the DO.
+  const parsed = await readJsonBody(c, profilePatchSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   // Keep `fullName` in sync with firstName/lastName so any code reading the
   // legacy single-name field (and the session display name) stays correct
@@ -1131,7 +1238,12 @@ app.post("/api/profile/cv", async c => {
   }
   await rateLimiter.consume({ key: "cv-upload", userId, windowSeconds })
   const { jobAgent } = await getAgents(c.env, userId)
-  const filename = c.req.query("filename") || "cv"
+  // AUDIT L3: filename is sanitized (basename, control chars stripped, length
+  // capped) before it is stored in R2 metadata + the profile and echoed back.
+  const filename = sanitizeFilename(
+    c.req.query("filename") ?? undefined,
+    "cv",
+  )
   const contentType = c.req.header("Content-Type") || "application/octet-stream"
   const raw = await c.req.arrayBuffer()
   if (raw.byteLength > 10 * 1024 * 1024) {
@@ -1171,6 +1283,15 @@ app.get("/api/profile/cv", async c => {
   if (!profile.cvR2Key) {
     return c.json({ error: "No CV uploaded" }, 404)
   }
+  // AUDIT H4: never fetch an R2 key outside this user's own prefix. With the
+  // profile allowlist this should be unreachable, but defense-in-depth in case
+  // a future writer reintroduces client-settable keys.
+  if (!profile.cvR2Key.startsWith(`cvs/${c.var.userId}/`)) {
+    console.error(
+      `[api] GET /api/profile/cv — profile.cvR2Key outside user prefix for ${c.var.userId}; refusing`,
+    )
+    return c.json({ error: "No CV uploaded" }, 404)
+  }
   const obj = await c.env.CV_BUCKET.get(profile.cvR2Key)
   if (!obj) {
     return c.json({ error: "CV file not found in storage" }, 404)
@@ -1197,25 +1318,26 @@ app.get("/api/follow-ups", async c => {
 // replies, shift the due date) or remove it entirely. Backs the job detail
 // view's Follow-ups tab.
 app.put("/api/follow-ups/:id", async c => {
-  const followUpId = Number(c.req.param("id"))
-  if (!Number.isFinite(followUpId)) return c.json({ error: "invalid id" }, 400)
-  const body = await c.req.json()
+  const followUpId = numericParam(c, "id")
+  if (!followUpId.ok) return followUpId.response
+  const parsed = await readJsonBody(c, followUpUpdateSchema)
+  if (!parsed.ok) return parsed.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
   return c.json({
     message: await jobAgent.updateFollowUp({
-      followUpId,
-      completed: typeof body.completed === "boolean" ? body.completed : undefined,
-      dueDate: typeof body.dueDate === "string" ? body.dueDate : undefined,
-      note: typeof body.note === "string" ? body.note : undefined,
+      followUpId: followUpId.value,
+      completed: parsed.data.completed,
+      dueDate: parsed.data.dueDate,
+      note: parsed.data.note,
     }),
   })
 })
 
 app.delete("/api/follow-ups/:id", async c => {
-  const followUpId = Number(c.req.param("id"))
-  if (!Number.isFinite(followUpId)) return c.json({ error: "invalid id" }, 400)
+  const followUpId = numericParam(c, "id")
+  if (!followUpId.ok) return followUpId.response
   const { jobAgent } = await getAgents(c.env, c.var.userId)
-  return c.json({ message: await jobAgent.deleteFollowUp({ followUpId }) })
+  return c.json({ message: await jobAgent.deleteFollowUp({ followUpId: followUpId.value }) })
 })
 
 // =============================================================================
