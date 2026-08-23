@@ -154,3 +154,58 @@ describe("Cron scheduled handler", () => {
     expect(src).not.toContain("harness.start()")
   })
 })
+
+// =============================================================================
+// Security hardening (audit remediation) — structural guarantees.
+// =============================================================================
+// The behavioral tests for the validation helpers + origin-check middleware
+// live in src/test/validation.test.ts; these assert the worker WIRING stays
+// in place (nobody reintroduces the fallback router or drops the middleware).
+// =============================================================================
+describe("Security hardening wiring", () => {
+  it("does NOT route unmatched requests to the agents-SDK DO router (audit C1)", () => {
+    const src = readSrc()
+    // The fallback forwarded /agents/{ns}/{name} — including WS upgrades —
+    // straight to idFromName(name) with no auth callback, letting any
+    // authenticated user reach any other user's Durable Objects.
+    expect(src).not.toContain("import { routeAgentRequest")
+    expect(src).not.toContain("await routeAgentRequest(")
+  })
+
+  it("mounts secure headers + the origin-check middleware (audit H3/M8)", () => {
+    const src = readSrc()
+    expect(src).toContain("secureHeaders()")
+    expect(src).toContain('app.use("*", originCheck)')
+    // Origin check must sit AFTER the cors middleware (preflight is answered
+    // by cors and must never be blocked) — assert declaration order.
+    expect(src.indexOf("cors(")).toBeLessThan(src.indexOf("app.use(\"*\", originCheck)"))
+  })
+
+  it("config route is key-allowlisted (audit C2)", () => {
+    const src = readSrc()
+    expect(src).toContain("CONFIG_ALLOWED_KEYS")
+    expect(src).toContain("readJsonBody")
+  })
+
+  it("gates the E2E OTP bypass behind IS_LOCAL_DEV (audit M1)", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const authSrc = fs.readFileSync(
+      path.join(__dirname, "..", "auth", "auth.ts"),
+      "utf-8",
+    )
+    expect(authSrc).toContain(
+      'env.E2E_OTP_BYPASS === "1" && isLocalDev',
+    )
+  })
+
+  it("requires server-side confirmation for account deletion (audit M9)", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const accountSrc = fs.readFileSync(
+      path.join(__dirname, "..", "auth", "account-routes.ts"),
+      "utf-8",
+    )
+    expect(accountSrc).toContain("isAccountDeleteConfirmed")
+  })
+})
