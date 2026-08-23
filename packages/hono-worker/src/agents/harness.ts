@@ -763,6 +763,22 @@ export class Harness extends Agent<Env, HarnessState> {
     reason: string,
   ) {
     const today = new Date().toISOString().slice(0, 10)
+    // Emit run_end so run rollups (getRun/listRuns) report a status for
+    // cleanly-finished runs. Previously ONLY finishRunAuto (abnormal stops)
+    // wrote run_end — every run that ended via the `finish` tool surfaced
+    // status:null in the API and the UI masked it as "Completed".
+    this.pushTraceEvent({
+      runId,
+      eventType: "run_end",
+      label: "done",
+      payload: JSON.stringify({
+        summary,
+        decisions,
+        reason,
+        tokensUsed: this.state.tokensUsed,
+        steps: this.state.currentStep,
+      }),
+    })
     execSql(
       this,
       `INSERT INTO daily_summaries (run_id, date, goal, summary, decisions, steps_taken, focus)
@@ -1636,14 +1652,16 @@ export class Harness extends Agent<Env, HarnessState> {
   > {
     this.ensureDb()
     // trace_events is the source of truth for new runs. We derive steps from
-    // the max step_number on a step_end event (one per turn), tokens from the
+    // the max step_number on a HARNESS step_end event (one per turn —
+    // sub-agent step_ends carry their own inner-loop numbers), tokens from the
     // sum of tokens_in + tokens_out on step_end events, and status/goal from
-    // the run_start / run_end events.
+    // the harness-level run_start / run_end events only (parent_id IS NULL, so
+    // sub-agent markers never masquerade as run metadata).
     const rows = execSql(
       this,
       `SELECT run_id,
               MIN(created_at) AS started_at,
-              COALESCE(MAX(CASE WHEN event_type='step_end' THEN step_number END), 0) AS steps,
+              COALESCE(MAX(CASE WHEN event_type='step_end' AND parent_id IS NULL THEN step_number END), 0) AS steps,
               COALESCE(SUM(CASE WHEN event_type='step_end'
                                 THEN COALESCE(tokens_in,0) + COALESCE(tokens_out,0)
                                 ELSE 0 END), 0) AS tokens
@@ -1667,6 +1685,7 @@ export class Harness extends Agent<Env, HarnessState> {
                   MAX(CASE WHEN event_type='run_start' THEN json_extract(payload,'$.goal') END) AS goal
              FROM trace_events
             WHERE run_id IN (${placeholders}) AND event_type IN ('run_start','run_end')
+              AND parent_id IS NULL
             GROUP BY run_id`,
           runIds,
         )
@@ -1730,23 +1749,34 @@ export class Harness extends Agent<Env, HarnessState> {
     tokensReasoning: number
     cacheRead: number
     cacheWrite: number
+    subAgentTokensIn: number
+    subAgentTokensOut: number
     finishReason: string | null
   }> {
     this.ensureDb()
+    // Rollup semantics: goal / status / steps / finishReason derive ONLY from
+    // harness-level events (parent_id IS NULL). Sub-agent inner-loop events
+    // (write_cover_letter, discover_jobs, …) carry their own run markers, step
+    // numbers, and goals under the same runId — without the filter, SQLite's
+    // string MAX once surfaced a sub-agent's "tailored CV: …" goal as the
+    // run's goal. Token sums deliberately include ALL events (real cost), with
+    // the sub-agent share split out for the UI.
     const rows = execSql(
       this,
       `SELECT
           MIN(created_at) AS started_at,
           MAX(created_at) AS ended_at,
-          MAX(CASE WHEN event_type='run_end' THEN label END) AS status,
-          MAX(CASE WHEN event_type='run_start' THEN json_extract(payload,'$.goal') END) AS goal,
-          COALESCE(MAX(CASE WHEN event_type='step_end' THEN step_number END), 0) AS steps,
+          MAX(CASE WHEN event_type='run_end' AND parent_id IS NULL THEN label END) AS status,
+          MAX(CASE WHEN event_type='run_start' AND parent_id IS NULL THEN json_extract(payload,'$.goal') END) AS goal,
+          COALESCE(MAX(CASE WHEN event_type='step_end' AND parent_id IS NULL THEN step_number END), 0) AS steps,
           COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(tokens_in,0) END),0) AS tokens_in,
           COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(tokens_out,0) END),0) AS tokens_out,
           COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(tokens_reasoning,0) END),0) AS tokens_reasoning,
           COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(cache_read,0) END),0) AS cache_read,
           COALESCE(SUM(CASE WHEN event_type='step_end' THEN COALESCE(cache_write,0) END),0) AS cache_write,
-          MAX(CASE WHEN event_type='step_end' THEN label END) AS finish_reason
+          COALESCE(SUM(CASE WHEN event_type='step_end' AND parent_id IS NOT NULL THEN COALESCE(tokens_in,0) END),0) AS sub_tokens_in,
+          COALESCE(SUM(CASE WHEN event_type='step_end' AND parent_id IS NOT NULL THEN COALESCE(tokens_out,0) END),0) AS sub_tokens_out,
+          MAX(CASE WHEN event_type='step_end' AND parent_id IS NULL THEN label END) AS finish_reason
          FROM trace_events
         WHERE run_id = ?`,
       [runId],
@@ -1764,6 +1794,8 @@ export class Harness extends Agent<Env, HarnessState> {
       tokensReasoning: Number(r.tokens_reasoning) || 0,
       cacheRead: Number(r.cache_read) || 0,
       cacheWrite: Number(r.cache_write) || 0,
+      subAgentTokensIn: Number(r.sub_tokens_in) || 0,
+      subAgentTokensOut: Number(r.sub_tokens_out) || 0,
       finishReason: (r.finish_reason as string) ?? null,
     }
   }

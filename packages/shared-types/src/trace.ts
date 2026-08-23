@@ -7,15 +7,26 @@
 // one table with monotonic seq ordering.
 //
 // event_type taxonomy:
-//   run_start      — run began (carries goal + composed system prompt ref)
+//   run_start      — run began (carries goal + composed system prompt ref).
+//                    HARNESS ONLY: sub-agent inner loops emit subagent_start
+//                    instead, so run rollups (goal, budgets, status) never see
+//                    a second run_start under the same runId.
 //   system         — the FULL composed system prompt for this run (soul.md +
-//                    default.md + user_memory + live context)
+//                    default.md + user_memory + live context). Harness rows
+//                    carry label=null; sub-agent rows carry label=
+//                    "system-prompt" and a parentId.
 //   prompt         — messages array actually sent to the model for this turn
 //   reasoning      — model chain-of-thought delta
 //   text           — model text output delta
 //   tool_call      — the model invoked a tool (carries args)
 //   tool_result    — the tool returned (carries result)
 //   step_end       — one LLM turn finished (usage, finishReason, model, duration)
+//   subagent_start — a sub-agent's inner LLM loop began inside a harness tool
+//                    call (nested via parentId; carries its own goal + step
+//                    ceiling). Never counted as a run by rollups.
+//   compaction     — the harness compacted the conversation (mid-run context
+//                    guardrail): carries beforeTokens, keptMessages, and the
+//                    summary that replaced the older history.
 //   run_end        — run finished (carries summary)
 //   error          — run errored
 //
@@ -46,6 +57,8 @@ export type TraceEventType =
   | "tool_call"
   | "tool_result"
   | "step_end"
+  | "subagent_start"
+  | "compaction"
   | "run_end"
   | "error"
 

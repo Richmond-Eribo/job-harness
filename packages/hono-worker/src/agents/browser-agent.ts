@@ -700,7 +700,7 @@ export class BrowserAgent extends Agent<Env, BrowserAgentState> {
       runId,
       redactKeys: [],
     })
-    recorder.recordRunStart(`browse+extract: ${opts.url}`, opts.maxSteps ?? 6, 0)
+    recorder.recordSubAgentStart(`browse+extract: ${opts.url}`, opts.maxSteps ?? 6, 0)
 
     const nav = await this.navigate(opts.url)
     if (!nav.ok) {

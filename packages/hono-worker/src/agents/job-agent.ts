@@ -429,7 +429,7 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
       runId,
       redactKeys: obsConfig.logging?.redactToolArgs ?? [],
     })
-    recorder.recordRunStart(`job search: ${criteria}`, maxPages * 6, 0)
+    recorder.recordSubAgentStart(`job search: ${criteria}`, maxPages * 6, 0)
 
     // ── Origin guard helper ──────────────────────────────────────────────
     // The actual security boundary. Returns the source row whose origin
@@ -939,7 +939,7 @@ you found and stop rather than fabricating results to fill a quota.`
       runId,
       redactKeys: obsConfig.logging?.redactToolArgs ?? [],
     })
-    recorder.recordRunStart(`cover letter: ${job.company} / ${job.title}`, 1, 0)
+    recorder.recordSubAgentStart(`cover letter: ${job.company} / ${job.title}`, 1, 0)
 
     // Generate cover letter
     const systemPrompt = `You are an expert cover letter writer. Generate a compelling, tailored cover letter.
@@ -1055,7 +1055,7 @@ Generate a tailored, compelling cover letter.`
       runId,
       redactKeys: obsConfig.logging?.redactToolArgs ?? [],
     })
-    recorder.recordRunStart(`tailored CV: ${job.company} / ${job.title}`, 1, 0)
+    recorder.recordSubAgentStart(`tailored CV: ${job.company} / ${job.title}`, 1, 0)
 
     const systemPrompt = `You are an expert CV writer who tailors résumés to specific job postings.
 

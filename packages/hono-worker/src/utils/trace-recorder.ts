@@ -183,8 +183,11 @@ export class TraceRecorder {
 
   /** Emit one event: buffer it AND forward to the live sink if present. */
   record(ev: TraceEventInput): void {
-    // Always tag with the owning agent so attribution survives ingestion.
-    const tagged: TraceEventInput = { ...ev, agent: this.agent }
+    // Tag with the owning agent UNLESS the event already carries one —
+    // sub-agent events ingested through the harness recorder keep their own
+    // attribution (job-agent / browser-agent); clobbering it with this.agent
+    // is what lost attribution before (every nested row read "harness").
+    const tagged: TraceEventInput = { ...ev, agent: ev.agent ?? this.agent }
     this.buffer.push(tagged)
     try {
       this.sink?.(tagged)
@@ -287,6 +290,22 @@ export class TraceRecorder {
     this.record({
       runId: this.runId,
       eventType: "run_start",
+      payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
+    })
+  }
+
+  /**
+   * Sub-agent counterpart of recordRunStart — for the inner LLM loops run by
+   * JobApplicationAgent / BrowserAgent inside one harness tool call. Emits
+   * `subagent_start`, NOT `run_start`: a sub-agent loop is not a run, and a
+   * second run_start under the harness's runId pollutes run rollups
+   * (getRun/listRuns derive goal + budgets from run_start rows, and SQLite's
+   * string MAX once surfaced "tailored CV: …" as a whole run's goal).
+   */
+  recordSubAgentStart(goal: string, maxSteps: number, tokenBudget: number) {
+    this.record({
+      runId: this.runId,
+      eventType: "subagent_start",
       payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
     })
   }
