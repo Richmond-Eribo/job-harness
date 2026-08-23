@@ -15,14 +15,16 @@
 
 import { Hono } from "hono"
 import { cors } from "hono/cors"
+import { secureHeaders } from "hono/secure-headers"
 
-import { routeAgentRequest, getAgentByName } from "agents"
+import { getAgentByName } from "agents"
 import type { Env } from "./types"
 import type { AppEnv } from "./types/app-env"
 import { Harness } from "./agents"
 
 import { getAuth } from "./auth/session"
 import { requireAuth } from "./auth/require-auth"
+import { originCheck } from "./middleware/origin-check"
 import {
   issueExtensionTokenRoute,
   userIdFromRelayRequest,
@@ -112,6 +114,17 @@ app.use(
     allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   }),
 )
+
+// ── Security headers (audit M8) ───────────────────────────────────────────
+// Baseline hardening on every response: nosniff, SAMEORIGIN framing,
+// referrer policy. No CSP here — this worker serves JSON only.
+app.use("*", secureHeaders())
+
+// ── CSRF origin-check on mutating routes (audit H3) ───────────────────────
+// Must run AFTER cors (preflight OPTIONS is answered by the cors middleware
+// and never reaches this) and BEFORE any mutating handler. See
+// src/middleware/origin-check.ts for the exemption list.
+app.use("*", originCheck)
 
 // ── Better Auth handler ──────────────────────────────────────────────────
 // Better Auth's handler owns the full request/response for its routes
@@ -1233,17 +1246,16 @@ app.delete("/api/account", async c => {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    // 1. Try the Hono app (dashboard + /api/* + everything else it defines).
-    const honoResponse = await app.fetch(request, env as any)
-    if (honoResponse.status !== 404) return honoResponse
-
-    // 2. Agent WebSocket routing (for real-time DO connections) — only runs
-    //    when Hono didn't match (it returns 404 for unknown routes).
-    const agentResponse = await routeAgentRequest(request, env)
-    if (agentResponse) return agentResponse
-
-    // 3. Final fallback.
-    return new Response("Not found", { status: 404 })
+    // AUDIT C1: the previous flow fell through to the agents-SDK router
+    // (`routeAgentRequest`) whenever Hono returned 404. That router forwards
+    // `/agents/{namespace}/{name}` — including WebSocket upgrades — straight
+    // to `idFromName(name)` with NO auth callback, so ANY authenticated user
+    // could reach ANY other user's Durable Objects (e.g. hijack a victim's
+    // browser-relay: BrowserRelay.fetch accepts any WS upgrade). No client in
+    // this repo uses /agents/* URLs (the extension connects via
+    // /browser/relay; the dashboard uses /api/*), so the fallback is removed
+    // outright — unknown paths now 404 like any other route.
+    return app.fetch(request, env as any)
   },
 
   // Cron watchdog — multi-tenant with per-user staggering.
