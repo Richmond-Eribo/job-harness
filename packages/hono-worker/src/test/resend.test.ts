@@ -81,12 +81,17 @@ describe("sendOtpEmail — production mode (sends the code)", () => {
     )
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    // Verify the payload sent to Resend includes the OTP code.
+    // Verify the payload sent to Resend includes the OTP code — in the BODY
+    // only. P3-6/M20 deliberately moved the code out of the subject line:
+    // subjects are indexed by some clients and shown in lock-screen
+    // notification previews, so they're a higher-leakage channel.
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.to).toBe("user@test.com")
     expect(body.from).toBe("agent@test.com")
     expect(body.html).toContain("482910")
-    expect(body.subject).toContain("482910")
+    expect(body.text).toContain("482910")
+    expect(body.subject).not.toContain("482910")
+    expect(body.subject).toContain("verification code")
   })
 
   it("throws a descriptive error when Resend returns an error", async () => {

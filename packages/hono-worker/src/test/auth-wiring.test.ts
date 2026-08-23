@@ -13,7 +13,8 @@ import rateLimitsConfig from "../config/rate-limits.json"
  *   1. The auth handler is mounted on /api/auth/* and logs 5xx.
  *   2. emailAndPassword is enabled + requires email verification.
  *   3. The emailOTP plugin is wired (sendVerificationOTP → sendOtpEmail) with
- *      hashed storage, 6-digit codes, and send-on-signup.
+ *      hashed storage, 6-digit codes, and an explicit frontend send after
+ *      signup (NOT send-on-signup — see the test for why).
  *   4. The rate-limits.json is well-formed and the rate-limiter reads it.
  */
 
@@ -24,6 +25,10 @@ const rateLimiterSrc = readFileSync(
   "utf-8",
 )
 const resendSrc = readFileSync(join(__dirname, "..", "auth", "resend.ts"), "utf-8")
+const signupSrc = readFileSync(
+  join(__dirname, "..", "..", "..", "frontend", "src", "pages", "SignupPage.tsx"),
+  "utf-8",
+)
 
 describe("Better Auth mounting", () => {
   it("mounts the auth handler on /api/auth/*", () => {
@@ -58,9 +63,16 @@ describe("Email/password + OTP wiring", () => {
     expect(authSrc).toMatch(/otpLength:\s*6/)
   })
 
-  it("sends the OTP on signup and routes core verification through OTP", () => {
-    expect(authSrc).toContain("sendVerificationOnSignUp: true")
+  it("routes core verification through OTP (explicit send after signup)", () => {
+    // sendVerificationOnSignUp is deliberately FALSE: Better Auth's
+    // signUp.email short-circuits duplicate-email signups to a synthetic 200
+    // (anti-enumeration) BEFORE the send path, so auto-send would strand
+    // those users without a code. Instead the frontend explicitly calls
+    // sendVerificationOtp right after signUp.email returns — which mints +
+    // sends a fresh code on BOTH the new-user and duplicate paths.
+    expect(authSrc).toContain("sendVerificationOnSignUp: false")
     expect(authSrc).toContain("overrideDefaultEmailVerification: true")
+    expect(signupSrc).toMatch(/sendVerificationOtp/)
   })
 
   it("the frontend uses email/password sign-up (not magic-link)", () => {
