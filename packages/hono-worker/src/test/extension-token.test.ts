@@ -38,9 +38,14 @@ describe("extension tokens — sign/verify roundtrip", () => {
 
   it("rejects a tampered token", async () => {
     const token = await mintExtensionToken(USER_ID, SECRET)
-    // Flip a character in the signature (last segment).
+    // Flip the FIRST character of the signature. It encodes the top 6 bits of
+    // the first HMAC byte, so changing it always changes the decoded bytes.
+    // (Flipping the LAST character is flaky by construction: a 32-byte HMAC
+    // base64-encodes to 43 chars where the final char carries only 4
+    // significant bits — swapping it for a char with the same top 4 bits
+    // (A↔B↔C↔D) decodes to the IDENTICAL signature and verifies, ~6% of runs.)
     const parts = token.split(".")
-    const tamperedSig = parts[2].slice(0, -1) + (parts[2].endsWith("A") ? "B" : "A")
+    const tamperedSig = (parts[2].startsWith("A") ? "B" : "A") + parts[2].slice(1)
     const tampered = `${parts[0]}.${parts[1]}.${tamperedSig}`
     const verified = await verifyExtensionToken(tampered, SECRET)
     expect(verified).toBeNull()
