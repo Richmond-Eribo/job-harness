@@ -187,14 +187,28 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
       // dropped by modern browsers (Chrome 80+, current FF/Safari), which was
       // the bug that previously made sessions never persist in dev.
       //
-      // PROD (app.example.com → api.example.com, https): SameSite=None + Secure.
-      // Genuinely cross-site credentialed fetches require None, and https makes
-      // Secure legal. No domain is set — the cookie stays scoped to the API
-      // origin (sent on cross-origin fetches with credentials, never readable
-      // from document.cookie on the frontend origin).
+      // PROD (job-agent.example.dev → api-job-agent.example.dev, https):
+      // SameSite=None + Secure. Genuinely cross-origin credentialed fetches
+      // require None, and https makes Secure legal.
+      //
+      // COOKIE DOMAIN (prod only): the session cookie MUST also reach the WEB
+      // subdomain. The frontend resolves sessions server-side by forwarding
+      // the frontend-origin request's Cookie header to this API (see
+      // packages/frontend/src/lib/auth.functions.ts) — with a host-only cookie
+      // that header is empty on the web subdomain, so every authed route
+      // bounces to /login (the prod login loop; dev never sees it because
+      // localhost ports share one cookie jar). Scoping to the parent domain
+      // via COOKIE_DOMAIN makes the browser send it to BOTH subdomains.
+      // Tradeoff: the cookie becomes visible to other subdomains of a domain
+      // you control — acceptable for a single-operator domain. Local dev is
+      // exempt (host-only works there) and a bare hostname is rejected.
       defaultCookieAttributes: {
         sameSite: isLocalDev ? "lax" : "none",
         secure: !isLocalDev,
+        domain:
+          !isLocalDev && env.COOKIE_DOMAIN && env.COOKIE_DOMAIN.startsWith(".")
+            ? env.COOKIE_DOMAIN
+            : undefined,
       },
     },
 

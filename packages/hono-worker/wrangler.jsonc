@@ -29,9 +29,13 @@
   // is a real secret set via `wrangler secret put LLM_API_KEY`.
   // CAPTURE_TRACE is the non-secret on/off for reasoning capture (detailed
   // caps live in src/config/observability-config.json).
+  // COOKIE_DOMAIN scopes the session cookie to the parent domain in PROD so
+  // the web subdomain receives it (see auth.ts defaultCookieAttributes);
+  // inert in local dev (localhost gate).
   "vars": {
     "MAX_STEPS": "100",
     "CAPTURE_TRACE": "1",
+    "COOKIE_DOMAIN": ".richmonderibo.dev",
   },
 
   // Workers AI binding. Optional in v1 (harness calls the BYOK model via the

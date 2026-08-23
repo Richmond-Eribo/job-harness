@@ -85,6 +85,11 @@ export interface Env {
   // Public base URL of the API deployment (e.g. https://api.example.com). Used
   // by Better Auth to build absolute callback URLs and as a trusted CORS origin.
   BETTER_AUTH_URL?: string
+  // PROD only: parent domain (WITH leading dot, e.g. ".richmonderibo.dev") the
+  // session cookie is scoped to, so the browser sends it to BOTH the web and
+  // api subdomains — the frontend's server-side session forwarding depends on
+  // it (see auth.ts defaultCookieAttributes). Ignored on localhost/127.0.0.1.
+  COOKIE_DOMAIN?: string
 
   // Public base URL of the STANDALONE frontend (TanStack Start), e.g.
   // https://app.example.com (prod) or http://localhost:3000 (dev). Added to
