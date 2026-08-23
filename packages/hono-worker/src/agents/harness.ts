@@ -36,8 +36,18 @@ import {
   ingestSubAgentTrace,
 } from "../utils/trace-recorder"
 import { buildSystemPrompt, buildKickoffMessage } from "./prompt"
+import {
+  compactConversation,
+  getCompactionConfig,
+  shouldCompact,
+} from "./compaction"
 import { buildAgentTools } from "../tools"
 import { getRateLimiter } from "../utils/get-agents"
+import {
+  formatProfileForPrompt,
+  deriveDefaultGoal,
+} from "../utils/profile-summary"
+import type { JobApplicationAgent } from "./job-agent"
 import {
   LLM_RATE_LIMIT,
   ACTIVE_RUN_LIMIT,
@@ -361,6 +371,10 @@ interface LoopState {
   lastToolArgs: string
   lastToolCallAtMs: number
   consecutiveNoToolTurns: number
+  /** Input tokens of the most recent LLM turn — the compaction trigger signal. */
+  lastPromptTokens: number
+  /** How many times this run has compacted its conversation (budget guard). */
+  compactions: number
 }
 
 function emptyLoopState(): LoopState {
@@ -370,6 +384,8 @@ function emptyLoopState(): LoopState {
     lastToolArgs: "",
     lastToolCallAtMs: 0,
     consecutiveNoToolTurns: 0,
+    lastPromptTokens: 0,
+    compactions: 0,
   }
 }
 
@@ -2210,6 +2226,11 @@ export class Harness extends Agent<Env, HarnessState> {
         tokensUsed: this.state.tokensUsed + used,
       })
     }
+    // Input-token signal for the compaction guardrail (checked after this
+    // turn's messages are appended + tool results pruned, below).
+    if (typeof resolvedUsage?.inputTokens === "number") {
+      loopState.lastPromptTokens = resolvedUsage.inputTokens
+    }
 
     // ---- finish() tool ended the run ----
     if ((this.state.status as HarnessStatus) === "done") {
@@ -2295,6 +2316,72 @@ export class Harness extends Agent<Env, HarnessState> {
       4 + Math.floor(this.state.currentStep / 10),
     )
     compactToolResults(messages, adaptiveRetain)
+
+    // ---- Memory guardrail: mid-run compaction (layer 2 of 3) ----
+    // Layer 1 is the tool-result clearing just above; when the prompt STILL
+    // crosses the threshold, summarize the conversation and continue with
+    // summary + recent tail (Anthropic-style client-side compaction). Layer 3
+    // remains the hard token-budget stop. A compaction failure must never
+    // kill the run — on error we keep the un-compacted history.
+    if (shouldCompact(loopState, getCompactionConfig(this.env))) {
+      const beforePromptTokens = loopState.lastPromptTokens
+      const messagesBefore = messages.length
+      try {
+        const planSummary = plan
+          ? JSON.stringify({
+              currentStep: plan.currentStep,
+              steps: plan.steps.map((s: any) => ({
+                description: s.description,
+                status: s.status,
+                result: s.result ?? null,
+              })),
+            })
+          : undefined
+        const compacted = await compactConversation({
+          model,
+          messages,
+          goal,
+          planSummary,
+          providerParams: getParams(this.env) as any,
+        })
+        messages.length = 0
+        messages.push(...compacted.messages)
+        normalizeToolOutputs(messages)
+        loopState.compactions++
+        // Re-arm only after the next turn's measurement — otherwise every
+        // tick past the threshold would compact again.
+        loopState.lastPromptTokens = 0
+        this.pushTraceEvent({
+          runId,
+          eventType: "compaction",
+          label: "context-compacted",
+          payload: JSON.stringify({
+            beforeTokens: beforePromptTokens,
+            messagesBefore,
+            messagesKept: Math.max(0, compacted.messages.length - 1),
+            summary: compacted.summary,
+          }),
+          tokensOut: compacted.summaryTokensOut,
+        })
+        this.logStep(
+          runId,
+          this.state.currentStep,
+          "compaction",
+          null,
+          compacted.summary.slice(0, 2000),
+        )
+      } catch (err: any) {
+        this.pushTraceEvent({
+          runId,
+          eventType: "error",
+          label: "compaction-failed",
+          payload: `Compaction failed (continuing un-compacted): ${
+            err?.message ?? String(err)
+          }`,
+        })
+        loopState.lastPromptTokens = 0
+      }
+    }
 
     // ---- Advance step counter + checkpoint ----
     const nextStep = this.state.currentStep + 1
