@@ -18,9 +18,11 @@ import { api } from "../lib/api"
 import { AuthShowcase } from "../components/AuthShowcase"
 
 // Signup — 2 steps on one page:
-//   1. Account  — firstName + lastName + email + password → signUp.email
-//                 (creates the user + emails OTP). Names are REQUIRED here —
-//                 there's no separate profile gate later.
+//   1. Account  — firstName + lastName + email + password → signUp.email.
+//                 The SERVER mints + emails the OTP as part of that request
+//                 (worker hooks.after) — the client never sends it itself.
+//                 Names are REQUIRED here — there's no separate profile gate
+//                 later.
 //   2. Verify   — 6-digit OTP via the segmented input-otp component → verifyEmail
 //                 → writes names to profile KV → navigate to /onboarding (the
 //                 wizard collects profile details, CV, and browser pairing).
@@ -164,6 +166,14 @@ export function SignupPage() {
       // requireEmailVerification is on) deliberately returns a 200 with a
       // synthetic user object — an anti-enumeration measure so an attacker
       // can't learn which emails are registered. No second row is ever created.
+      //
+      // The SERVER mints + emails the OTP as part of this ONE request (the
+      // worker's hooks.after owns the send — see its auth.ts). The client does
+      // NOT call sendVerificationOtp here: that separate request was the
+      // double-send bug (a duplicate form submit ran it twice, and the
+      // synthetic-200 path let the second run sail through). The server also
+      // enforces a 30s send cooldown, so the verify step's Resend button is
+      // idempotent.
       const { error: signUpError } = await authClient.signUp.email({
         email: e,
         password,
@@ -173,28 +183,9 @@ export function SignupPage() {
         throw new Error(signUpError.message ?? "Sign-up failed")
       }
 
-      // EXPLICITLY mint + send the OTP. The worker's emailOTP plugin has
-      // sendVerificationOnSignUp disabled (intentionally — see the worker
-      // comment in auth.ts), so signUp.email alone does NOT send a code. This
-      // call is the single source of truth for OTP delivery at signup. It
-      // works identically whether the signup created a new user or hit the
-      // duplicate-email path (which returns a synthetic 200 for anti-
-      // enumeration) — the user gets a code either way and can proceed.
-      const { error: otpError } = await authClient.emailOtp.sendVerificationOtp(
-        {
-          email: e,
-          type: "email-verification",
-        },
-      )
-      if (otpError) {
-        // Don't fail the whole signup if the OTP send fails — the user can
-        // hit Resend on the next screen. But surface it.
-        toast.error("Couldn't send the verification code", {
-          description: otpError.message ?? "Try Resend on the next screen.",
-        })
-      } else {
-        bumpOtpSendLog(e)
-      }
+      // The signup request triggered a server-side send — count it toward the
+      // client-side bombing cap like the old explicit send did.
+      bumpOtpSendLog(e)
 
       setEmail(e)
       setFirstName(fn)

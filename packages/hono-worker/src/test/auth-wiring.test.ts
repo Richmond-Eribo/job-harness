@@ -13,8 +13,9 @@ import rateLimitsConfig from "../config/rate-limits.json"
  *   1. The auth handler is mounted on /api/auth/* and logs 5xx.
  *   2. emailAndPassword is enabled + requires email verification.
  *   3. The emailOTP plugin is wired (sendVerificationOTP → sendOtpEmail) with
- *      hashed storage, 6-digit codes, and an explicit frontend send after
- *      signup (NOT send-on-signup — see the test for why).
+ *      hashed storage, 6-digit codes, and a SERVER-driven send at signup via
+ *      top-level hooks (NOT the plugin's send-on-signup — see the test for
+ *      why; behavioral coverage lives in signup-otp.test.ts).
  *   4. The rate-limits.json is well-formed and the rate-limiter reads it.
  */
 
@@ -63,16 +64,17 @@ describe("Email/password + OTP wiring", () => {
     expect(authSrc).toMatch(/otpLength:\s*6/)
   })
 
-  it("routes core verification through OTP (explicit send after signup)", () => {
-    // sendVerificationOnSignUp is deliberately FALSE: Better Auth's
-    // signUp.email short-circuits duplicate-email signups to a synthetic 200
-    // (anti-enumeration) BEFORE the send path, so auto-send would strand
-    // those users without a code. Instead the frontend explicitly calls
-    // sendVerificationOtp right after signUp.email returns — which mints +
-    // sends a fresh code on BOTH the new-user and duplicate paths.
+  it("routes core verification through OTP (SERVER-driven send at signup)", () => {
+    // sendVerificationOnSignUp is deliberately FALSE — the plugin's own
+    // after-hook is inert under overrideDefaultEmailVerification and the core
+    // send path skips the duplicate-email synthetic 200. Our top-level
+    // hooks.after owns the signup send instead: it reads the email off the
+    // signUp.email RESPONSE, so it fires on BOTH the new-user and duplicate
+    // paths. The frontend no longer calls sendVerificationOtp after signup
+    // (that second request was the double-send bug) — see signup-otp.test.ts.
     expect(authSrc).toContain("sendVerificationOnSignUp: false")
     expect(authSrc).toContain("overrideDefaultEmailVerification: true")
-    expect(signupSrc).toMatch(/sendVerificationOtp/)
+    expect(authSrc).toMatch(/after:\s*createAuthMiddleware/)
   })
 
   it("the frontend uses email/password sign-up (not magic-link)", () => {

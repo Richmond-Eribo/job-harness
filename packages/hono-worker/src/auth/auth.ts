@@ -28,9 +28,22 @@
 // Resend is called UNCONDITIONALLY (no dev-mode console fallback). If
 // RESEND_API_KEY or MAIL_FROM is missing, sendOtpEmail throws loudly — see
 // resend.ts. Verify your sending domain at resend.com/domains.
+//
+// OTP DELIVERY (server-driven):
+//   The server sends the verification code at signUp.email time via the
+//   top-level `hooks.after` below — the frontend does NOT call
+//   send-verification-otp after signup. This makes "one signup request → at
+//   most one OTP email" structural: double form submits, the legacy frontend
+//   during a deploy window, and rapid Resend clicks all collapse onto a
+//   30s send cooldown (see OTP_SEND_COOLDOWN_MS). The hook fires on BOTH
+//   signup outcomes — fresh user AND the duplicate-email synthetic 200
+//   (anti-enumeration) — because it reads the email off the endpoint's
+//   response, which carries the requested address either way.
 // =============================================================================
 import { betterAuth } from "better-auth"
 import { emailOTP } from "better-auth/plugins"
+import { APIError, createAuthMiddleware, isAPIError } from "better-auth/api"
+import { z } from "zod"
 import type { Env } from "../types"
 import { sendOtpEmail } from "./resend"
 
@@ -58,6 +71,87 @@ export interface AuthSession {
 }
 
 export type Auth = ReturnType<typeof createAuth>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-driven signup OTP — paths, cooldown, and response helpers.
+// ─────────────────────────────────────────────────────────────────────────────
+const SIGNUP_PATH = "/sign-up/email"
+const SEND_OTP_PATH = "/email-otp/send-verification-otp"
+
+/**
+ * Minimum gap between OTP emails for the same address. A code minted inside
+ * this window is still valid (expiry is 5 minutes), so a second send adds
+ * nothing but a second email — the historical double-send bug. 30s matches
+ * common provider resend cooldowns and still allows a genuine "it never
+ * arrived" retry quickly after.
+ */
+const OTP_SEND_COOLDOWN_MS = 30_000
+
+/**
+ * Verification-row identifier Better Auth's emailOTP plugin uses for email
+ * verification codes: `${type}-otp-${email}` (toOTPIdentifier in the plugin).
+ * Cooldown checks read the latest row for this identifier.
+ */
+const emailVerificationIdentifier = (email: string) =>
+  `email-verification-otp-${email.toLowerCase()}`
+
+/**
+ * Front-door signup validation. Better Auth re-validates internally; this
+ * schema exists so malformed bodies die with field-specific messages before
+ * any DB work, and so the contract the SignupPage posts against is explicit
+ * in one place. Unknown keys (image, callbackURL, …) are stripped by zod —
+ * only these three fields are gated. Exported for unit tests.
+ */
+export const signUpBodySchema = z.object({
+  email: z.email("must be a valid email address"),
+  password: z
+    .string()
+    .min(8, "must be at least 8 characters")
+    .max(128, "must be at most 128 characters"),
+  name: z.string().trim().min(1, "is required").max(200, "must be at most 200 characters"),
+})
+
+function zodIssuesDetail(error: z.ZodError): string {
+  return error.issues
+    .map(i => `${i.path.join(".") || "body"}: ${i.message}`)
+    .join("; ")
+}
+
+/**
+ * True when a verification row was created inside the cooldown window. D1
+ * returns createdAt as an ISO string; the adapter may hand back a Date —
+ * accept both, and treat anything unparsable as "not in cooldown" (fail
+ * open toward sending, never toward silently swallowing a first code).
+ * Exported for unit tests.
+ */
+export function isWithinSendCooldown(createdAt: unknown): boolean {
+  if (typeof createdAt !== "string" && !(createdAt instanceof Date)) return false
+  const t = new Date(createdAt).getTime()
+  return Number.isFinite(t) && Date.now() - t < OTP_SEND_COOLDOWN_MS
+}
+
+/**
+ * Pull user.email out of a signUpEmail endpoint result. Works for BOTH
+ * outcomes — the fresh-user 200 and the duplicate-email synthetic 200
+ * (anti-enumeration: the fake user carries the requested address by design,
+ * which is exactly what lets the after-hook send on repeat signups too).
+ * Mirrors better-auth's own getEndpointResponse: APIError, non-200, or a
+ * missing email → null (→ no send).
+ */
+async function emailFromSignUpResult(returned: unknown): Promise<string | null> {
+  if (!returned || isAPIError(returned)) return null
+  let data: unknown = returned
+  if (returned instanceof Response) {
+    if (returned.status !== 200) return null
+    try {
+      data = await returned.clone().json()
+    } catch {
+      return null
+    }
+  }
+  const email = (data as { user?: { email?: unknown } } | null)?.user?.email
+  return typeof email === "string" && email.length > 0 ? email : null
+}
 
 /**
  * Build a Better Auth instance bound to the request env.
@@ -105,7 +199,18 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
         }
       })())
 
-  return betterAuth({
+  // The after-hook below triggers the OTP send by calling THIS instance's
+  // sendVerificationOTP endpoint. The options literal passed to betterAuth()
+  // can't reference the instance it constructs, so the call routes through
+  // this late-bound closure — assigned immediately after betterAuth()
+  // returns, long before any per-request hook can fire.
+  let sendVerificationOtp: (
+    body: { email: string; type: "email-verification" },
+  ) => Promise<unknown> = () => {
+    throw new Error("sendVerificationOtp called before auth init completed")
+  }
+
+  const auth = betterAuth({
     // Native D1 — Better Auth manages its own Kysely D1 dialect.
     database: env.DB,
     secret: env.AUTH_SECRET,
@@ -127,8 +232,9 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
 
     emailAndPassword: {
       enabled: true,
-      // Block sign-in until the OTP verifies the email. Signup sends the OTP
-      // immediately (sendVerificationOnSignUp below).
+      // Block sign-in until the OTP verifies the email. The verification code
+      // is minted + emailed by the server at signUp.email time — see the
+      // `hooks` option below (and the OTP DELIVERY note in the file header).
       requireEmailVerification: true,
       minPasswordLength: 8,
       autoSignIn: true,
@@ -170,14 +276,14 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
         otpLength: 6,
         expiresIn: 60 * 5, // 5 minutes
         allowedAttempts: 3,
-        // We do NOT auto-send the OTP at signUp.email. Better Auth's core
-        // signUpEmail handler short-circuits to a synthetic 200 response for
-        // duplicate emails (anti-enumeration) BEFORE it would reach the
-        // send path — so a user who signs up twice with the same address never
-        // gets a code and is stuck on the verify step. Instead the frontend
-        // explicitly calls sendVerificationOtp right after signUp.email
-        // returns, which mints + sends a fresh code regardless of whether the
-        // signup created a new user or hit the duplicate path.
+        // The plugin's own auto-send stays OFF — our top-level hooks.after
+        // below owns the signup send instead. Two reasons the plugin flag
+        // isn't used: (1) its after-hook matcher excludes configs with
+        // overrideDefaultEmailVerification (ours), and (2) the core
+        // send-on-signup path is skipped entirely for the duplicate-email
+        // synthetic 200 (anti-enumeration), which used to leave repeat
+        // signups stuck on the verify step with no code. Our hook reads the
+        // email off the endpoint RESPONSE, so it fires on both outcomes.
         sendVerificationOnSignUp: false,
         // Route core's email-verification flow through OTP (so
         // /api/auth/send-verification-email mints a code, not a link).
@@ -236,5 +342,81 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
     // POST /api/onboarding is the single writer that flips the flag to 1.
     // (An earlier hook force-flipped it at OTP-verify, which skipped the
     // wizard entirely and sent fresh users to a bare dashboard.)
+
+    // ─── Signup OTP: server-driven send + resend cooldown ─────────────────
+    // These run for BOTH HTTP requests and internal auth.api.* calls (they
+    // share the same dispatch pipeline), which is what makes the cooldown
+    // gate below effective against every path that could mint a code.
+    hooks: {
+      before: createAuthMiddleware(async ctx => {
+        const path = ctx.path ?? ""
+
+        // (1) Front-door zod validation on signup — field-specific 400s
+        // before any DB work. Returning undefined continues the pipeline.
+        if (path === SIGNUP_PATH) {
+          const parsed = signUpBodySchema.safeParse(ctx.body)
+          if (!parsed.success) {
+            throw new APIError("BAD_REQUEST", {
+              code: "INVALID_SIGNUP_BODY",
+              message: `Invalid sign-up body — ${zodIssuesDetail(parsed.error)}`,
+            })
+          }
+          return
+        }
+
+        // (2) Cooldown gate on the verification-code send endpoint. A code
+        // minted less than OTP_SEND_COOLDOWN_MS ago is still valid, so a
+        // second mint would only produce a second email (the reported
+        // double-send). Returning a truthy non-context value SHORT-CIRCUITS
+        // the endpoint with that value as its response — callers see the
+        // same { success: true } shape, so double form submits, the legacy
+        // frontend's explicit send during a deploy window, and impatient
+        // Resend clicks all no-op silently. Scoped to email-verification
+        // codes; password-reset OTPs keep their own endpoint + limiter.
+        if (path === SEND_OTP_PATH) {
+          const body = ctx.body as { email?: unknown; type?: unknown } | undefined
+          const email =
+            typeof body?.email === "string" ? body.email.toLowerCase() : ""
+          if (body?.type !== "email-verification" || !email) return
+          const latest = await ctx.context.internalAdapter.findVerificationValue(
+            emailVerificationIdentifier(email),
+          )
+          if (latest && isWithinSendCooldown(latest.createdAt)) {
+            return { success: true }
+          }
+        }
+      }),
+
+      after: createAuthMiddleware(async ctx => {
+        // signUp.email completed → mint + send the code server-side. This is
+        // the ONLY signup send; the frontend never calls the send endpoint
+        // itself. Fires on fresh AND duplicate-email synthetic signups (see
+        // emailFromSignUpResult). The internal endpoint call re-enters the
+        // before-hook above, so a duplicate submit seconds after the first
+        // is already a cooldown no-op before it even reaches the mint.
+        if (ctx.path !== SIGNUP_PATH) return
+        const email = await emailFromSignUpResult(ctx.context.returned)
+        if (!email) return
+        try {
+          const result = (await sendVerificationOtp({
+            email,
+            type: "email-verification",
+          })) as { error?: unknown } | undefined
+          if (result && typeof result === "object" && result.error) {
+            ctx.context.logger.error(
+              `[signup-otp] send endpoint rejected for ${email}: ${result.error}`,
+            )
+          }
+        } catch (e) {
+          // The endpoint already swallows Resend failures (they surface as
+          // toasts via the frontend's Resend button) — log and move on so a
+          // mail-provider blip never fails the signup response itself.
+          ctx.context.logger.error(`[signup-otp] send failed for ${email}: ${e}`)
+        }
+      }),
+    },
   })
+
+  sendVerificationOtp = body => auth.api.sendVerificationOTP({ body })
+  return auth
 }

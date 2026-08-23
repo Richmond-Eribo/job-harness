@@ -153,6 +153,51 @@ test.describe("signup", () => {
     await expect(page).toHaveURL(/\/signup/)
   })
 
+  test("double-click Continue sends one code and verification still works", async ({
+    page,
+  }) => {
+    // The double-send regression: a rapid double submit used to run the
+    // account action twice, and each run issued its own
+    // send-verification-otp — two emails, two DIFFERENT codes (the second
+    // mint invalidated the first). Now the SERVER owns the send (worker
+    // hooks.after fires once per signUp.email response) with a 30s cooldown
+    // on the send endpoint, so even if both clicks dispatch, the second is a
+    // synthetic-duplicate 200 whose send is suppressed: exactly one code,
+    // and it's the one the user types.
+    const email = uniqEmail("dblclick")
+    await page.goto(`${E2E_WEB_URL}/signup`)
+    await page.getByLabel(/first name/i).fill("Double")
+    await page.getByLabel(/last name/i).fill("Click")
+    await page.getByLabel(/email/i).fill(email)
+    await page.getByLabel(/^password$/i).fill("SomeValid123!")
+    await page.getByLabel(/confirm password/i).fill("SomeValid123!")
+
+    const signUpPosts: number[] = []
+    page.on("request", r => {
+      if (r.method() === "POST" && r.url().includes("/sign-up/email")) {
+        signUpPosts.push(Date.now())
+      }
+    })
+
+    // Two rapid clicks inside the window before disabled={accountPending}
+    // can re-render — the exact race that used to double-send.
+    await page
+      .getByRole("button", { name: /continue/i })
+      .click({ clickCount: 2, delay: 60 })
+
+    await expect(page.getByText(/check your email/i)).toBeVisible({
+      timeout: 15_000,
+    })
+
+    // Whether one or two signUp requests actually dispatched, the single
+    // code the server minted must verify cleanly and land on /onboarding.
+    const otp = await E2E_OTP_FOR(email)
+    const otpInput = page.locator('[id="su-otp"]').first()
+    await otpInput.click()
+    await page.keyboard.type(otp, { delay: 30 })
+    await expect(page).toHaveURL(/\/onboarding$/, { timeout: 25_000 })
+  })
+
   test("3 wrong attempts disables the input and surfaces 'request a new code'", async ({
     page,
   }) => {
