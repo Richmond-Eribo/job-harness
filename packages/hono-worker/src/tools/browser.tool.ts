@@ -18,6 +18,7 @@ import { getAgentByName } from "agents"
 import type { Env } from "../types"
 import type { BrowserAgent } from "../agents"
 import { withRpcRetry } from "../utils/rpc-retry"
+import { httpUrlSchema } from "../utils/validation"
 import type { RunIdRef } from "./jobs.tool"
 
 type Advance = (toolName: string, input: string | null) => void
@@ -35,7 +36,11 @@ export function makeBrowserNavigateTool(env: Env, advance: Advance, userId: stri
       "Use this for login-walled job sites (Indeed, LinkedIn, Glassdoor) that fetch_page cannot read. " +
       "Requires a browser target to be connected — check browser_status first. The agent never logs in; the operator must be signed in already.",
     inputSchema: z.object({
-      url: z.string().url().describe("Absolute URL to navigate to"),
+      // AUDIT M4: z.string().url() alone accepts javascript:/data:/file: —
+      // this refinement confines navigation to http(s). These tools drive the
+      // user's REAL Chrome, so a prompt-injected model must not be able to
+      // execute script:// URLs or open non-web schemes.
+      url: httpUrlSchema("url").describe("Absolute http(s) URL to navigate to"),
     }),
     execute: async ({ url }) => {
       advance("browser_navigate", JSON.stringify({ url }).slice(0, 2000))
@@ -126,7 +131,8 @@ export function makeBrowserBrowseTool(
       "This is the common path for reading a login-walled job posting end-to-end. " +
       "Returns the extracted data, or loginRequired if the page needs sign-in.",
     inputSchema: z.object({
-      url: z.string().url(),
+      // AUDIT M4: http(s) only — see makeBrowserNavigateTool.
+      url: httpUrlSchema("url"),
       goal: z.string().describe("what to extract from the page"),
     }),
     execute: async ({ url, goal }) => {
