@@ -515,6 +515,17 @@ function compactToolResults(messages: any[], retain: number): void {
 // Harness class
 // =============================================================================
 
+// Goals that are EXACTLY the pre-profile-grounding hardcoded defaults. Any
+// tenant whose persisted goal matches one of these verbatim never chose it —
+// it was baked in — so ensureDb() clears it and the next start()/wake()
+// resolves a goal from that user's own profile instead. Freeform goals
+// (user-authored or LLM-synthesized) never match these strings and are left
+// untouched.
+const LEGACY_HARDCODED_GOALS = new Set([
+  "Research AI trends and apply to relevant software/AI engineering roles",
+  "Discover, rank, and apply to software / AI engineering roles that match the saved profile",
+])
+
 export class Harness extends Agent<Env, HarnessState> {
   initialState: HarnessState = DEFAULT_HARNESS_STATE
 
@@ -973,6 +984,15 @@ export class Harness extends Agent<Env, HarnessState> {
       } catch {
         // Config table may not have rows yet
       }
+
+      // Migration: clear a persisted goal that is EXACTLY a legacy hardcoded
+      // default — whether it arrived via the config row (just hydrated above)
+      // or via DO state alone (the old start() fallback wrote state only).
+      // Cleared goals re-resolve from the user's profile on next start/wake.
+      if (LEGACY_HARDCODED_GOALS.has(this.state.goal ?? "")) {
+        execSql(this, `DELETE FROM config WHERE key = 'goal'`)
+        this.setState({ ...this.state, goal: "" })
+      }
     }
   }
 
@@ -1016,8 +1036,18 @@ export class Harness extends Agent<Env, HarnessState> {
     let runId: string
     let resuming = false
     const existing = this.findResumableCheckpoint()
+    // A submitted goal that differs from the checkpoint's goal means the user
+    // asked for a NEW run. Resuming would silently run the OLD goal under the
+    // old runId — only resume when the goal is unchanged or none was sent.
+    const goalChanged =
+      typeof goal === "string" &&
+      goal.trim().length > 0 &&
+      typeof existing?.goal === "string" &&
+      existing.goal.trim().length > 0 &&
+      goal.trim() !== existing.goal.trim()
     if (
       existing &&
+      !goalChanged &&
       this.state.status !== "done" &&
       this.state.lastRunAt &&
       Date.now() - new Date(this.state.lastRunAt).getTime() <
@@ -1035,17 +1065,18 @@ export class Harness extends Agent<Env, HarnessState> {
         }),
       })
     } else {
-      // Auto-goal synthesis: if no goal is set anywhere, ask the model to write
-      // one based on the available tools. This makes a fresh deploy useful on
-      // first run without forcing the operator to set a goal first.
+      // Auto-goal resolution: if no goal is set anywhere, synthesize one from
+      // the candidate's profile (+ available tools). This makes a fresh deploy
+      // useful on first run without forcing the operator to set a goal first —
+      // and keeps the goal grounded in THIS user's target roles/locations
+      // rather than a hardcoded assumption about what kind of roles to chase.
       let runGoal = goal ?? this.state.goal
       if (!runGoal || runGoal.trim().length === 0) {
-        const synthesized = await this.synthesizeGoalFromCapabilities()
+        const synthesized = await this.synthesizeGoalFromCapabilities(userId)
         if (synthesized) {
           runGoal = synthesized
         } else {
-          runGoal =
-            "Discover, rank, and apply to software / AI engineering roles that match the saved profile"
+          runGoal = deriveDefaultGoal(await this.fetchProfile(userId))
         }
       }
       runId = generateRunId()
@@ -1198,11 +1229,14 @@ export class Harness extends Agent<Env, HarnessState> {
 
     // Avoid fire-and-forget: callers (the watchdog) still want the eventual
     // completion marker for logging, so we await.
-    // Auto-goal synthesis if no goal is set: same fallback as start().
+    // Auto-goal resolution if no goal is set: same profile-grounded fallback
+    // as start() — synthesize from the candidate's profile, else derive
+    // deterministically from their target roles/locations/work mode.
     let wakeGoal = this.state.goal
     if (!wakeGoal || wakeGoal.trim().length === 0) {
       const synthesized = await this.synthesizeGoalFromCapabilities()
       if (synthesized) wakeGoal = synthesized
+      else wakeGoal = deriveDefaultGoal(await this.fetchProfile())
     }
 
     const runId = generateRunId()
@@ -3048,14 +3082,20 @@ export class Harness extends Agent<Env, HarnessState> {
 
   /**
    * Auto-synthesize a goal when none exists. One non-tool generateText call
-   * that looks at the available tool names + today's date and writes a single
-   * concrete goal. Cheaper than a full loop; only runs when no goal is set.
+   * that looks at the CANDIDATE PROFILE, the available tool names, and today's
+   * date, then writes a single concrete goal. Cheaper than a full loop; only
+   * runs when no goal is set.
+   *
+   * The profile is the point: without it the synthesizer can only write a
+   * generic "job-search" goal shaped by its own assumptions about roles and
+   * locations. `userId` lets start() pass the user it received as a parameter
+   * (state may not be persisted yet at that point in the flow).
    *
    * P3: caches the synthesized goal in the `config` table so subsequent cold
    * starts don't pay the extra round trip on every cron tick. Once written,
    * the operator can edit it from the dashboard.
    */
-  async synthesizeGoalFromCapabilities(): Promise<string | null> {
+  async synthesizeGoalFromCapabilities(userId?: string): Promise<string | null> {
     try {
       // P3: if we already synthesized + cached a goal, skip the LLM round-trip.
       try {
@@ -3081,15 +3121,19 @@ export class Harness extends Agent<Env, HarnessState> {
           this.env,
           "_goal-synth",
           "",
-          this.state.userId ?? "main",
+          userId ?? this.state.userId ?? "main",
         ),
       ).join(", ")
       const today = new Date().toISOString().slice(0, 10)
+      const profile = await this.fetchProfile(userId)
+      const profileBlock = profile
+        ? `The candidate you work for:\n${formatProfileForPrompt(profile)}`
+        : "The candidate you work for: (no profile set yet)"
       const { text } = await generateText({
         model,
         system:
-          "You are choosing a concrete, useful goal for an autonomous job-search AI. Reply with only the goal, max 2 sentences, no preamble.",
-        prompt: `Available tools: ${toolNames}. Today: ${today}. Write ONE concrete goal this agent could make daily progress on with these tools. Focus on the job-search capability. Reply with only the goal text.`,
+          "You are choosing a concrete, useful goal for an autonomous job-search AI that works for one specific candidate. Reply with only the goal, max 2 sentences, no preamble.",
+        prompt: `${profileBlock}\n\nAvailable tools: ${toolNames}. Today: ${today}. Write ONE concrete goal this agent could make daily progress on with these tools, grounded in the candidate's target roles, locations, and preferences above. Reply with only the goal text.`,
         ...getParams(this.env),
       })
       const goal = text.trim()

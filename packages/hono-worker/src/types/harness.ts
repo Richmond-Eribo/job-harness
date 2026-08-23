@@ -14,7 +14,11 @@ export const DEFAULT_HARNESS_STATE: HarnessState = {
   maxSteps: 100,
   tokenBudget: 128000, // 128k tokens
   tokensUsed: 0,
-  goal: "Research AI trends and apply to relevant software/AI engineering roles",
+  // No hardcoded goal: an empty goal triggers profile-grounded resolution at
+  // run start (synthesizeGoalFromCapabilities → deriveDefaultGoal), so the
+  // goal always reflects THIS user's target roles/locations — never a baked-in
+  // assumption about what kind of roles they want.
+  goal: "",
   runId: null,
   lastRunAt: null,
   lastError: null,

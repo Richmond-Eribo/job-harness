@@ -1,34 +1,11 @@
 import { describe, it, expect } from "vitest"
+import { DEFAULT_HARNESS_STATE } from "../types/harness"
 
 /**
  * Tests for type guards and type-related logic.
  * Since TypeScript types are erased at runtime, we test the shapes
  * and default values that the types represent.
  */
-
-interface HarnessState {
-  status: "idle" | "running" | "paused" | "done" | "error"
-  currentStep: number
-  maxSteps: number
-  tokenBudget: number
-  tokensUsed: number
-  goal: string
-  runId: string | null
-  lastRunAt: string | null
-  lastError: string | null
-}
-
-const DEFAULT_HARNESS_STATE: HarnessState = {
-  status: "idle",
-  currentStep: 0,
-  maxSteps: 100,
-  tokenBudget: 0,
-  tokensUsed: 0,
-  goal: "Research AI trends and apply to relevant software/AI engineering roles",
-  runId: null,
-  lastRunAt: null,
-  lastError: null,
-}
 
 describe("DEFAULT_HARNESS_STATE", () => {
   it("has idle status", () => {
@@ -43,16 +20,20 @@ describe("DEFAULT_HARNESS_STATE", () => {
     expect(DEFAULT_HARNESS_STATE.maxSteps).toBe(100)
   })
 
-  it("has unlimited token budget (0)", () => {
-    expect(DEFAULT_HARNESS_STATE.tokenBudget).toBe(0)
+  it("has a 128k token budget", () => {
+    expect(DEFAULT_HARNESS_STATE.tokenBudget).toBe(128000)
   })
 
   it("has no runId initially", () => {
     expect(DEFAULT_HARNESS_STATE.runId).toBeNull()
   })
 
-  it("has a default goal", () => {
-    expect(DEFAULT_HARNESS_STATE.goal).toContain("AI")
+  it("ships NO hardcoded goal — empty triggers profile-grounded resolution", () => {
+    // A baked-in default goal steers every tenant toward whatever the default
+    // says (previously "software / AI engineering roles") regardless of their
+    // CV. The contract now: empty string here, and start()/wake() resolve the
+    // goal from the user's own profile.
+    expect(DEFAULT_HARNESS_STATE.goal).toBe("")
   })
 })
 
