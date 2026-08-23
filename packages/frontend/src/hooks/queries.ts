@@ -59,6 +59,11 @@ export interface RunSummary {
   status?: string
   goal?: string | null
   startedAt?: string | null
+  endedAt?: string | null
+  steps?: number
+  tokensIn?: number
+  tokensOut?: number
+  finishReason?: string | null
 }
 
 /** The single-run trace response from GET /api/runs/:runId. */
