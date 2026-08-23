@@ -47,6 +47,7 @@ import {
   TabsTrigger,
 } from "@agent-harness/ui"
 import { toast } from "sonner"
+import { queryClient } from "../components/query-client"
 import { ProfilePage } from "./ProfilePage"
 import {
   useConfig,
@@ -793,14 +794,20 @@ function AccountTab() {
     if (!canDelete) return
     setDeleting(true)
     try {
-      const res = await api.del("/account")
-      if (res == null) {
+      // DELETE /api/account returns { deleted: true, userId } — check the
+      // flag (the old `res == null` check never fired, so the UI hung on
+      // "Deleting account…" even after a successful server-side delete).
+      const res = await api.del<{ deleted?: boolean }>("/account")
+      if (res?.deleted) {
         // Account deleted on the server; clear local state and bounce to /.
         // signOutClient also hits /api/auth/sign-out which will 401 now (user
         // row gone), but the cookie is already invalid so this is best-effort.
         await signOutClient().catch(() => {})
+        queryClient.clear()
         toast.success("Account deleted")
         await navigate({ to: "/", replace: true })
+      } else {
+        throw new Error("Unexpected response from delete endpoint")
       }
     } catch (e: any) {
       toast.error("Couldn't delete account", { description: e?.message })

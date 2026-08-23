@@ -79,17 +79,31 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
   // `http://localhost:8787` AND `http://127.0.0.1:8787` — the previous
   // `baseURL.includes("localhost")` substring check missed the latter, which
   // caused cookies to be set with `secure: true` over plain HTTP and silently
-  // dropped by the browser. An explicit `IS_LOCAL_DEV` env wins over all.
+  // dropped by the browser.
+  //
+  // An explicit IS_LOCAL_DEV env wins over all (force `true` for local dev,
+  // force `false` to test prod cookie behavior locally). NOTE: wrangler
+  // delivers vars as STRINGS — the previous `typeof === "boolean"` check made
+  // `.dev.vars`'s IS_LOCAL_DEV=true a silent no-op (e.g. when wrangler dev
+  // rewrites the request host to a custom-domain route, the hostname fallback
+  // misses and prod cookie attrs get set over http://localhost, which browsers
+  // then reject). Accept "true"/"1"/true and "false"/"0"/false.
+  const rawLocalFlag = env.IS_LOCAL_DEV
+  const explicitLocal =
+    rawLocalFlag === true || rawLocalFlag === "true" || rawLocalFlag === "1"
+  const explicitProd =
+    rawLocalFlag === false || rawLocalFlag === "false" || rawLocalFlag === "0"
   const isLocalDev =
-    (typeof env.IS_LOCAL_DEV === "boolean" && env.IS_LOCAL_DEV) ||
-    (() => {
-      try {
-        const u = new URL(baseURL ?? "")
-        return u.hostname === "localhost" || u.hostname === "127.0.0.1"
-      } catch {
-        return false
-      }
-    })()
+    explicitLocal ||
+    (!explicitProd &&
+      (() => {
+        try {
+          const u = new URL(baseURL ?? "")
+          return u.hostname === "localhost" || u.hostname === "127.0.0.1"
+        } catch {
+          return false
+        }
+      })())
 
   return betterAuth({
     // Native D1 — Better Auth manages its own Kysely D1 dialect.

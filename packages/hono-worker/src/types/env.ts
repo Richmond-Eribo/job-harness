@@ -82,6 +82,11 @@ export interface Env {
   // the Playwright suite can complete signup without reading email. Set ONLY
   // in local .dev.vars — never in production. (See auth.ts generateOTP.)
   E2E_OTP_BYPASS?: string
+  // Local-dev override for the cookie/baseURL gates in auth.ts ("true" forces
+  // dev cookie behavior, "false" forces prod behavior). Wrangler delivers
+  // vars as strings — auth.ts accepts "true"/"1" and "false"/"0" as well as
+  // real booleans. Leave unset/false in any deployed environment.
+  IS_LOCAL_DEV?: boolean | string
   // Public base URL of the API deployment (e.g. https://api.example.com). Used
   // by Better Auth to build absolute callback URLs and as a trusted CORS origin.
   BETTER_AUTH_URL?: string
