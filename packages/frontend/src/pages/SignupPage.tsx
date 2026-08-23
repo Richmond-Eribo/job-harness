@@ -22,7 +22,8 @@ import { AuthShowcase } from "../components/AuthShowcase"
 //                 (creates the user + emails OTP). Names are REQUIRED here —
 //                 there's no separate profile gate later.
 //   2. Verify   — 6-digit OTP via the segmented input-otp component → verifyEmail
-//                 → writes names to profile KV → navigate to /dashboard.
+//                 → writes names to profile KV → navigate to /onboarding (the
+//                 wizard collects profile details, CV, and browser pairing).
 type Step = "account" | "verify"
 // `nonce` bumps on every completed action. React 19's post-action form reset
 // blanks the DOM value of controlled inputs (name/email) while their state is
@@ -268,7 +269,11 @@ export function SignupPage() {
       // L2: clear the OTP input on success so a navigation that fails to
       // resolve doesn't show a stale verified code in the field.
       setOtp("")
-      await navigate({ to: "/dashboard", replace: true })
+      // Fresh signups go through the onboarding wizard (profile → CV →
+      // connect browser) — onboardingComplete stays 0 until the wizard's
+      // POST /api/onboarding completes it. Navigating to /dashboard here
+      // would just bounce through the guard to /onboarding anyway.
+      await navigate({ to: "/onboarding", replace: true })
     } catch (err: any) {
       setVerifyError(err.message)
       toast.error("Verification failed", { description: err.message })

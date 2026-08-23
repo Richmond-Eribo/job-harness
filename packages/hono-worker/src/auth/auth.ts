@@ -226,48 +226,12 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
       },
     },
 
-    databaseHooks: {
-      user: {
-        // When a user verifies their email (the OTP step), Better Auth UPDATEs
-        // the user row with emailVerified=true. We piggyback on that update's
-        // `after` hook to also flip onboardingComplete = 1. The new signup
-        // flow no longer goes through POST /api/onboarding — it goes OTP-verify
-        // → /dashboard — so without this hook, onboardingComplete would stay
-        // false forever and the requireAuth guard would strand new users at
-        // /onboarding. The finer "has first/last name" gate is enforced
-        // separately client-side by requireProfile (lib/guards.ts) against the
-        // profile KV, not this flag.
-        update: {
-          async after(user) {
-            if (user?.emailVerified) {
-              try {
-                await env.DB.prepare(
-                  `UPDATE "user" SET onboardingComplete = 1 WHERE id = ?`,
-                )
-                  .bind(user.id)
-                  .run()
-              } catch (err) {
-                // The OTP verify itself has already succeeded, so we don't fail
-                // the request; but the user WILL be stranded at onboarding on
-                // the next requireAuth check. Log loudly so operators see it
-                // (wrangler tail / Workers dashboard), and include enough
-                // context to triage: user id, error message, and stack.
-                console.error(
-                  `[auth] onboarding flag write failed for user ${user.id}:`,
-                  err instanceof Error
-                    ? `${err.message}\n${err.stack ?? ""}`
-                    : err,
-                )
-                // NOTE: We intentionally do NOT rethrow here — the verify call
-                // has already returned 200 to the client and the email is now
-                // verified. Recovery path: the user re-runs OTP verify
-                // (idempotent), or an operator runs the SQL by hand, or we add
-                // a /api/auth/resync-onboarding admin endpoint later.
-              }
-            }
-          },
-        },
-      },
-    },
+    // NOTE: no databaseHooks here, deliberately. onboardingComplete stays 0
+    // after email verification so NEW signups are routed through the
+    // onboarding wizard (profile → CV → connect browser) by the requireAuth
+    // guard (428 → the frontend redirects to /onboarding). The wizard's
+    // POST /api/onboarding is the single writer that flips the flag to 1.
+    // (An earlier hook force-flipped it at OTP-verify, which skipped the
+    // wizard entirely and sent fresh users to a bare dashboard.)
   })
 }

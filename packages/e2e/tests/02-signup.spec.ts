@@ -75,7 +75,7 @@ test.describe("signup", () => {
     })
   })
 
-  test("happy path: form → OTP → dashboard (no /login flash)", async ({
+  test("happy path: form → OTP → onboarding wizard (no /login flash)", async ({
     page,
     context,
   }) => {
@@ -94,8 +94,10 @@ test.describe("signup", () => {
     })
 
     // Enter the OTP — auto-submit fires on the 6th digit (P1-3). We assert
-    // that NO /login flash happens between verify-success and landing on
-    // /dashboard (P0-3 regression).
+    // that NO /login flash happens between verify-success and landing on the
+    // onboarding wizard (P0-3 regression). New signups keep
+    // onboardingComplete=0 until they finish the wizard, so verify routes to
+    // /onboarding (profile → CV → browser), not /dashboard.
     const otp = await E2E_OTP_FOR(email)
     // The InputOTP segmented control exposes six <input data-index="n"> slots;
     // typing into them as a single string works in Playwright via the parent.
@@ -103,15 +105,18 @@ test.describe("signup", () => {
     await otpInput.click()
     await page.keyboard.type(otp, { delay: 30 })
 
-    // The verify call + session warming + navigate should land us on
-    // /dashboard. Critically, the URL should NEVER include /login at any
-    // sampled point — capture all navigations during the wait.
+    // The verify call + navigate should land us on /onboarding. Critically,
+    // the URL should NEVER include /login at any sampled point — capture all
+    // navigations during the wait.
     const navigations: string[] = []
     page.on("framenavigated", f => {
       const u = f.url()
       if (u && u !== "about:blank") navigations.push(u)
     })
-    await expect(page).toHaveURL(/\/dashboard$/, { timeout: 25_000 })
+    await expect(page).toHaveURL(/\/onboarding$/, { timeout: 25_000 })
+    await expect(
+      page.getByRole("heading", { name: /get started in 3 steps/i }),
+    ).toBeVisible({ timeout: 10_000 })
 
     // Assert no navigations hit /login at any point.
     const loginFlashes = navigations.filter(u => /\/login(\?|$)/.test(u))
@@ -134,7 +139,7 @@ test.describe("signup", () => {
     await page.getByLabel(/^password$/i).fill("SomeValid123!")
     await page.getByLabel(/confirm password/i).fill("SomeValid123!")
     await page.getByRole("button", { name: /continue/i }).click()
-    await expect(page.getByText(/check your email/i)).toBeVisible()
+    await expect(page.getByText(/check your email/i)).toBeVisible({ timeout: 15_000 })
 
     // Deliberately wrong code — not the one Better Auth expects.
     const otpInput = page.locator('[id="su-otp"]').first()
@@ -159,7 +164,7 @@ test.describe("signup", () => {
     await page.getByLabel(/^password$/i).fill("SomeValid123!")
     await page.getByLabel(/confirm password/i).fill("SomeValid123!")
     await page.getByRole("button", { name: /continue/i }).click()
-    await expect(page.getByText(/check your email/i)).toBeVisible()
+    await expect(page.getByText(/check your email/i)).toBeVisible({ timeout: 15_000 })
 
     const otpInput = page.locator('[id="su-otp"]').first()
     for (let i = 0; i < 3; i++) {

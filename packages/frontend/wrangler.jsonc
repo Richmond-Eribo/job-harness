@@ -8,7 +8,11 @@
   // `main` is the virtual server entry TanStack Start provides; the Cloudflare
   // vite plugin resolves it at build time into .output/server/index.js.
   "name": "job-agent-web",
-  "compatibility_date": "2026-07-24",
+  // 2026-07-21 is the newest compatibility date the repo's pinned local
+  // workerd runtime supports (2026-07-24 booted fine when DEPLOYED but broke
+  // `vite dev`'s embedded miniflare with ERR_RUNTIME_FAILURE). Bump this (and
+  // the wrangler/workerd pins) together when upgrading.
+  "compatibility_date": "2026-07-21",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
 

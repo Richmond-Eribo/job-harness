@@ -25,6 +25,8 @@ import {
   Chrome,
   Calendar,
   UserCog,
+  Copy,
+  Check,
 } from "lucide-react"
 import {
   Button,
@@ -757,9 +759,21 @@ function AccountTab() {
   const [confirmText, setConfirmText] = useState("")
   const [deleting, setDeleting] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [phraseCopied, setPhraseCopied] = useState(false)
 
   const EXPECTED = "delete my account"
   const canDelete = confirmText.trim().toLowerCase() === EXPECTED
+
+  // Click-to-copy the confirmation phrase — typing it by hand is pure friction.
+  const copyPhrase = async () => {
+    try {
+      await navigator.clipboard.writeText(EXPECTED)
+      setPhraseCopied(true)
+      setTimeout(() => setPhraseCopied(false), 2000)
+    } catch {
+      toast.error("Couldn't copy — please type the phrase manually")
+    }
+  }
 
   const handleExport = async () => {
     setExporting(true)
@@ -868,7 +882,23 @@ function AccountTab() {
         <CardContent className="space-y-3">
           <div className="space-y-1.5">
             <Label htmlFor="confirm" className="text-xs text-muted-foreground">
-              Type <code className="font-mono">{EXPECTED}</code> to confirm
+              Type{" "}
+              <button
+                type="button"
+                onClick={copyPhrase}
+                data-testid="copy-confirm-phrase"
+                aria-label="Copy the confirmation phrase to the clipboard"
+                title="Copy to clipboard"
+                className="inline-flex items-center gap-1 rounded bg-muted border border-border px-1.5 py-0.5 font-mono text-foreground transition-colors hover:border-primary/40 hover:bg-accent/50 align-middle"
+              >
+                {EXPECTED}
+                {phraseCopied ? (
+                  <Check className="size-3 text-success" aria-hidden />
+                ) : (
+                  <Copy className="size-3 text-muted-foreground" aria-hidden />
+                )}
+              </button>{" "}
+              to confirm
             </Label>
             <Input
               id="confirm"
