@@ -62,7 +62,8 @@ IS_LOCAL_DEV="true"
 # invalidating every web session. Generate one: `openssl rand -hex 32`
 # EXTENSION_TOKEN_SECRET=""
 
-# E2E-only OTP bypass: when "1", verification codes are the deterministic
-# "999999" so the Playwright suite can complete signup without reading email.
-# Local dev ONLY — never set in production deploys.
+# E2E-only OTP bypass: when "1" AND IS_LOCAL_DEV is truthy, verification
+# codes are the deterministic "999999" so the Playwright suite can complete
+# signup without reading email. The IS_LOCAL_DEV co-gate is enforced in code
+# (auth.ts) — the flag is inert in any deployed environment by construction.
 # E2E_OTP_BYPASS=1
