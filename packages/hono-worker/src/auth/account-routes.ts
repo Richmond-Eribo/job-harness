@@ -16,10 +16,9 @@
 // export (could be a multi-MB binary) and include only the metadata pointer.
 //
 // DELETE is destructive and irreversible. The user must confirm by typing
-// `delete my account` (enforced client-side; the server route trusts the
-// session and deletes unconditionally — there's no useful additional check
-// we could enforce without adding a confirmation-token round trip, and the
-// client-side gate is sufficient for a single-user, per-account action).
+// `delete my account` — enforced SERVER-SIDE (audit M9: it was previously
+// client-side only, so a single stolen-cookie DELETE destroyed the account
+// with no confirmation round trip).
 //
 // WHAT GETS DELETED
 //   • Better Auth rows: user, session, account, verification (D1, by userId).
@@ -40,6 +39,12 @@ import type { Context } from "hono"
 import type { AppEnv } from "../types/app-env"
 import { getAgents, getBrowserAgents } from "../utils/get-agents"
 import { getAgentByName } from "agents"
+import {
+  readJsonBody,
+  accountDeleteSchema,
+  isAccountDeleteConfirmed,
+  ACCOUNT_DELETE_CONFIRM_PHRASE,
+} from "../utils/validation"
 
 /** Route handler: GET /api/account/export. Returns a JSON download. */
 export async function exportAccountRoute(c: Context<AppEnv>) {
@@ -105,6 +110,22 @@ export async function exportAccountRoute(c: Context<AppEnv>) {
 /** Route handler: DELETE /api/account. Irreversibly deletes the user. */
 export async function deleteAccountRoute(c: Context<AppEnv>) {
   const userId = c.get("userId")
+
+  // AUDIT M9: server-side typed-phrase confirmation. The UI always collected
+  // "delete my account" but only gated on it client-side — a single
+  // stolen-cookie (or scripted) DELETE destroyed the account with no
+  // confirmation round trip. The phrase matches the UI's own gate
+  // (case/whitespace-insensitive).
+  const parsed = await readJsonBody(c, accountDeleteSchema)
+  if (!parsed.ok) return parsed.response
+  if (!isAccountDeleteConfirmed(parsed.data)) {
+    return c.json(
+      {
+        error: `Confirmation required — send {"confirm": "${ACCOUNT_DELETE_CONFIRM_PHRASE}"}`,
+      },
+      400,
+    )
+  }
 
   // 1. Wipe Better Auth rows. Order matters: children before parent so FK
   // cascades don't trip a "user not found" mid-loop. (The schema already

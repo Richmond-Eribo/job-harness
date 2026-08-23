@@ -811,7 +811,11 @@ function AccountTab() {
       // DELETE /api/account returns { deleted: true, userId } — check the
       // flag (the old `res == null` check never fired, so the UI hung on
       // "Deleting account…" even after a successful server-side delete).
-      const res = await api.del<{ deleted?: boolean }>("/account")
+      // The typed phrase is now enforced SERVER-SIDE too (audit M9) — the
+      // client-side gate alone was bypassable with a raw request.
+      const res = await api.del<{ deleted?: boolean }>("/account", {
+        confirm: EXPECTED,
+      })
       if (res?.deleted) {
         // Account deleted on the server; clear local state and bounce to /.
         // signOutClient also hits /api/auth/sign-out which will 401 now (user

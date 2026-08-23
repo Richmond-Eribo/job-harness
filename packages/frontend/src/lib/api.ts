@@ -72,6 +72,7 @@ export const api = {
     request<T>(path, { method: "POST", body, signal }),
   put: <T = any>(path: string, body?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: "PUT", body, signal }),
-  del: <T = any>(path: string, signal?: AbortSignal) =>
-    request<T>(path, { method: "DELETE", signal }),
+  // `body` supports the server-side confirmation phrase on DELETE /api/account.
+  del: <T = any>(path: string, body?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: "DELETE", body, signal }),
 }
