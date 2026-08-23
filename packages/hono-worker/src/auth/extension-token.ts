@@ -11,18 +11,14 @@
 // SOLUTION
 // The dashboard (session-authenticated) mints a short-lived signed token bound
 // to the session userId. The extension stores it and presents it to the relay
-// in ONE of two ways (P1-6 — both supported for back-compat):
+// via the WebSocket subprotocol:
 //
-//   1. PREFERRED — the WebSocket subprotocol:
 //        new WebSocket(url, [`ja-ext-token.${jwt}`])
-//      The token never touches a URL, so it can't leak via browser history,
-//      access logs, Referer, or proxy traces. The browser strips the
-//      subprotocol from these channels; only the server sees it.
 //
-//   2. LEGACY — the URL query string:
-//        wss://worker/browser/relay?token=<jwt>
-//      Still accepted so existing extension installs keep working until they
-//      upgrade. New extension builds should switch to (1).
+// The token never touches a URL, so it can't leak via browser history, access
+// logs, Referer, or proxy traces; the browser strips the subprotocol from
+// those channels and only the server sees it. (A legacy `?token=` URL form
+// was removed in the security hardening pass — see userIdFromRelayRequest.)
 //
 // SECURITY (P1-6):
 //   - TTL reduced from 24h → 1h. A leaked token is exploitable for a much
@@ -186,34 +182,34 @@ export async function issueExtensionTokenRoute(c: Context<AppEnv>) {
 }
 
 /**
- * Extract + verify the extension token from a WS upgrade request. Tries the
- * subprotocol first (preferred — token never appears in URLs/logs), then
- * falls back to the URL query param (legacy). Returns the userId, or null.
+ * Extract + verify the extension token from a WS upgrade request.
+ *
+ * AUDIT M3: the legacy `?token=<jwt>` URL query channel was REMOVED — tokens
+ * in URLs leak into browser history, referrers, and server access logs, and
+ * every extension build in this repo already uses the subprotocol channel
+ * (see extension/bridge.js: `new WebSocket(url, ["ja-ext-token.<jwt>"])`).
+ * Returns the userId, or null.
  */
 export async function userIdFromRelayRequest(
   url: URL,
   secret: string,
   headers?: Headers,
 ): Promise<string | null> {
-  // 1. Preferred: `Sec-WebSocket-Protocol: ja-ext-token.<jwt>`. The browser
-  //    packs the client-offered subprotocols into this header during the WS
-  //    handshake. We pick the first one matching our prefix.
-  if (headers) {
-    const rawProtos = headers.get("sec-websocket-protocol") ?? ""
-    for (const proto of rawProtos.split(",").map(s => s.trim())) {
-      if (proto.startsWith(EXT_TOKEN_SUBPROTOCOL_PREFIX)) {
-        const token = proto.slice(EXT_TOKEN_SUBPROTOCOL_PREFIX.length)
-        const verified = await verifyExtensionToken(token, secret)
-        if (verified) return verified.userId
-      }
+  // `Sec-WebSocket-Protocol: ja-ext-token.<jwt>`. The browser packs the
+  // client-offered subprotocols into this header during the WS handshake; we
+  // pick the first one matching our prefix. (The unused `url` param is kept
+  // so call sites/tests can pass the full request URL.)
+  void url
+  if (!headers) return null
+  const rawProtos = headers.get("sec-websocket-protocol") ?? ""
+  for (const proto of rawProtos.split(",").map(s => s.trim())) {
+    if (proto.startsWith(EXT_TOKEN_SUBPROTOCOL_PREFIX)) {
+      const token = proto.slice(EXT_TOKEN_SUBPROTOCOL_PREFIX.length)
+      const verified = await verifyExtensionToken(token, secret)
+      if (verified) return verified.userId
     }
   }
-  // 2. Legacy: ?token=<jwt>. Logged in browser history, referrers, and server
-  //    access logs — kept only so existing extension builds keep working.
-  const token = url.searchParams.get("token")
-  if (!token) return null
-  const verified = await verifyExtensionToken(token, secret)
-  return verified?.userId ?? null
+  return null
 }
 
 /** Resolve the effective secret from env (re-exported for tests/routers). */

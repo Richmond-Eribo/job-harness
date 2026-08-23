@@ -332,8 +332,7 @@ app.all("/browser/relay", async c => {
     // (mint ran on AUTH_SECRET, verify runs on EXTENSION_TOKEN_SECRET).
     console.warn(
       `[/browser/relay] 401 — token missing/invalid. ` +
-        `protoHdr=${c.req.raw.headers.get("sec-websocket-protocol") ? "present" : "absent"} ` +
-        `tokenQuery=${url.searchParams.has("token") ? "present" : "absent"}`,
+        `protoHdr=${c.req.raw.headers.get("sec-websocket-protocol") ? "present" : "absent"}`,
     )
     return c.json({ error: "Missing or invalid extension token" }, 401)
   }

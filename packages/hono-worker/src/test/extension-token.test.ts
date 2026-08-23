@@ -80,19 +80,44 @@ describe("extension tokens — sign/verify roundtrip", () => {
 })
 
 describe("userIdFromRelayRequest", () => {
-  it("extracts userId from a valid ?token= query param", async () => {
+  it("extracts userId from a valid subprotocol header", async () => {
     const token = await mintExtensionToken(USER_ID, SECRET)
-    const url = new URL(`wss://worker/browser/relay?token=${token}`)
-    expect(await userIdFromRelayRequest(url, SECRET)).toBe(USER_ID)
+    const url = new URL("wss://worker/browser/relay")
+    const headers = new Headers({
+      "sec-websocket-protocol": `ja-ext-token.${token}`,
+    })
+    expect(await userIdFromRelayRequest(url, SECRET, headers)).toBe(USER_ID)
   })
 
-  it("returns null when no token query param is present", async () => {
+  it("picks the first subprotocol with the ja-ext-token. prefix", async () => {
+    const token = await mintExtensionToken(USER_ID, SECRET)
+    const url = new URL("wss://worker/browser/relay")
+    const headers = new Headers({
+      "sec-websocket-protocol": `chat, ja-ext-token.${token}`,
+    })
+    expect(await userIdFromRelayRequest(url, SECRET, headers)).toBe(USER_ID)
+  })
+
+  it("returns null when no subprotocol header is present", async () => {
     const url = new URL("wss://worker/browser/relay")
     expect(await userIdFromRelayRequest(url, SECRET)).toBeNull()
+    expect(await userIdFromRelayRequest(url, SECRET, new Headers())).toBeNull()
   })
 
-  it("returns null for an invalid token", async () => {
-    const url = new URL("wss://worker/browser/relay?token=garbage")
+  it("returns null for an invalid subprotocol token", async () => {
+    const url = new URL("wss://worker/browser/relay")
+    const headers = new Headers({
+      "sec-websocket-protocol": "ja-ext-token.garbage",
+    })
+    expect(await userIdFromRelayRequest(url, SECRET, headers)).toBeNull()
+  })
+
+  it("REJECTS the legacy ?token= query param (audit M3: tokens must not travel in URLs)", async () => {
+    // A correctly-signed token presented ONLY via the URL query string must be
+    // ignored — the query channel leaked tokens into history/logs and was
+    // removed in the security hardening pass.
+    const token = await mintExtensionToken(USER_ID, SECRET)
+    const url = new URL(`wss://worker/browser/relay?token=${token}`)
     expect(await userIdFromRelayRequest(url, SECRET)).toBeNull()
   })
 })
