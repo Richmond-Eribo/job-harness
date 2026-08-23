@@ -8,7 +8,7 @@
   // `main` is the virtual server entry TanStack Start provides; the Cloudflare
   // vite plugin resolves it at build time into .output/server/index.js.
   "name": "job-agent-web",
-  "compatibility_date": "2026-05-24",
+  "compatibility_date": "2026-07-24",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
 
