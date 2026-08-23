@@ -104,11 +104,33 @@ export function useRuns() {
 }
 
 // --- Single run events (the transcript) ---
-// Polls every 3s while the run is active; stops once it settles.
+// Seq-cursor incremental polling: the first fetch hydrates run + events in
+// one round trip (GET /runs/:runId); subsequent polls ask ONLY for events
+// newer than the highest seq we hold (GET /runs/:runId/events?sinceSeq=N —
+// the endpoint built for exactly this) and append. Falls back to a full
+// refetch when the page is ≥500 events behind (possible gap) or when a
+// run_end arrives (re-reads the final rollup: status, token totals).
+// Stops polling once the run settles.
 export function useRunTrace(runId: string) {
+  const qc = useQueryClient()
   return useQuery({
     queryKey: ["run", runId],
-    queryFn: () => api.get<RunTraceResponse>(`/runs/${runId}`),
+    queryFn: async (): Promise<RunTraceResponse> => {
+      const cached = qc.getQueryData<RunTraceResponse>(["run", runId])
+      const held = cached?.events ?? []
+      const lastSeq = held.length > 0 ? held[held.length - 1].seq : 0
+      if (!cached || lastSeq <= 0) {
+        return api.get<RunTraceResponse>(`/runs/${runId}`)
+      }
+      const fresh = await api.get<TraceEvent[]>(
+        `/runs/${runId}/events?sinceSeq=${lastSeq}`,
+      )
+      if (fresh.length === 0) return cached
+      if (fresh.length >= 500 || fresh.some(e => e.eventType === "run_end")) {
+        return api.get<RunTraceResponse>(`/runs/${runId}`)
+      }
+      return { ...cached, events: [...held, ...fresh] }
+    },
     refetchInterval: query => {
       const status = query.state.data?.run?.status
       if (status === "done" || status === "error") return false
