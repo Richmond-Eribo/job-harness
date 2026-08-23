@@ -42,7 +42,9 @@ export function OnboardingPage() {
   const [p, setP] = useState<Record<string, string>>({})
   const [cvFile, setCvFile] = useState<File | null>(null)
   const [cvUploaded, setCvUploaded] = useState(false)
-  const [seedDefaults, setSeedDefaults] = useState(true)
+  // Opt-in, not opt-out: seeding starter sources must be a conscious choice —
+  // a pre-checked box quietly narrows what the agent searches for you.
+  const [seedDefaults, setSeedDefaults] = useState(false)
 
   // Stable closures — only close over setP (stable).
   const setSelect = (k: string) => (v: string) =>
@@ -363,8 +365,8 @@ function StepCv({
             Seed starter job sources
           </span>
           <span className="block text-xs text-muted-foreground mt-0.5">
-            Adds a couple of public, login-free boards so the agent has
-            something to search right away. Edit or remove them anytime from
+            Adds a public, login-free board (HN Who Is Hiring) so the agent has
+            something to search right away. Edit or remove it anytime from
             Jobs → Sources.
           </span>
         </span>

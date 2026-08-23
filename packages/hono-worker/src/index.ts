@@ -80,21 +80,18 @@ export {
 // Hono app
 // =============================================================================
 
-// Sensible starter job sources offered during onboarding (subject to the
-// user opting in via `seedDefaultJobSources: true`). Both are public, login-
-// free boards — deliberately NOT login-walled sites like LinkedIn/Indeed
-// here, since those require the extension to be paired first. A user with no
-// sources configured sees a "Needed" pre-flight item on the dashboard; this
-// seed removes that friction without forcing them to learn the Sources UI on
-// day one. Both seeds are browse-only (no searchUrlTemplate) — the agent
-// loads the base page and navigates via fetch_page. searchUrlTemplate is now
-// fully optional across the system (see src/agents/job-agent.ts).
+// Sensible starter job source offered during onboarding (subject to the
+// user opting in via `seedDefaultJobSources: true` — the checkbox is NOT
+// pre-checked). Geography-neutral by design: seeding a region-specific board
+// (e.g. a UK-only site) would skew every user's discovery toward that region
+// regardless of their target locations. HN Who Is Hiring is public and
+// login-free — deliberately NOT login-walled sites like LinkedIn/Indeed,
+// since those require the extension to be paired first. A user with no
+// sources configured sees a "Needed" pre-flight item on the dashboard. The
+// seed is browse-only (no searchUrlTemplate) — the agent loads the base page
+// and navigates via fetch_page. searchUrlTemplate is fully optional across
+// the system (see src/agents/job-agent.ts).
 const DEFAULT_JOB_SOURCES = [
-  {
-    name: "Reed",
-    baseUrl: "https://www.reed.co.uk",
-    notes: "Default seeded source — public, no login required.",
-  },
   {
     name: "HN Who Is Hiring",
     baseUrl: "https://news.ycombinator.com",
