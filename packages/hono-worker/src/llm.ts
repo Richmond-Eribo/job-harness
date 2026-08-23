@@ -57,15 +57,16 @@ interface LlmConfig {
 const config = rawConfig as LlmConfig
 
 // ───────────────────────────────────────────────────────────────────────
-// Runtime model override (v1 gap fix)
+// Runtime model override (SECURITY NOTE — see audit C2)
 // ───────────────────────────────────────────────────────────────────────
-// llm-config.json is a static import (baked at build time), so without this
-// override mechanism the operator can't switch providers/models without a
-// redeploy. setModelOverride() takes a partial ModelConfig (provider, modelId,
-// customProviderUrl) — anything unset falls back to the JSON. The harness
-// reads overrides from the `config` SQLite table during ensureDb() and applies
-// them here, so PUT /api/config { llmProvider, llmModel, customProviderUrl }
-// takes effect on the next getModel() call without a redeploy.
+// llm-config.json is a static import (baked at build time). This override
+// mechanism exists for OPERATOR tooling only — it is a module-level global,
+// so whatever it holds applies to EVERY user's LLM calls in the isolate. The
+// user-facing PUT /api/config route deliberately no longer feeds it (that was
+// a shared-LLM_API_KEY exfiltration vector: any user could point
+// customProviderUrl at their own server and harvest the key from the
+// Authorization header). Model identity is deploy-time config; nothing in the
+// request path calls setModelOverride anymore.
 let modelOverride: Partial<ModelConfig> = {}
 
 export function setModelOverride(override: Partial<ModelConfig>): void {

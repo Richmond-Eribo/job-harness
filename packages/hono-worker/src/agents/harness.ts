@@ -1,6 +1,6 @@
 import { Agent, callable } from "agents"
 import { generateText, streamText, isStepCount } from "ai"
-import { getModel, getModelInfo, getParams, setModelOverride } from "../llm"
+import { getModel, getModelInfo, getParams } from "../llm"
 // import type { TraceEntry } from "../utils/trace"
 import obsConfig from "../config/observability-config.json"
 import { DEFAULT_HARNESS_STATE } from "../types"
@@ -880,12 +880,12 @@ export class Harness extends Agent<Env, HarnessState> {
       initDb(this)
       this.dbInitialized = true
 
-      // Load config overrides from SQLite into live state AND apply the
-      // runtime model override so PUT /api/config {llmProvider, llmModel,
-      // customProviderUrl} takes effect without a redeploy. The LLM_API_KEY
-      // env secret stays as-is — switching providers in the DB assumes the
-      // same key works for the new provider (common for OpenAI-compatible
-      // gateways); if not, swap the secret too.
+      // Load config values from SQLite into live state (goal + run limits).
+      // AUDIT C2: the runtime MODEL override (llmProvider/llmModel/
+      // customProviderUrl → setModelOverride, a module-level global shared by
+      // every user in the isolate) is deliberately no longer applied from the
+      // user-writable config table — model identity comes from
+      // src/config/llm-config.json only.
       try {
         const rows = execSql(this, `SELECT key, value FROM config`)
         const cfg: Record<string, string> = {}
@@ -897,24 +897,21 @@ export class Harness extends Agent<Env, HarnessState> {
         if (cfg.maxSteps !== undefined) {
           this.setState({
             ...this.state,
-            maxSteps: parseInt(cfg.maxSteps, 10) || 100,
+            maxSteps: Math.min(
+              1000,
+              Math.max(1, parseInt(cfg.maxSteps, 10) || 100),
+            ),
           })
         }
         if (cfg.tokenBudget !== undefined) {
           this.setState({
             ...this.state,
-            tokenBudget: parseInt(cfg.tokenBudget, 10) || 0,
+            tokenBudget: Math.min(
+              50_000_000,
+              Math.max(0, parseInt(cfg.tokenBudget, 10) || 0),
+            ),
           })
         }
-        // Model override — any of the three keys, applied partial-ly so the
-        // operator can switch just the model id (e.g. gpt-4o → gpt-4o-mini)
-        // without re-specifying provider + baseURL.
-        const override: Record<string, string> = {}
-        if (cfg.llmProvider) override.provider = cfg.llmProvider
-        if (cfg.llmModel) override.modelId = cfg.llmModel
-        if (cfg.customProviderUrl)
-          override.customProviderUrl = cfg.customProviderUrl
-        if (Object.keys(override).length > 0) setModelOverride(override)
       } catch {
         // Config table may not have rows yet
       }
@@ -1326,14 +1323,27 @@ export class Harness extends Agent<Env, HarnessState> {
   // ---------------------------------------------------------------------------
 
   @callable()
-  async updateConfig(config: Record<string, string>): Promise<string> {
+  async updateConfig(config: Record<string, string | number>): Promise<string> {
     this.ensureDb()
 
-    // Apply the model override eagerly so the next getModel() call inside the
-    // loop picks it up — no need for an ensureDb() cycle.
-    const modelOverride: Record<string, string> = {}
+    // AUDIT C2/H5: user-mutable config is now a FIXED allowlist with clamped
+    // numeric ranges (enforced at the route by zod, re-applied here as
+    // defense-in-depth for any other caller). Model/provider keys
+    // (llmProvider/llmModel/customProviderUrl) are operator-managed via
+    // src/config/llm-config.json — they are deliberately NOT writable here:
+    // the old behavior let any user point the shared LLM_API_KEY at an
+    // arbitrary baseURL, and the module-global model override in llm.ts then
+    // leaked one user's override into every other user's calls.
+    const ALLOWED_KEYS = new Set(["goal", "maxSteps", "tokenBudget"])
+    const clamp = (n: number, min: number, max: number, dflt: number) => {
+      if (!Number.isFinite(n)) return dflt
+      return Math.min(max, Math.max(min, Math.trunc(n)))
+    }
 
-    for (const [key, value] of Object.entries(config)) {
+    const applied: string[] = []
+    for (const [key, rawValue] of Object.entries(config)) {
+      if (!ALLOWED_KEYS.has(key)) continue
+      const value = String(rawValue)
       execSql(
         this,
         `INSERT INTO config (key, value) VALUES (?, ?)
@@ -1344,25 +1354,23 @@ export class Harness extends Agent<Env, HarnessState> {
       if (key === "goal") {
         this.setState({ ...this.state, goal: value })
       } else if (key === "maxSteps") {
-        this.setState({ ...this.state, maxSteps: parseInt(value, 10) || 100 })
+        this.setState({
+          ...this.state,
+          maxSteps: clamp(parseInt(value, 10), 1, 1000, 100),
+        })
       } else if (key === "tokenBudget") {
-        this.setState({ ...this.state, tokenBudget: parseInt(value, 10) || 0 })
-      } else if (
-        key === "llmProvider" ||
-        key === "llmModel" ||
-        key === "customProviderUrl"
-      ) {
-        // Map API keys → ModelConfig keys for setModelOverride.
-        const mk = key === "llmModel" ? "modelId" : key
-        modelOverride[mk] = value
+        this.setState({
+          ...this.state,
+          tokenBudget: clamp(parseInt(value, 10), 0, 50_000_000, 0),
+        })
       }
+      applied.push(key)
     }
 
-    if (Object.keys(modelOverride).length > 0) {
-      setModelOverride(modelOverride)
+    if (applied.length === 0) {
+      return `No applicable config keys (allowed: ${[...ALLOWED_KEYS].join(", ")})`
     }
-
-    return `Config updated: ${Object.keys(config).join(", ")}`
+    return `Config updated: ${applied.join(", ")}`
   }
 
   @callable()
