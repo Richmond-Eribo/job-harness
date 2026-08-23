@@ -1,4 +1,4 @@
-import { Agent, callable } from "agents"
+import { Agent, callable, getAgentByName } from "agents"
 import { generateText, streamText, isStepCount } from "ai"
 import { getModel, getModelInfo, getParams } from "../llm"
 // import type { TraceEntry } from "../utils/trace"
@@ -684,6 +684,32 @@ export class Harness extends Agent<Env, HarnessState> {
       )
     } catch {
       // swallow
+    }
+  }
+
+  /**
+   * True when this runId already has a HARNESS-level trace event of the given
+   * type/label (parent_id IS NULL — sub-agent events never count). Used to
+   * make run initialization idempotent across tick re-entries. `label IS ?`
+   * matches NULL labels when the bound value is null (SQLite IS semantics).
+   */
+  private hasHarnessEvent(
+    runId: string,
+    eventType: string,
+    label?: string | null,
+  ): boolean {
+    try {
+      const rows = execSql(
+        this,
+        `SELECT 1 FROM trace_events
+          WHERE run_id = ? AND event_type = ? AND parent_id IS NULL
+            AND label IS ? LIMIT 1`,
+        [runId, eventType, label ?? null],
+      )
+      return rows.length > 0
+    } catch {
+      // trace_events may not exist yet (pre-migration DO) — treat as absent
+      return false
     }
   }
 
@@ -1955,13 +1981,20 @@ export class Harness extends Agent<Env, HarnessState> {
       messages = ours.messages
       plan = ours.plan
       loopState = ours.loopState
-      planNeedsFresh = false // already generated on a prior tick
+      // Recompute plan freshness rather than assuming: an early checkpoint
+      // (written before the first LLM turn, see below) can restore the
+      // PREVIOUS run's plan, which would otherwise never be regenerated.
+      planNeedsFresh = !plan || (plan as any)._runId !== runId
       // Normalize restored messages — a checkpoint saved by an older build may
       // carry raw (un-wrapped) tool outputs that fail the ModelMessage[] schema
       // on re-send. This makes resume robust across the fix.
       normalizeToolOutputs(messages)
     } else {
       // Fresh run — emit run_start + system events, then synthesize a plan.
+      // Init events are idempotency-guarded: a tick that re-enters this branch
+      // before the first post-turn checkpoint exists (rate-limit deferral,
+      // alarm redelivery after an eviction) must NOT push a second run_start /
+      // plan / soul-doc system event for the same runId.
       messages = [{ role: "user", content: buildKickoffMessage(goal, runId) }]
       plan = this.state.plan
       planNeedsFresh = !plan || (plan as any)._runId !== runId
@@ -1969,27 +2002,36 @@ export class Harness extends Agent<Env, HarnessState> {
 
       // Reseed the per-run seq from the DB high-water mark (covers the rare
       // case where a run_id collides with stale rows). For a genuinely fresh
-      // run this sets traceSeq to 0.
+      // run this sets traceSeq to 0. Idempotent on re-entry.
       this.reseedTraceSeq(runId)
-      this.pushTraceEvent({
-        runId,
-        eventType: "run_start",
-        payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
-      })
+      if (!this.hasHarnessEvent(runId, "run_start")) {
+        this.pushTraceEvent({
+          runId,
+          eventType: "run_start",
+          payload: JSON.stringify({ goal, maxSteps, tokenBudget }),
+        })
+      }
     }
+
+    // The candidate's profile (this user's own data, from their JobAgent DO).
+    // Fetched BEFORE planning so the plan itself is profile-grounded, and
+    // rendered into the system prompt below.
+    const profileSummary = await this.getProfileSummaryForRun(runId)
 
     if (planNeedsFresh) {
       try {
-        plan = await this.generatePlan(goal)
+        plan = await this.generatePlan(goal, profileSummary)
         ;(plan as any)._runId = runId
         this.setState({ ...this.state, plan })
-        this.pushTraceEvent({
-          runId,
-          eventType: "system",
-          role: "system",
-          label: "plan",
-          payload: JSON.stringify(plan),
-        })
+        if (!this.hasHarnessEvent(runId, "system", "plan")) {
+          this.pushTraceEvent({
+            runId,
+            eventType: "system",
+            role: "system",
+            label: "plan",
+            payload: JSON.stringify(plan),
+          })
+        }
       } catch {
         plan = null
       }
@@ -2009,17 +2051,36 @@ export class Harness extends Agent<Env, HarnessState> {
       maxSteps,
       tokenBudget,
       plan,
+      profileSummary,
     )
 
     // On a fresh run, snapshot the system prompt for traceability. (On a
-    // resumed run it's identical — don't write it twice.)
-    if (!ours) {
+    // resumed run it's identical — don't write it twice. On a re-entered fresh
+    // init, the guard below prevents a duplicate soul-doc snapshot.)
+    if (!ours && !this.hasHarnessEvent(runId, "system", null)) {
       this.pushTraceEvent({
         runId,
         eventType: "system",
         role: "system",
         payload: systemPrompt,
       })
+    }
+
+    // ── Early checkpoint (fresh run) ─────────────────────────────────────
+    // The first post-turn checkpoint only lands at the END of this tick. Until
+    // then, any early return — the rate-limit deferral below, a pause, or a
+    // crash/eviction mid-first-turn — would re-run the fresh-init branch on
+    // the next tick. Persisting this baseline row right after init means
+    // re-entry restores through the normal `ours` path instead.
+    if (!ours) {
+      this.writeCheckpoint(
+        runId,
+        goal,
+        this.state.currentStep,
+        messages,
+        plan,
+        loopState,
+      )
     }
 
     // ── Trace recorder for this tick ────────────────────────────────────
@@ -2779,6 +2840,59 @@ export class Harness extends Agent<Env, HarnessState> {
     return `Goal set.`
   }
 
+  // ----- candidate profile (the per-user context under every decision) ------
+
+  // Cached profile summary for the active run. Keyed by runId for the same
+  // reason as traceSeq: the system prompt must render IDENTICALLY on every
+  // tick of a run (prompt-cache stability), so a transient RPC failure must
+  // never flip this block mid-run. A DO eviction drops the cache — harmless,
+  // the next fetch re-renders the same string (the profile is the source of
+  // truth in the JobAgent DO, unchanged mid-run in practice).
+  private profileSummaryCache: { runId: string; summary: string } | null = null
+
+  /**
+   * Fetch the owning user's profile from their JobApplicationAgent DO (the
+   * multi-tenant source of truth — the DO name is the userId). Returns null
+   * when no user is bound or the RPC fails; callers render their own
+   * fallback. `userId` overrides this.state.userId for call sites (start())
+   * that receive the user as a parameter before state is persisted.
+   */
+  private async fetchProfile(
+    userId?: string,
+  ): Promise<import("@agent-harness/shared-types").UserProfile | null> {
+    const uid = userId ?? this.state.userId
+    if (!uid) return null
+    try {
+      const jobAgent = await getAgentByName<Env, JobApplicationAgent>(
+        this.env.JOB_AGENT,
+        uid,
+      )
+      return await jobAgent.getProfile()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The candidate this harness works for, formatted for prompts: structured
+   * fields + a capped CV excerpt via formatProfileForPrompt (never internal
+   * pointer metadata). Used by buildSystemPrompt and generatePlan.
+   */
+  private async getProfileSummaryForRun(runId: string): Promise<string> {
+    if (this.profileSummaryCache?.runId === runId) {
+      return this.profileSummaryCache.summary
+    }
+    const profile = await this.fetchProfile()
+    if (!profile) {
+      return "(candidate profile unavailable)"
+    }
+    const summary = formatProfileForPrompt(profile, {
+      includeCvText: true,
+    })
+    this.profileSummaryCache = { runId, summary }
+    return summary
+  }
+
   // ----- plan management (P1: planning as a durability strategy) ------------
 
   /**
@@ -2791,8 +2905,12 @@ export class Harness extends Agent<Env, HarnessState> {
    * Single non-tool LLM call. Asks for strict JSON so we parse defensively;
    * if parsing fails or the model refuses, fall back to a 1-step plan equal
    * to the goal so the run still proceeds.
+   *
+   * The candidate's profile summary is included so the plan's search/draft
+   * steps reference the user's actual target roles and locations instead of
+   * whatever the model assumes a "job seeker" looks like.
    */
-  async generatePlan(goal: string): Promise<Plan> {
+  async generatePlan(goal: string, profileSummary?: string): Promise<Plan> {
     const nowIso = new Date().toISOString()
     const fallback: Plan = {
       goal,
@@ -2843,11 +2961,12 @@ export class Harness extends Agent<Env, HarnessState> {
         model,
         system:
           "You are a planner for an autonomous job-search agent. Break the goal into 4-6 concrete, ordered steps the agent can execute using ONLY these available tools. " +
-          "Each step must be actionable in one or two tool calls. Output STRICT JSON: " +
+          "Each step must be actionable in one or two tool calls. Ground every step in the candidate profile supplied below — never assume roles, skills, or locations it does not state. Output STRICT JSON: " +
           '{"steps":[{"id":"step-1","description":"..."},{"id":"step-2","description":"..."}]}. ' +
           "No prose, no markdown fences.",
         prompt:
           `Goal: ${goal}\n\n` +
+          `Candidate profile:\n${profileSummary ?? "(unavailable)"}\n\n` +
           `Available tools (JSON):\n${JSON.stringify(toolCatalog, null, 2)}\n\n` +
           `Return the JSON plan now.`,
         ...getParams(this.env),
