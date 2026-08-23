@@ -19,6 +19,7 @@ import type {
   CoverLetterResponse,
 } from "../types"
 import { TraceRecorder } from "../utils/trace-recorder"
+import { formatProfileForPrompt } from "../utils/profile-summary"
 import obsConfig from "../config/observability-config.json"
 
 // =============================================================================
@@ -167,13 +168,24 @@ function migrateJobSourcesSchema(agent: SqlAgent) {
 // =============================================================================
 // Helper: get user profile as a string
 // =============================================================================
+// Renders through formatProfileForPrompt (utils/profile-summary.ts) so every
+// job-agent prompt sees the same clean view of THIS user's profile: ordered,
+// labeled fields and NO internal CV pointer metadata (cvR2Key, cvFilename,
+// cvUploadedAt, …) — that noise used to be dumped verbatim into every search
+// and cover-letter prompt. Callers opt into a capped CV excerpt when the
+// prompt grounds against real experience (cover letters); the tailored-CV
+// flow reads cvText verbatim itself.
 
-function getProfileString(agent: SqlAgent): string {
+function getProfileString(
+  agent: SqlAgent,
+  opts?: { includeCvText?: boolean; cvExcerptChars?: number },
+): string {
   const rows = execSql(agent, `SELECT key, value FROM user_profile`)
-
-  if (rows.length === 0) return "No profile set yet."
-
-  return rows.map((r: any) => `${r.key}: ${r.value}`).join("\n\n")
+  const profile: Record<string, string | null> = {}
+  for (const row of rows) {
+    profile[row.key as string] = row.value as string
+  }
+  return formatProfileForPrompt(profile as unknown as UserProfile, opts)
 }
 
 // =============================================================================
@@ -494,11 +506,15 @@ export class JobApplicationAgent extends Agent<Env, JobAgentState> {
           sourceId: z.number().int(),
           query: z
             .string()
-            .describe("role/keywords to search for, e.g. 'Senior TypeScript'"),
+            .describe(
+              "role/keywords to search for — derive from the candidate profile's target roles and skills",
+            ),
           location: z
             .string()
             .optional()
-            .describe("location filter, e.g. 'London' or 'Remote'"),
+            .describe(
+              "location filter — derive from the candidate profile's target locations or work mode",
+            ),
           page: z
             .number()
             .int()
@@ -910,7 +926,12 @@ you found and stop rather than fabricating results to fill a quota.`
     this.ensureDb()
 
     const model = getModel(this.env)
-    const profileStr = getProfileString(this)
+    // Cover letters ground in real experience — include a (capped) CV excerpt
+    // alongside the structured profile fields.
+    const profileStr = getProfileString(this, {
+      includeCvText: true,
+      cvExcerptChars: 40_000,
+    })
 
     // Get the job listing
     const jobs = execSql(this, `SELECT * FROM job_listings WHERE id = ?`, [

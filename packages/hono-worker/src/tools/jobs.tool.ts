@@ -40,7 +40,7 @@ export function makeDiscoverJobsTool(
       criteria: z
         .string()
         .describe(
-          "Search criteria: role, stack, seniority, location, etc. e.g. 'senior TypeScript + AI, remote'",
+          "Search criteria: role, stack, seniority, location. Derive every part from the candidate profile in your context — never assume a role, stack, or location the profile does not state.",
         ),
       maxResults: z
         .number()
