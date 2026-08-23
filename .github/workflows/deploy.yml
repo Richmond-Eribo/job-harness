@@ -10,7 +10,10 @@ on:
 # compatible API to talk to.
 #
 # Required GitHub secrets:
-#   CLOUDFLARE_API_TOKEN   — an API token with Workers Deploy permission
+#   CLOUDFLARE_API_TOKEN   — an API token with Workers Deploy AND D1 Edit
+#                            permissions (D1 Edit is needed by the migration
+#                            step below; a token with only Workers Deploy
+#                            will fail on "Apply D1 migrations")
 #   CLOUDFLARE_ACCOUNT_ID  — the Cloudflare account id
 #   VITE_API_URL           — the PROD API origin the frontend calls cross-origin
 #                            (e.g. https://agent-harness.<subdomain>.workers.dev
@@ -42,6 +45,17 @@ jobs:
         run: npm run typecheck
       - name: Unit tests
         run: npm run test:unit
+      # D1 migrations run BEFORE the worker deploy so new code never lands on
+      # a database missing its tables (that exact gap 500'd the pairing flow
+      # in prod). Migrations are idempotent (IF NOT EXISTS) — a no-op when
+      # nothing is pending.
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/hono-worker
+          command: d1 migrations apply agent-harness-auth --remote
       - name: Deploy API worker
         uses: cloudflare/wrangler-action@v3
         with:

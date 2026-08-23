@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "wrangler d1 migrations apply agent-harness-auth --local",
     "dev": "wrangler dev",
+    "predeploy": "npm run db:migrate:remote",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "types": "wrangler types",
