@@ -44,13 +44,18 @@ import { API_URL } from "./auth"
 
 /**
  * The session shape frontend code can rely on. Mirrors the worker's
- * AuthSession (see packages/hono-worker/src/auth/auth.ts). Kept here (and
- * re-exported from ./auth.ts for back-compat with existing imports) — the
- * Better Auth client SDK's inferred type doesn't surface our custom
- * `onboardingComplete` additional field.
+ * AuthSession (see packages/hono-worker/src/auth/auth.ts) MINUS the raw
+ * session token — audit M2: Better Auth's get-session returns `session.token`,
+ * and this object is dehydrated into the SSR payload the browser receives, so
+ * keeping it would make the token XSS-stealable regardless of the httpOnly
+ * cookie. Nothing in the frontend reads it; it is stripped in
+ * fetchSessionFromWorker before the object ever leaves the server.
+ * Kept here (and re-exported from ./auth.ts for back-compat with existing
+ * imports) — the Better Auth client SDK's inferred type doesn't surface our
+ * custom `onboardingComplete` additional field.
  */
 export interface AppSession {
-  session: { id: string; token: string; userId: string; expiresAt: Date }
+  session: { id: string; userId: string; expiresAt: Date }
   user: {
     id: string
     email: string
@@ -64,7 +69,8 @@ export interface AppSession {
 }
 
 interface RawSessionResponse {
-  session?: AppSession["session"] | null
+  // The worker's response includes `token`; AppSession deliberately omits it.
+  session?: (AppSession["session"] & { token?: string }) | null
   user?: AppSession["user"] | null
 }
 
@@ -130,8 +136,12 @@ async function fetchSessionFromWorker(
       if (!json || !json.session || !json.user) {
         return { hasSession: false, networkFailed: false, session: null }
       }
+      // Audit M2: drop the raw session token — the worker includes it in the
+      // get-session response, but dehydrating it into the SSR payload would
+      // expose it to the browser (and to XSS) despite the httpOnly cookie.
+      const { token: _sessionToken, ...sessionMeta } = json.session
       const session: AppSession = {
-        session: json.session,
+        session: sessionMeta,
         user: json.user,
       }
       return { hasSession: true, networkFailed: false, session }

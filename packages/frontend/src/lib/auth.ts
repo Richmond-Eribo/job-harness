@@ -40,10 +40,12 @@ export const authClient = createAuthClient({
  * additionalFields, so we declare the full shape explicitly here and cast to
  * it at the call sites.
  *
- * Re-exported from auth.functions.ts; keep them in sync.
+ * Re-exported from auth.functions.ts; keep them in sync. Note the session
+ * shape deliberately omits the raw `token` (audit M2) — the SSR layer strips
+ * it before the object reaches the browser.
  */
 export type AppSession = {
-  session: { id: string; token: string; userId: string; expiresAt: Date }
+  session: { id: string; userId: string; expiresAt: Date }
   user: {
     id: string
     email: string
