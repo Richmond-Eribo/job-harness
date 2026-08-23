@@ -168,8 +168,9 @@ export function useUserMemory() {
 // --- Harness runtime / LLM config (GET/PUT /api/config) ---
 // Backend returns a flat Record<string,string> with keys like:
 //   goal, maxSteps, tokenBudget, tokensUsed (read-only),
-//   llmProvider, llmModel, customProviderUrl.
-// Only send keys you want to mutate — updateConfig() does partial writes.
+//   llmProvider, llmModel, customProviderUrl (read-only — operator-managed).
+// Only send keys you want to mutate — updateConfig() does partial writes on
+// the ALLOWLISTED keys (goal, maxSteps, tokenBudget); anything else 400s.
 export function useConfig() {
   return useQuery({
     queryKey: ["config"],

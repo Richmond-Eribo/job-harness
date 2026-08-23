@@ -39,11 +39,6 @@ import {
   Label,
   Skeleton,
   Badge,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Tabs,
   TabsList,
   TabsTrigger,
@@ -199,7 +194,11 @@ function LlmConfigTab() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Model Selection */}
+      {/* Model Selection — READ-ONLY (security hardening, audit C2).
+          Model/provider config is operator-managed in the API worker's
+          src/config/llm-config.json + LLM_API_KEY secret; it is deliberately
+          no longer user-mutable over PUT /api/config (that endpoint could
+          previously redirect the shared API key to an arbitrary URL). */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -207,73 +206,37 @@ function LlmConfigTab() {
             Model Selection
           </CardTitle>
           <CardDescription className="text-xs">
-            Override the default model. Choose a provider protocol that matches
-            your API gateway, then set a model id and (for compatible gateways)
-            the base URL.
+            The provider, model, and endpoint are configured by the operator
+            (server-side). Contact the deployment owner to change them.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label
-                htmlFor="llmProvider"
-                className="text-xs text-muted-foreground"
-              >
+        <CardContent>
+          <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
                 Provider
-              </Label>
-              <Select
-                value={v("llmProvider")}
-                onValueChange={val => set("llmProvider", val)}
-              >
-                <SelectTrigger id="llmProvider" className="text-xs">
-                  <SelectValue placeholder="Select provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="openai-compatible">
-                    OpenAI compatible
-                  </SelectItem>
-                  <SelectItem value="anthropic-compatible">
-                    Anthropic compatible
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground/80">
-                OpenAI compatible: OpenAI, GLM, OpenRouter, xAI, Groq, Ollama.
-                Anthropic compatible: Claude-style gateways.
-              </p>
+              </dt>
+              <dd className="text-xs font-mono break-all">
+                {v("llmProvider") || "—"}
+              </dd>
             </div>
-            <div className="space-y-1.5">
-              <Label
-                htmlFor="llmModel"
-                className="text-xs text-muted-foreground"
-              >
-                Model ID
-              </Label>
-              <Input
-                id="llmModel"
-                placeholder="e.g. gpt-4o-mini"
-                value={v("llmModel")}
-                onChange={e => set("llmModel", e.target.value)}
-                className="text-xs"
-              />
+            <div className="space-y-1">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Model
+              </dt>
+              <dd className="text-xs font-mono break-all">
+                {v("llmModel") || "—"}
+              </dd>
             </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label
-              htmlFor="customProviderUrl"
-              className="text-xs text-muted-foreground"
-            >
-              Custom Provider URL (optional)
-            </Label>
-            <Input
-              id="customProviderUrl"
-              placeholder="https://your-openai-compatible-gateway/v1"
-              value={v("customProviderUrl")}
-              onChange={e => set("customProviderUrl", e.target.value)}
-              className="text-xs font-mono"
-            />
-          </div>
+            <div className="space-y-1">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Endpoint
+              </dt>
+              <dd className="text-xs font-mono break-all">
+                {v("customProviderUrl") || "(provider default)"}
+              </dd>
+            </div>
+          </dl>
         </CardContent>
       </Card>
 
