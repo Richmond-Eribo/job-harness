@@ -745,7 +745,14 @@ app.put("/api/memory", async c => {
 })
 
 app.delete("/api/memory/:key", async c => {
-  const key = decodeURIComponent(c.req.param("key"))
+  // Malformed percent-encoding (a bare "%") makes decodeURIComponent THROW —
+  // previously a 500 for what is a client error. Decode defensively → 400.
+  let key: string
+  try {
+    key = decodeURIComponent(c.req.param("key"))
+  } catch {
+    return c.json({ error: "Invalid memory key encoding" }, 400)
+  }
   const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.forgetMemory(key) })
 })
@@ -772,7 +779,12 @@ app.put("/api/user-memory", async c => {
 })
 
 app.delete("/api/user-memory/:key", async c => {
-  const key = decodeURIComponent(c.req.param("key"))
+  let key: string
+  try {
+    key = decodeURIComponent(c.req.param("key"))
+  } catch {
+    return c.json({ error: "Invalid memory key encoding" }, 400)
+  }
   const { harness } = await getAgents(c.env, c.var.userId)
   return c.json({ message: await harness.forgetUserMemory(key) })
 })
