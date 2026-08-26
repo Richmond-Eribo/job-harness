@@ -19,9 +19,11 @@ export const DEFAULT_HARNESS_STATE: HarnessState = {
   // goal always reflects THIS user's target roles/locations — never a baked-in
   // assumption about what kind of roles they want.
   goal: "",
+  runGoal: null,
   runId: null,
   lastRunAt: null,
   lastError: null,
   plan: null,
   userId: null,
+  applyJobId: null,
 }

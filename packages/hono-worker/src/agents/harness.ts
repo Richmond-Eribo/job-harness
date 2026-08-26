@@ -1001,7 +1001,11 @@ export class Harness extends Agent<Env, HarnessState> {
   // ---------------------------------------------------------------------------
 
   @callable()
-  async start(goal?: string, userId?: string): Promise<string> {
+  async start(
+    goal?: string,
+    userId?: string,
+    applyJobId?: number,
+  ): Promise<string> {
     this.ensureDb()
 
     if (this.state.status === "running") {
@@ -1065,29 +1069,41 @@ export class Harness extends Agent<Env, HarnessState> {
         }),
       })
     } else {
-      // Auto-goal resolution: if no goal is set anywhere, synthesize one from
-      // the candidate's profile (+ available tools). This makes a fresh deploy
-      // useful on first run without forcing the operator to set a goal first —
-      // and keeps the goal grounded in THIS user's target roles/locations
-      // rather than a hardcoded assumption about what kind of roles to chase.
+      // ── Run-goal resolution (fresh run) ─────────────────────────────────
+      // The RUN goal is what this execution works on. The STANDING goal
+      // (state.goal — the operator's job-search mission) is a different
+      // concept and is NEVER overwritten by a one-off run goal (e.g. "Apply
+      // with agent"): previously start() wrote the run goal into state.goal,
+      // so an apply run hijacked the mission until DO eviction AND the next
+      // cron wake() would have re-run the apply text as the scheduled goal.
       let runGoal = goal ?? this.state.goal
+      let bootstrapStanding = false
       if (!runGoal || runGoal.trim().length === 0) {
-        const synthesized = await this.synthesizeGoalFromCapabilities(userId)
-        if (synthesized) {
-          runGoal = synthesized
-        } else {
-          runGoal = deriveDefaultGoal(await this.fetchProfile(userId))
-        }
+        // No standing goal set anywhere yet — bootstrap ONCE with the
+        // deterministic, profile-grounded mission and persist it as the
+        // standing goal. (LLM synthesis stays an explicit operator action
+        // via POST /api/goal/synthesize — it used to run implicitly here,
+        // costing a model call before every fresh run with an empty goal.)
+        runGoal = deriveDefaultGoal(await this.fetchProfile(userId))
+        bootstrapStanding = true
       }
       runId = generateRunId()
       // Stash the run goal on `this` so the setState below picks it up.
       ;(this as any)._pendingRunGoal = runGoal
+      ;(this as any)._pendingBootstrapStanding = bootstrapStanding
     }
 
     const effectiveGoal =
       (resuming ? existing?.goal : (this as any)._pendingRunGoal) ??
       goal ??
       this.state.goal
+    const bootstrapStanding =
+      !resuming && ((this as any)._pendingBootstrapStanding ?? false)
+    // First-run bootstrap: persist the derived mission as the STANDING goal
+    // (state + config table) so schedules, Settings, and future runs share it.
+    if (bootstrapStanding && effectiveGoal) {
+      await this.setGoal(effectiveGoal)
+    }
 
     this.setState({
       ...this.state,
@@ -1095,12 +1111,19 @@ export class Harness extends Agent<Env, HarnessState> {
       currentStep: resuming ? (existing?.stepNumber ?? 0) : 0,
       tokensUsed: resuming ? this.state.tokensUsed : 0,
       runId,
-      goal: effectiveGoal,
+      // runGoal = THIS run's task (shown on /api/status alongside the
+      // standing goal). state.goal is only written by the bootstrap above —
+      // one-off goals never touch it.
+      runGoal: effectiveGoal,
       lastRunAt: new Date().toISOString(),
       lastError: null,
       // Persist the owning user so delegating tools resolve sub-agents by the
       // same userId across alarm ticks (the loop has no request context).
       ...(userId ? { userId } : {}),
+      // "Apply with agent": set for apply runs (both fresh and resumed — an
+      // apply-run recovering from a crash keeps its job), cleared otherwise
+      // so a stale id never leaks into an unrelated run.
+      applyJobId: applyJobId ?? null,
     })
 
     // Record the active-run event so the per-user concurrency limit holds for
@@ -1170,9 +1193,10 @@ export class Harness extends Agent<Env, HarnessState> {
 
     const cp = this.findResumableCheckpoint()
     if (!cp || !this.state.runId) {
-      // No checkpoint (e.g. paused before the first tick fired). Start fresh.
+      // No checkpoint (e.g. paused before the first tick fired). Start fresh
+      // with THIS run's goal (runGoal), falling back to the standing goal.
       const runId = this.state.runId ?? generateRunId()
-      const goal = this.state.goal
+      const goal = this.state.runGoal ?? this.state.goal
       await this.schedule(0, "runLoopTick", { runId, goal })
       return "Resumed (fresh, no checkpoint)."
     }
@@ -1229,14 +1253,17 @@ export class Harness extends Agent<Env, HarnessState> {
 
     // Avoid fire-and-forget: callers (the watchdog) still want the eventual
     // completion marker for logging, so we await.
-    // Auto-goal resolution if no goal is set: same profile-grounded fallback
-    // as start() — synthesize from the candidate's profile, else derive
-    // deterministically from their target roles/locations/work mode.
+    // Cron runs execute the STANDING goal (the operator's mission). If none
+    // is set yet, bootstrap it once with the deterministic profile-grounded
+    // mission (same rule as start()) — persisting as the standing goal so
+    // schedules + Settings + dashboard runs all share it. LLM synthesis is
+    // an explicit operator action, never implicit here. The standing goal is
+    // never overwritten by this path — it can only be bootstrapped from
+    // empty or edited by the operator via PUT /api/config.
     let wakeGoal = this.state.goal
     if (!wakeGoal || wakeGoal.trim().length === 0) {
-      const synthesized = await this.synthesizeGoalFromCapabilities()
-      if (synthesized) wakeGoal = synthesized
-      else wakeGoal = deriveDefaultGoal(await this.fetchProfile())
+      wakeGoal = deriveDefaultGoal(await this.fetchProfile())
+      await this.setGoal(wakeGoal)
     }
 
     const runId = generateRunId()
@@ -1246,9 +1273,14 @@ export class Harness extends Agent<Env, HarnessState> {
       currentStep: 0,
       tokensUsed: 0,
       runId,
-      goal: wakeGoal ?? this.state.goal,
+      // The scheduled run's task = the standing goal. state.goal itself is
+      // untouched (only the bootstrap above writes it, from empty).
+      runGoal: wakeGoal,
       lastRunAt: new Date().toISOString(),
       lastError: null,
+      // Cron-initiated runs are never "Apply with agent" runs — clear any
+      // stale apply target so wake() can't mark a job applied by accident.
+      applyJobId: null,
     })
 
     // ACTOR-LOOP: arm the first tick (same pattern as start()). The watchdog
@@ -1257,7 +1289,7 @@ export class Harness extends Agent<Env, HarnessState> {
     try {
       await this.schedule(0, "runLoopTick", {
         runId,
-        goal: wakeGoal ?? this.state.goal,
+        goal: wakeGoal,
       })
     } catch (error: any) {
       this.setState({

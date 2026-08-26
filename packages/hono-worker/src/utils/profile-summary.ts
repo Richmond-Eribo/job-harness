@@ -70,22 +70,39 @@ export function formatProfileForPrompt(
 }
 
 /**
- * Deterministic default run goal derived from the user's own target roles,
- * locations, and work mode — used when no explicit goal is set. Replaces the
- * old hardcoded "software / AI engineering" fallback that steered every
- * tenant toward tech roles regardless of their CV.
+ * The deterministic STANDING goal — the user's job-search mission, derived
+ * from their own target roles / locations / work mode when they haven't set
+ * one explicitly. This is the goal scheduled (cron) runs and dashboard runs
+ * execute; one-off runs ("Apply with agent") carry their own goal and never
+ * replace it.
+ *
+ * Written as a functional mission over the real pipeline flow (check →
+ * discover → draft → assist-apply → maintain) so the agent always works the
+ * user's aim end to end. Keep in sync conceptually with default.md (the
+ * playbook covers HOW; this states WHAT and WHY).
  */
-export function deriveDefaultGoal(profile: UserProfile | null | undefined): string {
+export function deriveDefaultGoal(
+  profile: UserProfile | null | undefined,
+): string {
   const roles = profile?.targetRoles?.trim()
   const locations = profile?.targetLocations?.trim()
   const workMode = profile?.workMode?.trim()
 
-  const parts = [
-    "Discover, rank, and apply to",
-    roles ? `${roles} roles` : "roles that match the candidate profile",
-  ]
-  if (locations) parts.push(`in ${locations}`)
-  let goal = parts.join(" ")
-  if (workMode) goal += ` (${workMode})`
-  return goal
+  const roleLine = roles
+    ? `find REAL ${roles} roles`
+    : "find REAL roles that match the candidate profile"
+  const locationLine = locations ? ` in ${locations}` : ""
+  const modeLine = workMode ? ` (${workMode})` : ""
+
+  return [
+    "Run my job search end to end as a continuous pipeline, working autonomously each run:",
+    "",
+    "1. Check the pipeline first (pipeline_status): keep discovering only while fewer than ~10 jobs are in `discovered`; otherwise go straight to drafting.",
+    `2. DISCOVER — ${roleLine}${locationLine}${modeLine}: use discover_jobs for scrapable boards and the paired browser for login-walled sites. Score fit for every listing; save only postings you actually opened.`,
+    "3. DRAFT — for the strongest matches, generate a grounded tailored CV + cover letter (write_tailored_cv, write_cover_letter) and move each job to `draft` for my review. Never fabricate experience.",
+    "4. APPLY — assist my applications: open the posting in my paired browser and fill TEXT fields from my profile and document contents. Never submit and never log in yourself. You CANNOT upload or attach files (no file-picker capability) — leave every file-upload field for me and list what still needs uploading. Mark the job `applied` once the form is otherwise ready for my one-click submit.",
+    "5. MAINTAIN — keep job statuses and follow-ups current, respect my operator notes, persist what works and what dead-ends with `remember`, and end every run with a concrete `finish` summary: progress made, pending uploads, and the single most valuable next action.",
+    "",
+    "Ground rules: never invent companies, titles, or URLs — every fact comes from a tool or a page you opened; prefer fewer verified actions over many speculative ones.",
+  ].join("\n")
 }

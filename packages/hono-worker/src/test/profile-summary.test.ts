@@ -127,34 +127,65 @@ describe("formatProfileForPrompt", () => {
   })
 })
 
-describe("deriveDefaultGoal", () => {
-  it("builds the goal from the user's own roles, locations, and work mode", () => {
-    expect(
-      deriveDefaultGoal(
-        profile({
-          targetRoles: "Product Manager",
-          targetLocations: "Nairobi",
-          workMode: "hybrid",
-        }),
-      ),
-    ).toBe(
-      "Discover, rank, and apply to Product Manager roles in Nairobi (hybrid)",
+describe("deriveDefaultGoal — the standing job-search mission", () => {
+  it("grounds the DISCOVER phase in the user's own roles, locations, and work mode", () => {
+    const goal = deriveDefaultGoal(
+      profile({
+        targetRoles: "Product Manager",
+        targetLocations: "Nairobi",
+        workMode: "hybrid",
+      }),
     )
+    expect(goal).toContain("find REAL Product Manager roles in Nairobi (hybrid)")
   })
 
-  it("works with roles only", () => {
-    expect(deriveDefaultGoal(profile({ targetRoles: "Nurse" }))).toBe(
-      "Discover, rank, and apply to Nurse roles",
-    )
+  it("works with roles only (no location/mode decoration)", () => {
+    const goal = deriveDefaultGoal(profile({ targetRoles: "Nurse" }))
+    expect(goal).toContain("find REAL Nurse roles")
+    expect(goal).not.toContain(" in (")
   })
 
-  it("falls back to a profile-relative goal when nothing is set", () => {
-    expect(deriveDefaultGoal(profile())).toBe(
-      "Discover, rank, and apply to roles that match the candidate profile",
-    )
-    expect(deriveDefaultGoal(null)).toBe(
-      "Discover, rank, and apply to roles that match the candidate profile",
-    )
+  it("falls back to a profile-relative DISCOVER line when nothing is set", () => {
+    const fallback =
+      "find REAL roles that match the candidate profile"
+    expect(deriveDefaultGoal(profile())).toContain(fallback)
+    expect(deriveDefaultGoal(null)).toContain(fallback)
+  })
+
+  it("is a functional mission over the full pipeline flow", () => {
+    const goal = deriveDefaultGoal(profile({ targetRoles: "Nurse" }))
+    for (const phase of [
+      "1. Check the pipeline first",
+      "2. DISCOVER",
+      "3. DRAFT",
+      "4. APPLY",
+      "5. MAINTAIN",
+    ]) {
+      expect(goal).toContain(phase)
+    }
+    // References the real tools so the mission is actionable, not abstract.
+    for (const tool of [
+      "pipeline_status",
+      "discover_jobs",
+      "write_tailored_cv",
+      "write_cover_letter",
+      "remember",
+      "finish",
+    ]) {
+      expect(goal).toContain(tool)
+    }
+  })
+
+  it("states the no-uploads constraint in the APPLY phase", () => {
+    const goal = deriveDefaultGoal(profile())
+    expect(goal).toContain("CANNOT upload or attach files")
+    expect(goal).toContain("leave every file-upload field for me")
+  })
+
+  it("carries the ground rules (no invention, verified actions)", () => {
+    const goal = deriveDefaultGoal(profile())
+    expect(goal).toContain("Ground rules")
+    expect(goal).toContain("never invent companies, titles, or URLs")
   })
 
   it("contains no hardcoded occupation bias", () => {

@@ -46,7 +46,11 @@ export interface JobDetailResponse {
 interface HarnessStatus {
   status: "idle" | "running" | "paused" | "done" | "error"
   currentStep?: number
+  /** Standing goal — the operator's job-search mission (Settings-owned). */
   goal?: string | null
+  /** The current/last run's task (one-off goals like apply runs, or a copy
+   *  of the standing goal for scheduled/dashboard runs). */
+  runGoal?: string | null
   runId?: string | null
   lastRunAt?: string | null
   tokensUsed?: number

@@ -40,7 +40,13 @@ export interface HarnessState {
   // env.MAX_STEPS (kept for backwards compatibility with pre-token-budget deploys).
   tokenBudget: number
   tokensUsed: number
+  /** STANDING goal — the user's job-search mission. Owned by the operator:
+   *  edited only via Settings/PUT /api/config (or bootstrapped once when
+   *  empty). One-off run goals ("Apply with agent") must NEVER overwrite it. */
   goal: string
+  /** The current/last run's task. A one-off goal (apply runs) or a copy of
+   *  the standing goal for scheduled/dashboard runs. Null before any run. */
+  runGoal: string | null
   runId: string | null
   lastRunAt: string | null
   lastError: string | null
@@ -53,4 +59,9 @@ export interface HarnessState {
   // (discover_jobs, write_cover_letter, browser_*) can resolve THEIR sub-agents
   // by the same user — keeping the whole delegation chain within one user.
   userId: string | null
+  // "Apply with agent" runs: the job this run is assisting an application
+  // for. When the run finishes successfully (the model calls `finish`), the
+  // harness deterministically moves this job to "applied" — prompt guidance
+  // alone proved unreliable for this transition.
+  applyJobId: number | null
 }

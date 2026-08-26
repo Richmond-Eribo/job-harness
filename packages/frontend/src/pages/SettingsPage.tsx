@@ -44,6 +44,7 @@ import {
   Tabs,
   TabsList,
   TabsTrigger,
+  Textarea,
 } from "@agent-harness/ui"
 import { toast } from "sonner"
 import { queryClient } from "../components/query-client"
@@ -303,15 +304,19 @@ function LlmConfigTab() {
 
           <div className="space-y-1.5">
             <Label htmlFor="goal" className="text-xs text-muted-foreground">
-              Default Goal
+              Standing goal
             </Label>
-            <Input
+            <Textarea
               id="goal"
-              placeholder="e.g. Find 5 senior TypeScript roles in London"
+              placeholder="Your job-search mission — what scheduled and dashboard runs work on. Leave empty to auto-derive it from your profile."
               value={v("goal")}
               onChange={e => set("goal", e.target.value)}
-              className="text-xs"
+              className="text-xs min-h-40 font-mono leading-relaxed"
             />
+            <p className="text-[11px] text-muted-foreground">
+              The mission for scheduled and dashboard runs. One-off runs (e.g.
+              Apply with agent) carry their own goal and never change this.
+            </p>
           </div>
         </CardContent>
       </Card>
