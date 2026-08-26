@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@agent-harness/shared-types": "*",
@@ -38,6 +39,7 @@
     "tw-animate-css": "^1.0.0",
     "typescript": "^5.7.0",
     "vite": "^8.0.14",
+    "vitest": "^4.1.10",
     "wrangler": "^4.74.0"
   }
 }
