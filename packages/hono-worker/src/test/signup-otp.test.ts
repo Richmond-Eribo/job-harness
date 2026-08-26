@@ -122,16 +122,50 @@ describe("server-driven send wiring (structural)", () => {
   })
 
   it("the before-hook gates the send endpoint on the cooldown", () => {
-    // The latest verification row for the email-verification identifier must
-    // be checked, and a fresh row short-circuits with the endpoint's success
-    // shape so callers can't distinguish a suppressed send from a real one.
+    // The latest verification row for the OTP identifier must be checked,
+    // and a fresh row short-circuits with the endpoint's success shape so
+    // callers can't distinguish a suppressed send from a real one.
     expect(authSrc).toContain(
       'const SEND_OTP_PATH = "/email-otp/send-verification-otp"',
     )
     expect(authSrc).toMatch(/findVerificationValue\(/)
     expect(authSrc).toMatch(/isWithinSendCooldown\(latest\.createdAt\)/)
     expect(authSrc).toContain("return { success: true }")
-    expect(authSrc).toContain("email-verification-otp-")
+    expect(authSrc).toMatch(/otpIdentifier\(type, email\)/)
+  })
+
+  it("the cooldown covers ALL OTP types, not just email verification", () => {
+    // Audit fix: password-reset OTP spam was un-gated. The send endpoint gate
+    // must key off the body's type (any), and the password-reset mint paths
+    // (current + deprecated alias) must gate on the forget-password
+    // identifier.
+    expect(authSrc).toMatch(/otpIdentifier = \(type: string, email: string\)/)
+    expect(authSrc).toContain(
+      '"/email-otp/request-password-reset"',
+    )
+    expect(authSrc).toContain('"/forget-password/email-otp"')
+    expect(authSrc).toMatch(
+      /otpIdentifier\("forget-password", email\)/,
+    )
+  })
+
+  it("normalizes USER_NOT_FOUND on the OTP probe endpoints (anti-enumeration)", () => {
+    // Verified against better-auth 1.6.23: check-verification-otp returned
+    // USER_NOT_FOUND for unknown emails but INVALID_OTP for known ones — a
+    // free account-existence oracle. The after-hook must swap USER_NOT_FOUND
+    // for a byte-identical INVALID_OTP error on every probe path.
+    expect(authSrc).toContain('"/email-otp/check-verification-otp"')
+    expect(authSrc).toMatch(/code === "USER_NOT_FOUND"/)
+    expect(authSrc).toMatch(
+      /return new APIError\("BAD_REQUEST", \{\s*message: "Invalid OTP",\s*code: "INVALID_OTP",\s*\}\)/,
+    )
+  })
+
+  it("warns loudly when E2E_OTP_BYPASS is set outside local dev", () => {
+    expect(authSrc).toMatch(
+      /E2E_OTP_BYPASS === "1" && !isLocalDev/,
+    )
+    expect(authSrc).toMatch(/console\.error\(/)
   })
 
   it("the plugin's own auto-send stays off (no double from the plugin)", () => {

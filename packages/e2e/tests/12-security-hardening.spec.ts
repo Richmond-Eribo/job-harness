@@ -257,6 +257,85 @@ test.describe("security hardening", () => {
     expect(resign.ok()).toBe(false)
   })
 
+  // ── A1: OTP probe endpoints must not reveal account existence ────────────
+  test("A1: check-verification-otp is identical for unknown vs known emails", async ({
+    request,
+  }) => {
+    // Audit finding: better-auth 1.6.23's check-verification-otp returned
+    // USER_NOT_FOUND for unknown emails but INVALID_OTP for known ones — a
+    // free account-existence oracle that defeats the deliberate synthetic-200
+    // on /sign-up/email. The worker's hooks.after now swaps USER_NOT_FOUND
+    // for a byte-identical INVALID_OTP error. (Verified pre-fix live:
+    // unknown → {"message":"User not found","code":"USER_NOT_FOUND"}.)
+    const api = (path: string) => `${E2E_API_URL}${path}`
+    const email = uniqEmail("enum-probe")
+    const signup = await request.post(api("/api/auth/sign-up/email"), {
+      data: { email, password: E2E_PASSWORD, name: "Enum Probe" },
+    })
+    expect(signup.ok()).toBe(true) // also mints the OTP row server-side
+
+    const unknown = await request.post(
+      api("/api/auth/email-otp/check-verification-otp"),
+      { data: { email: "no-such-user@example.test", otp: "000000", type: "email-verification" } },
+    )
+    const known = await request.post(
+      api("/api/auth/email-otp/check-verification-otp"),
+      { data: { email, otp: "000000", type: "email-verification" } },
+    )
+    const unknownBody = await unknown.text()
+    const knownBody = await known.text()
+    expect(unknown.status()).toBe(400)
+    expect(known.status()).toBe(400)
+    // Byte-identical bodies — no shape, code, or message difference to mine.
+    expect(unknownBody).toBe(knownBody)
+    expect(unknownBody).toContain('"code":"INVALID_OTP"')
+  })
+
+  // ── A2: password-reset OTP sends are cooldown-suppressed ─────────────────
+  test("A2: rapid password-reset re-request does not mint a new code", async ({
+    request,
+  }) => {
+    // Audit finding: the 30s send cooldown covered only email-verification
+    // OTPs — password-reset requests could mail-bomb an address. The gate
+    // now covers the forget-password identifier too. Proof strategy (the
+    // suppression is externally invisible by design): mint a row, burn its
+    // 3 attempts, re-request within the cooldown, then show the burnt row
+    // SURVIVED — a re-mint would have replaced it with a fresh usable one.
+    const api = (path: string) => `${E2E_API_URL}${path}`
+    const email = uniqEmail("reset-cooldown")
+    const signup = await request.post(api("/api/auth/sign-up/email"), {
+      data: { email, password: E2E_PASSWORD, name: "Reset Cooldown" },
+    })
+    expect(signup.ok()).toBe(true)
+
+    const mint = await request.post(api("/api/auth/email-otp/request-password-reset"), {
+      data: { email },
+    })
+    expect(mint.ok()).toBe(true)
+
+    // Burn all 3 attempts on the minted row.
+    for (let i = 0; i < 3; i++) {
+      const wrong = await request.post(api("/api/auth/email-otp/reset-password"), {
+        data: { email, otp: "000000", password: "BrandNew12345!" },
+      })
+      expect(wrong.status()).toBe(400)
+    }
+
+    // Rapid re-request — suppressed by the cooldown (still success-shaped).
+    const reReq = await request.post(api("/api/auth/email-otp/request-password-reset"), {
+      data: { email },
+    })
+    expect(reReq.ok()).toBe(true)
+
+    // The correct code (deterministic under the local bypass) must STILL be
+    // locked out: 403 = the burnt row persisted = no re-mint happened.
+    const correct = await request.post(api("/api/auth/email-otp/reset-password"), {
+      data: { email, otp: await E2E_OTP_FOR(email), password: "BrandNew12345!" },
+    })
+    expect(correct.status()).toBe(403)
+    expect((await correct.json()).code).toBe("TOO_MANY_ATTEMPTS")
+  })
+
   // ── UI regression: the LLM tab is read-only now ───────────────────────────
   test("UI: Settings → LLM Config shows read-only model info (no editable inputs)", async ({
     userAPage: page,

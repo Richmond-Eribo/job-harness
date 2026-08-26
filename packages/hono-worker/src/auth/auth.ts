@@ -77,6 +77,19 @@ export type Auth = ReturnType<typeof createAuth>
 // ─────────────────────────────────────────────────────────────────────────────
 const SIGNUP_PATH = "/sign-up/email"
 const SEND_OTP_PATH = "/email-otp/send-verification-otp"
+/** Password-reset OTP minting paths (current + the deprecated alias). The
+ *  implicit OTP type on both is "forget-password". */
+const PASSWORD_RESET_OTP_PATHS = [
+  "/email-otp/request-password-reset",
+  "/forget-password/email-otp",
+] as const
+/** Every path whose responses must never reveal whether an account exists. */
+const OTP_PROBE_PATHS = new Set<string>([
+  "/email-otp/check-verification-otp",
+  "/email-otp/verify-email",
+  "/email-otp/reset-password",
+  ...PASSWORD_RESET_OTP_PATHS,
+])
 
 /**
  * Minimum gap between OTP emails for the same address. A code minted inside
@@ -88,12 +101,12 @@ const SEND_OTP_PATH = "/email-otp/send-verification-otp"
 const OTP_SEND_COOLDOWN_MS = 30_000
 
 /**
- * Verification-row identifier Better Auth's emailOTP plugin uses for email
- * verification codes: `${type}-otp-${email}` (toOTPIdentifier in the plugin).
- * Cooldown checks read the latest row for this identifier.
+ * Verification-row identifier Better Auth's emailOTP plugin uses for OTP
+ * codes: `${type}-otp-${email}` (toOTPIdentifier in the plugin). Cooldown
+ * checks read the latest row for this identifier.
  */
-const emailVerificationIdentifier = (email: string) =>
-  `email-verification-otp-${email.toLowerCase()}`
+const otpIdentifier = (type: string, email: string) =>
+  `${type}-otp-${email.toLowerCase()}`
 
 /**
  * Front-door signup validation. Better Auth re-validates internally; this
@@ -198,6 +211,18 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
           return false
         }
       })())
+
+  // Hygiene tripwire (audit: the bypass gate is env-trust-dependent). The
+  // && isLocalDev gate below already IGNORES the flag in deployed envs, but
+  // it did so silently — an operator who copied .dev.vars into prod secrets
+  // would never know. Make the misconfiguration loud instead.
+  if (env.E2E_OTP_BYPASS === "1" && !isLocalDev) {
+    console.error(
+      "[auth] E2E_OTP_BYPASS=1 is set but this is NOT a local dev deploy — " +
+        "the deterministic OTP bypass is IGNORED here. Remove the flag from " +
+        "this environment's vars/secrets.",
+    )
+  }
 
   // The after-hook below triggers the OTP send by calling THIS instance's
   // sendVerificationOTP endpoint. The options literal passed to betterAuth()
@@ -364,22 +389,35 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
           return
         }
 
-        // (2) Cooldown gate on the verification-code send endpoint. A code
-        // minted less than OTP_SEND_COOLDOWN_MS ago is still valid, so a
-        // second mint would only produce a second email (the reported
-        // double-send). Returning a truthy non-context value SHORT-CIRCUITS
-        // the endpoint with that value as its response — callers see the
-        // same { success: true } shape, so double form submits, the legacy
-        // frontend's explicit send during a deploy window, and impatient
-        // Resend clicks all no-op silently. Scoped to email-verification
-        // codes; password-reset OTPs keep their own endpoint + limiter.
+        // (2) Cooldown gate on EVERY OTP send path. A code minted less than
+        // OTP_SEND_COOLDOWN_MS ago is still valid, so a second mint would
+        // only produce a second email (the reported double-send — and, on
+        // the password-reset paths, a mail-bombing vector). Returning a
+        // truthy non-context value SHORT-CIRCUITS the endpoint with that
+        // value as its response — callers see the same { success: true }
+        // shape both endpoints already return, so double form submits, the
+        // legacy frontend's explicit send during a deploy window, impatient
+        // Resend clicks, and reset-OTP spam all no-op silently.
         if (path === SEND_OTP_PATH) {
           const body = ctx.body as { email?: unknown; type?: unknown } | undefined
           const email =
             typeof body?.email === "string" ? body.email.toLowerCase() : ""
-          if (body?.type !== "email-verification" || !email) return
+          const type = typeof body?.type === "string" ? body.type : ""
+          if (!email || !type) return
           const latest = await ctx.context.internalAdapter.findVerificationValue(
-            emailVerificationIdentifier(email),
+            otpIdentifier(type, email),
+          )
+          if (latest && isWithinSendCooldown(latest.createdAt)) {
+            return { success: true }
+          }
+        }
+        if ((PASSWORD_RESET_OTP_PATHS as readonly string[]).includes(path)) {
+          const body = ctx.body as { email?: unknown } | undefined
+          const email =
+            typeof body?.email === "string" ? body.email.toLowerCase() : ""
+          if (!email) return
+          const latest = await ctx.context.internalAdapter.findVerificationValue(
+            otpIdentifier("forget-password", email),
           )
           if (latest && isWithinSendCooldown(latest.createdAt)) {
             return { success: true }
@@ -388,30 +426,70 @@ export function createAuth(env: Env, opts?: { baseURL?: string }) {
       }),
 
       after: createAuthMiddleware(async ctx => {
-        // signUp.email completed → mint + send the code server-side. This is
-        // the ONLY signup send; the frontend never calls the send endpoint
-        // itself. Fires on fresh AND duplicate-email synthetic signups (see
-        // emailFromSignUpResult). The internal endpoint call re-enters the
-        // before-hook above, so a duplicate submit seconds after the first
-        // is already a cooldown no-op before it even reaches the mint.
-        if (ctx.path !== SIGNUP_PATH) return
-        const email = await emailFromSignUpResult(ctx.context.returned)
-        if (!email) return
-        try {
-          const result = (await sendVerificationOtp({
-            email,
-            type: "email-verification",
-          })) as { error?: unknown } | undefined
-          if (result && typeof result === "object" && result.error) {
-            ctx.context.logger.error(
-              `[signup-otp] send endpoint rejected for ${email}: ${result.error}`,
-            )
+        const path = ctx.path ?? ""
+
+        // (1) signUp.email completed → mint + send the code server-side.
+        // This is the ONLY signup send; the frontend never calls the send
+        // endpoint itself. Fires on fresh AND duplicate-email synthetic
+        // signups (see emailFromSignUpResult). The internal endpoint call
+        // re-enters the before-hook above, so a duplicate submit seconds
+        // after the first is already a cooldown no-op before it even
+        // reaches the mint.
+        if (path === SIGNUP_PATH) {
+          const email = await emailFromSignUpResult(ctx.context.returned)
+          if (email) {
+            try {
+              const result = (await sendVerificationOtp({
+                email,
+                type: "email-verification",
+              })) as { error?: unknown } | undefined
+              if (result && typeof result === "object" && result.error) {
+                ctx.context.logger.error(
+                  `[signup-otp] send endpoint rejected for ${email}: ${result.error}`,
+                )
+              }
+            } catch (e) {
+              // The endpoint already swallows Resend failures (they surface
+              // as toasts via the frontend's Resend button) — log and move
+              // on so a mail-provider blip never fails the signup response.
+              ctx.context.logger.error(
+                `[signup-otp] send failed for ${email}: ${e}`,
+              )
+            }
           }
-        } catch (e) {
-          // The endpoint already swallows Resend failures (they surface as
-          // toasts via the frontend's Resend button) — log and move on so a
-          // mail-provider blip never fails the signup response itself.
-          ctx.context.logger.error(`[signup-otp] send failed for ${email}: ${e}`)
+          return
+        }
+
+        // (2) Anti-enumeration normalization on the OTP probe endpoints.
+        // Verified against better-auth 1.6.23: check-verification-otp throws
+        // USER_NOT_FOUND for unknown emails but INVALID_OTP for known ones —
+        // a free account-existence oracle that defeats the deliberate
+        // synthetic-200 on /sign-up/email. Swap any USER_NOT_FOUND on these
+        // paths for a byte-identical INVALID_OTP error (same status, code,
+        // message, and body key order as the plugin's own INVALID_OTP
+        // throw), so "no account" and "wrong code" are indistinguishable.
+        // The other paths are already uniform today; the swap is a no-op
+        // there and future-proofs them.
+        if (OTP_PROBE_PATHS.has(path)) {
+          const returned = ctx.context.returned
+          if (isAPIError(returned)) {
+            const body = (returned as { body?: { code?: unknown } }).body
+            const code =
+              body && typeof body === "object"
+                ? (body as { code?: unknown }).code
+                : undefined
+            if (code === "USER_NOT_FOUND") {
+              // Return the error ITSELF — the middleware layer wraps handler
+              // returns in { response, headers } when returnHeaders is set
+              // (dispatch sets it for after-hooks), so wrapping it here
+              // again would serialize as {"response":{…}} instead of the
+              // plain error body.
+              return new APIError("BAD_REQUEST", {
+                message: "Invalid OTP",
+                code: "INVALID_OTP",
+              })
+            }
+          }
         }
       }),
     },
