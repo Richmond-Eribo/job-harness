@@ -33,8 +33,12 @@ jobs:
       run:
         working-directory: packages/hono-worker
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Audit (supply chain): actions are pinned to full commit SHAs, not
+      # floating tags — a hijacked tag must not execute in jobs holding
+      # CLOUDFLARE_API_TOKEN. To update: resolve the new tag's SHA via
+      # https://api.github.com/repos/<owner>/<repo>/git/ref/tags/<tag>
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -50,14 +54,16 @@ jobs:
       # in prod). Migrations are idempotent (IF NOT EXISTS) — a no-op when
       # nothing is pending.
       - name: Apply D1 migrations
-        uses: cloudflare/wrangler-action@v3
+        # Pinned to a commit SHA (see the note above the checkout action).
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: packages/hono-worker
           command: d1 migrations apply agent-harness-auth --remote
       - name: Deploy API worker
-        uses: cloudflare/wrangler-action@v3
+        # Pinned to a commit SHA (see the note above the checkout action).
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -72,8 +78,12 @@ jobs:
       run:
         working-directory: packages/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Audit (supply chain): actions are pinned to full commit SHAs, not
+      # floating tags — a hijacked tag must not execute in jobs holding
+      # CLOUDFLARE_API_TOKEN. To update: resolve the new tag's SHA via
+      # https://api.github.com/repos/<owner>/<repo>/git/ref/tags/<tag>
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -85,7 +95,8 @@ jobs:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: npm run build
       - name: Deploy frontend worker
-        uses: cloudflare/wrangler-action@v3
+        # Pinned to a commit SHA (see the note above the checkout action).
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
