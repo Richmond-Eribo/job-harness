@@ -98,7 +98,9 @@ export function makeBrowserActTool(env: Env, advance: Advance, userId: string) {
   return tool({
     description:
       "Act on the browser page: click an element (by elementRef from observe, e.g. 'e5'), type into an input, scroll, press a key (real key events — Enter submits forms), or wait. " +
-      "elementRef-based actions are preferred (work with text-only models). Coordinate clicks (x/y) only work in vision mode.",
+      "elementRef-based actions are preferred (work with text-only models). Coordinate clicks (x/y) only work in vision mode. " +
+      "File uploads/attachments are NOT supported — there is no file-picker action. Never claim to have uploaded or attached a document (CV, cover letter, portfolio); " +
+      "leave file-upload fields for the operator and flag them in your finish summary.",
     inputSchema: z.object({
       action: z.enum(["click", "type", "scroll", "press", "wait"]),
       elementRef: z

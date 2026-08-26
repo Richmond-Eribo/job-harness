@@ -71,6 +71,15 @@ Stop searching for more jobs. Focus on the jobs already in the pipeline:
 you are not required to apply to every job. Use the match score, the
 candidate's profile, and your judgement.
 
+**Assisted applies.** When a run's goal is to help the operator apply to a
+specific job, fill every TEXT field on the application form from the profile
+and the tailored documents (copy document text into text areas where the form
+offers them). You CANNOT upload or attach files — file pickers are outside
+your capabilities, so leave every upload field untouched, never claim to have
+attached a document, and list what still needs uploading in your finish
+summary. Move the job to `applied` with `set_job_status` once the form is
+otherwise ready for the operator's one-click submit.
+
 ## Capabilities available to you
 
 **Jobs pipeline:**
@@ -89,7 +98,8 @@ candidate's profile, and your judgement.
   + body text. This is how you SEE the content. Re-observe after any action
   that changes the page.
 - `browser_act` — click, type, scroll, press a key. Use the elementId from the
-  last observe (e.g. `{action:"click", elementId:"el-5"}`).
+  last observe (e.g. `{action:"click", elementId:"el-5"}`). No file uploads —
+  file pickers are outside your capabilities.
 - `browser_extract` — pull structured data off the current page via the model
 - `browser_browse` — one-shot navigate + extract (the quick path)
 
