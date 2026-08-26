@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Frontend Worker — the standalone TanStack Start app. Deploys to its OWN
+  // Frontend Worker — the standalone TanStack Start app.
   // Cloudflare origin, separate from the Hono REST API worker
   // (packages/hono-worker). The browser calls the API cross-origin via
   // VITE_API_URL with credentials; auth cookies live on the API origin.

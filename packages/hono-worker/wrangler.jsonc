@@ -1,5 +1,5 @@
 {
-  // Agent Harness — v1 (Cloudflare FREE plan)
+  // Job Harness — v1 (Cloudflare FREE plan)
   // ------------------------------------------
   // Durable Objects (SQLite-backed) + cron only. NO containers, NO sandbox.
   // Free-tier Workers plan supports DOs + the cron trigger watchdog.
