@@ -86,13 +86,16 @@ async function render() {
   }
 
   const s = relayState || { connected: false }
-  if (s.connected) {
-    $state.innerHTML =
-      '<span class="dot on"></span>connected' +
-      (s.activeTabId != null ? " · tab " + s.activeTabId : "")
-  } else {
-    $state.innerHTML = '<span class="dot off"></span>' + (s.reason || "disconnected")
-  }
+  // Audit (extension L1): this used to be one innerHTML assignment with the
+  // dynamic reason/tab-id string-concatenated in — a single remote-influenced
+  // value away from script execution inside the privileged popup page. Build
+  // the line with textContent instead; only the static dot is markup.
+  const dot = document.createElement("span")
+  dot.className = "dot " + (s.connected ? "on" : "off")
+  const text = s.connected
+    ? "connected" + (s.activeTabId != null ? " · tab " + s.activeTabId : "")
+    : s.reason || "disconnected"
+  $state.replaceChildren(dot, document.createTextNode(text))
 }
 
 /** https://example.com/jobs/123?q=1 → example.com/jobs/123 (fits the row). */
