@@ -14,6 +14,7 @@
 // =============================================================================
 
 import { Hono } from "hono"
+import type { Context } from "hono"
 import { cors } from "hono/cors"
 import { secureHeaders } from "hono/secure-headers"
 
@@ -410,27 +411,31 @@ app.post("/api/browser/pair", async c => {
   }
 })
 
-app.post("/api/browser/pair/redeem", async c => {
-  // IP-scoped rate limit (no session/userId available pre-redeem) — bounds
-  // brute-forcing the 6-char code space. rateLimiter.check/consume key on an
-  // arbitrary string, so we use the caller's IP as the "userId" bucket key.
+/** IP-scoped rate limit for the UNAUTHENTICATED extension endpoints (pair
+ *  redeem + token refresh — no session exists for either). The DO rate
+ *  limiter keys on an arbitrary string, so the caller's IP is the bucket
+ *  key. Returns a 429 Response when over the limit, null when allowed. */
+async function ipRateLimit(
+  c: Context<AppEnv>,
+  key: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<Response | null> {
   const ip = c.req.header("cf-connecting-ip") ?? "unknown"
   const rateLimiter = await getRateLimiter(c.env)
-  const windowSeconds = 60 * 10
-  const limit = 20
-  const { count } = await rateLimiter.check({
-    key: "extension-redeem",
-    userId: ip,
-    windowSeconds,
-  })
+  const { count } = await rateLimiter.check({ key, userId: ip, windowSeconds })
   if (count >= limit) {
     return c.json({ error: "Too many attempts. Please try again later." }, 429)
   }
-  await rateLimiter.consume({
-    key: "extension-redeem",
-    userId: ip,
-    windowSeconds,
-  })
+  await rateLimiter.consume({ key, userId: ip, windowSeconds })
+  return null
+}
+
+app.post("/api/browser/pair/redeem", async c => {
+  // IP-scoped rate limit (no session/userId available pre-redeem) — bounds
+  // brute-forcing the 6-char code space.
+  const limited = await ipRateLimit(c, "extension-redeem", 20, 60 * 10)
+  if (limited) return limited
   try {
     return await redeemPairingCodeRoute(c)
   } catch (e) {
@@ -439,6 +444,11 @@ app.post("/api/browser/pair/redeem", async c => {
 })
 
 app.post("/api/browser/refresh", async c => {
+  // Prior L8: unauthenticated endpoint hammering D1 token-hash lookups.
+  // The token itself is a 256-bit secret so this bounds abuse COST, not a
+  // brute-force risk — same IP limit shape as redeem.
+  const limited = await ipRateLimit(c, "extension-refresh", 20, 60 * 10)
+  if (limited) return limited
   try {
     return await refreshAccessTokenRoute(c)
   } catch (e) {
