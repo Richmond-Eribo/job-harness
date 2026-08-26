@@ -244,10 +244,17 @@ export function useStartRun() {
   return useMutation({
     // `force: true` skips the server-side pre-flight gate — used when the
     // user explicitly confirms "start anyway" from the checklist modal.
-    mutationFn: (opts?: { goal?: string; force?: boolean }) =>
+    // `applyJobId` marks an "Apply with agent" run: the harness moves that
+    // job to "applied" when the run finishes successfully.
+    mutationFn: (opts?: {
+      goal?: string
+      force?: boolean
+      applyJobId?: number
+    }) =>
       api.post<{ message: string }>("/start", {
         ...(opts?.goal ? { goal: opts.goal } : {}),
         ...(opts?.force ? { force: true } : {}),
+        ...(opts?.applyJobId != null ? { applyJobId: opts.applyJobId } : {}),
       }),
     onSuccess: () => {
       // M10: invalidate all queries that depend on run state. The previous

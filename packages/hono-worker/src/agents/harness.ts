@@ -43,6 +43,7 @@ import {
 } from "./compaction"
 import { buildAgentTools } from "../tools"
 import { getRateLimiter } from "../utils/get-agents"
+import { withRpcRetry } from "../utils/rpc-retry"
 import {
   formatProfileForPrompt,
   deriveDefaultGoal,
@@ -807,13 +808,26 @@ export class Harness extends Agent<Env, HarnessState> {
     this.logStep(runId, this.state.currentStep, toolName, input, null)
   }
 
-  /** Exposed so the `finish` tool can persist the run summary directly. */
-  finishRunPersisted(
+  /**
+   * Exposed so the `finish` tool can persist the run summary directly.
+   *
+   * `opts.applyJobId` — set ONLY by the finish tool (from state.applyJobId,
+   * i.e. "Apply with agent" runs): when the model calls `finish` (it believes
+   * the assisted application is filled and ready), deterministically move that
+   * job to "applied" via the job-agent — the same updateStatus path the
+   * set_job_status tool uses, which also seeds the 7-day follow-up on the
+   * first applied transition. Abnormal stops (finishRunAuto) never pass it,
+   * so a max-steps/idle/error end does NOT mark a job applied. Prompt
+   * guidance alone proved unreliable for this transition, hence the
+   * deterministic backstop.
+   */
+  async finishRunPersisted(
     runId: string,
     goal: string,
     summary: string,
     decisions: string[],
     reason: string,
+    opts?: { applyJobId?: number | null },
   ) {
     const today = new Date().toISOString().slice(0, 10)
     // Emit run_end so run rollups (getRun/listRuns) report a status for
@@ -850,6 +864,44 @@ export class Harness extends Agent<Env, HarnessState> {
     // to resume from a finished run.
     this.markCheckpoint(runId, "done")
     this.setState({ ...this.state, status: "done" })
+
+    // ── "Apply with agent": deterministic pipeline transition ───────────
+    // The run finished successfully (the model called `finish`), so the job
+    // this run assisted an application for moves to "applied". A failure here
+    // must never fail the run — it's logged to the trace for the operator.
+    const applyJobId = opts?.applyJobId ?? null
+    if (applyJobId != null) {
+      this.setState({ ...this.state, applyJobId: null })
+      try {
+        const jobAgent = await getAgentByName<Env, JobApplicationAgent>(
+          this.env.JOB_AGENT,
+          this.state.userId ?? "main",
+        )
+        const detail = await withRpcRetry(() =>
+          jobAgent.updateStatus({
+            jobId: applyJobId,
+            status: "applied",
+            notes:
+              "Assisted apply run completed — form filled, ready for the user's final submit.",
+          }),
+        )
+        this.pushTraceEvent({
+          runId,
+          eventType: "system",
+          label: "job-applied",
+          payload: JSON.stringify({ jobId: applyJobId, detail }),
+        })
+      } catch (err: any) {
+        this.pushTraceEvent({
+          runId,
+          eventType: "error",
+          label: "job-apply-status-failed",
+          payload: `Could not move job ${applyJobId} to applied: ${
+            err?.message ?? String(err)
+          }`,
+        })
+      }
+    }
   }
 
   private logStep(
@@ -2553,7 +2605,9 @@ export class Harness extends Agent<Env, HarnessState> {
       label: code,
       payload: JSON.stringify({ reason, code }),
     })
-    this.finishRunPersisted(runId, goal, reason, [code], code)
+    // No applyJobId here by design: abnormal stops (max-steps, idle, budget,
+    // model failure) must never mark an "Apply with agent" job as applied.
+    await this.finishRunPersisted(runId, goal, reason, [code], code)
   }
 
   // ---------------------------------------------------------------------------

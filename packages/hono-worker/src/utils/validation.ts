@@ -241,6 +241,10 @@ export const configUpdateSchema = z.object({
 export const startRunSchema = z.object({
   goal: z.string().max(4000).optional(),
   force: z.boolean().optional(),
+  // "Apply with agent" runs: the job the run assists an application for.
+  // When the run finishes successfully the harness moves this job to
+  // "applied" deterministically (see finishRunPersisted).
+  applyJobId: z.number().int().optional(),
 })
 
 export const scheduleCreateSchema = z.object({

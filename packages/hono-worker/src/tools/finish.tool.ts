@@ -16,7 +16,17 @@ export function makeFinishTool(harness: Harness, runId: string, goal: string) {
         .describe("Key decisions or recommendations from this run"),
     }),
     execute: async ({ summary, decisions }) => {
-      harness.finishRunPersisted(runId, goal, summary, decisions, "finished")
+      // Pass the run's apply target (if any) so "Apply with agent" runs move
+      // their job to "applied" on successful completion. Awaited so the
+      // status transition + trace event land before the tool returns.
+      await harness.finishRunPersisted(
+        runId,
+        goal,
+        summary,
+        decisions,
+        "finished",
+        { applyJobId: harness.state.applyJobId },
+      )
       return "Run complete."
     },
   })

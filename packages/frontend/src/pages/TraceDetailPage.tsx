@@ -805,6 +805,9 @@ function collapsedSummary(ev: TraceEvent): string {
           ? `structured plan — ${steps} steps`
           : "structured plan"
       }
+      if (ev.label === "job-applied") {
+        return `job ${p?.jobId ?? "?"} moved to applied (assisted apply run)`
+      }
       return `system prompt — ${(ev.payload ?? "").length.toLocaleString()} chars`
     case "prompt":
       return `messages sent this turn — ${(ev.payload ?? "").length.toLocaleString()} chars`

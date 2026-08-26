@@ -127,15 +127,21 @@ export function JobDetailPage() {
   const handleApplyWithAgent = () => {
     if (!listing) return
     const goal =
-      `Open the posting for "${listing.title}" at ${listing.company}` +
-      ` (${listing.url ?? "no URL on file"}) in my paired browser and assist me in filling out ` +
-      `the application using my tailored documents. Never submit the application yourself and never log in.`
+      `Assisted apply for "${listing.title}" at ${listing.company} ` +
+      `(${listing.url ?? "no URL on file"}), job id ${listing.id}: open the posting in my paired browser ` +
+      `and assist me in filling out the application using my tailored documents. ` +
+      `Never submit the application yourself and never log in. You cannot upload or attach files — ` +
+      `fill text fields only (copying document text into text areas where offered), leave any ` +
+      `file-upload fields for me, and list what still needs uploading in your finish summary. ` +
+      `When the form is otherwise ready for my final review, call set_job_status to move job ` +
+      `${listing.id} to "applied".`
     startRun.mutate(
-      { goal },
+      { goal, applyJobId: listing.id },
       {
         onSuccess: () =>
           toast.success("Assisted apply run started", {
-            description: "Follow it live on the Traces page.",
+            description:
+              "Follow it live on the Traces page — the job moves to Applied when the run finishes.",
             action: {
               label: "View",
               onClick: () => void navigate({ to: "/traces" }),

@@ -581,7 +581,11 @@ app.post("/api/start", async c => {
   const { harness } = await getAgents(c.env, c.var.userId)
   // Pass the session userId so the harness persists it + threads it through
   // buildAgentTools → every delegating tool resolves sub-agents by this user.
-  return c.json({ message: await harness.start(body.goal, c.var.userId) })
+  // applyJobId (from "Apply with agent") makes the harness move that job to
+  // "applied" when the run finishes successfully.
+  return c.json({
+    message: await harness.start(body.goal, c.var.userId, body.applyJobId),
+  })
 })
 
 app.post("/api/stop", async c => {
