@@ -37,6 +37,7 @@ import {
 } from "@agent-harness/ui"
 import { toast } from "sonner"
 import { API_URL } from "../lib/auth"
+import { safeHttpUrl } from "../lib/safeUrl"
 import {
   useBrowserStatus,
   useDisconnectBrowser,
@@ -188,10 +189,15 @@ export function ConnectBrowserCard({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {distribution?.mode === "store" && distribution.storeUrl ? (
+          {distribution?.mode === "store" &&
+          safeHttpUrl(distribution.storeUrl) ? (
             <div className="flex items-center gap-3">
               <Button asChild size="sm" variant="outline">
-                <a href={distribution.storeUrl} target="_blank" rel="noreferrer">
+                <a
+                  href={safeHttpUrl(distribution.storeUrl) ?? undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   <Chrome className="size-4 mr-1.5" />
                   Add to Chrome
                 </a>
@@ -226,11 +232,11 @@ export function ConnectBrowserCard({
                   extension/
                 </code>{" "}
                 folder from the repo.
-                {distribution?.guideUrl && (
+                {safeHttpUrl(distribution?.guideUrl) && (
                   <>
                     {" "}
                     <a
-                      href={distribution.guideUrl}
+                      href={safeHttpUrl(distribution?.guideUrl) ?? undefined}
                       target="_blank"
                       rel="noreferrer"
                       className="underline hover:text-foreground"

@@ -48,6 +48,7 @@ import {
 import type { JobListing, JobStatus, JobSource } from "@/types"
 import { STATUS_META, STATUS_ORDER, nextStatus, canTransition } from "@/lib/status"
 import { formatRelative } from "@/lib/format"
+import { safeHttpUrl } from "@/lib/safeUrl"
 import {
   Badge,
   Button,
@@ -607,9 +608,9 @@ function JobCard({
         </div>
 
         <div className="flex items-center justify-between pt-1 border-t border-border/60">
-          {job.url ? (
+          {safeHttpUrl(job.url) ? (
             <a
-              href={job.url}
+              href={safeHttpUrl(job.url) ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-primary hover:underline inline-flex items-center gap-1"

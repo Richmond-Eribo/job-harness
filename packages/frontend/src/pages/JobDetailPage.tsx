@@ -61,6 +61,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Markdown } from "../components/markdown"
 import { toast } from "sonner"
 import { useTabParam } from "../hooks/use-tab-param"
+import { safeHttpUrl } from "../lib/safeUrl"
 
 // Tab values for the detail view (?tab=… in the URL — shareable/refresh-safe).
 const JOB_TABS = ["description", "cover-letters", "tailored-cvs", "follow-ups"] as const
@@ -268,10 +269,10 @@ export function JobDetailPage() {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {listing.url && (
+            {safeHttpUrl(listing.url) && (
               <Button variant="outline" size="sm" asChild>
                 <a
-                  href={listing.url}
+                  href={safeHttpUrl(listing.url) ?? undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={`Open the posting for ${listing.title}`}
