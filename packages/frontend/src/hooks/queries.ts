@@ -67,6 +67,8 @@ export interface RunSummary {
   steps?: number
   tokensIn?: number
   tokensOut?: number
+  subAgentTokensIn?: number
+  subAgentTokensOut?: number
   finishReason?: string | null
 }
 
@@ -143,6 +145,10 @@ export function useRunTrace(runId: string) {
     refetchInterval: query => {
       const status = query.state.data?.run?.status
       if (status === "done" || status === "error") return false
+      // Legacy runs predate run_end-on-finish and report status:null — stop
+      // polling once the transcript itself shows a run_end.
+      const evs = query.state.data?.events ?? []
+      if (evs.some(e => e.eventType === "run_end")) return false
       return 3000
     },
   })

@@ -74,6 +74,14 @@ function fmtDuration(ms: number | null | undefined): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
 }
 
+/** Wall-clock duration for a whole run — minutes+seconds, not fractions. */
+function fmtRunDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—"
+  const mins = Math.floor(ms / 60_000)
+  const secs = Math.round((ms % 60_000) / 1000)
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+}
+
 function parseJsonSafe<T = unknown>(s: string | null | undefined): T | null {
   if (!s) return null
   try {
@@ -236,7 +244,11 @@ export function TraceDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events])
 
-  const stepCount = steps.size
+  // Prefer the corrected harness-only rollup (max harness step_end); fall
+  // back to the grouped cards minus the INITIALIZATION bucket, which is not
+  // a step — the raw group count was off by one (34 shown for a 33-step run).
+  const stepCount =
+    run?.steps ?? Math.max(0, steps.size - (steps.has("_pre") ? 1 : 0))
 
   const onSelectFilter = (tab: (typeof EVENT_FILTERS)[number]) =>
     setEventFilter(tab)
@@ -317,11 +329,52 @@ export function TraceDetailPage() {
                   </div>
                 )}
 
+                {(run?.subAgentTokensIn ?? 0) > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      Sub-agent tokens
+                    </span>
+                    <span
+                      className="font-mono text-muted-foreground"
+                      title="job-agent + browser-agent inner loops"
+                    >
+                      {fmtTokens(run?.subAgentTokensIn)} in ·{" "}
+                      {fmtTokens(run?.subAgentTokensOut)} out
+                    </span>
+                  </div>
+                )}
+
                 {run?.startedAt && (
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Started Time</span>
                     <span className="font-mono text-foreground">
                       {new Date(run.startedAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                )}
+
+                {run?.endedAt && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Ended</span>
+                    <span className="font-mono text-foreground">
+                      {new Date(run.endedAt).toLocaleTimeString()}
+                      {run?.startedAt
+                        ? ` · ${fmtRunDuration(
+                            new Date(run.endedAt).getTime() -
+                              new Date(run.startedAt).getTime(),
+                          )}`
+                        : ""}
+                    </span>
+                  </div>
+                )}
+
+                {run?.finishReason && (
+                  <div className="flex items-center justify-between pt-2 border-t border-border">
+                    <span className="text-muted-foreground">
+                      Last finish reason
+                    </span>
+                    <span className="font-mono text-foreground">
+                      {run.finishReason}
                     </span>
                   </div>
                 )}
