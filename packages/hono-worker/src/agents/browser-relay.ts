@@ -40,7 +40,11 @@
 import { Agent, callable } from "agents"
 import browserConfig from "../config/browser-config.json"
 import type { Env } from "../types"
-import { EXT_TOKEN_SUBPROTOCOL_PREFIX } from "../auth/extension-token"
+import {
+  EXT_TOKEN_SUBPROTOCOL_PREFIX,
+  effectiveSecret,
+  userIdFromRelayRequest,
+} from "../auth/extension-token"
 
 // @cloudflare/playwright is an OPTIONAL dep (managed headless, paid plan).
 // It's only imported when env.BROWSER is bound. To keep the free-tier build
@@ -132,6 +136,25 @@ export class BrowserRelay extends Agent<Env, BrowserRelayState> {
       return new Response(JSON.stringify(this.statusSnapshot()), {
         headers: { "content-type": "application/json" },
       })
+    }
+
+    // Defense-in-depth (audit): the Hono /browser/relay route verifies the
+    // extension token BEFORE forwarding here — but the DO itself previously
+    // accepted ANY websocket upgrade. Re-verify inside the DO so a future
+    // route change, a misrouted request, or a direct hit on the DO URL can
+    // never obtain an unauthenticated socket. Also enforce that the token's
+    // subject IS this DO's user — a token for another account must not
+    // attach to someone else's relay.
+    const verifiedUserId = await userIdFromRelayRequest(
+      new URL(request.url),
+      effectiveSecret(this.env),
+      request.headers,
+    )
+    if (!verifiedUserId || (this.name && verifiedUserId !== this.name)) {
+      return new Response(
+        JSON.stringify({ error: "Missing or invalid extension token" }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      )
     }
 
     const pair = new WebSocketPair()
