@@ -5,14 +5,17 @@
 // =============================================================================
 // FLOW
 //   1. Dashboard (session-authed):      POST /api/browser/pair
-//        → mints a 6-char code, stores {code, userId, expiresAt} in D1,
-//          returns {code, expiresIn}. User reads the code off the screen.
+//        → mints a 6-char code, stores only its SHA-256 HASH (audit M12: it
+//          was previously plaintext — a leaked D1 dump made every unexpired
+//          code redeemable) + userId + expiresAt in D1, returns the RAW code.
+//          User reads the code off the screen.
 //   2. Extension popup (NO session — the code IS the credential):
 //                                        POST /api/browser/pair/redeem {code}
-//        → validates + single-use-consumes the code, mints a refresh token,
-//          stores only its SHA-256 hash in D1, returns the RAW refresh token
-//          (shown once, exactly like the pairing code) + a short-lived access
-//          token so the extension can connect immediately.
+//        → hashes the submitted code for lookup, validates + single-use-
+//          consumes the row, mints a refresh token, stores only its SHA-256
+//          hash in D1, returns the RAW refresh token (shown once, exactly
+//          like the pairing code) + a short-lived access token so the
+//          extension can connect immediately.
 //   3. Extension (ongoing, no user interaction):
 //                                        POST /api/browser/refresh {refreshToken}
 //        → looks up the hash, mints a fresh 1h access token via the existing
@@ -51,7 +54,8 @@ function generatePairingCode(): string {
   return out
 }
 
-async function sha256Hex(input: string): Promise<string> {
+/** SHA-256 hex digest. Exported for tests (mock-store keying). */
+export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(input),
@@ -80,22 +84,26 @@ export async function createPairingCodeRoute(c: Context<AppEnv>) {
   const expiresAt = now + PAIRING_CODE_TTL_SECONDS * 1000
 
   // Collision retry — astronomically unlikely with 6 chars from a 32-symbol
-  // alphabet (~1 billion combinations), but cheap to guard anyway.
+  // alphabet (~1 billion combinations), but cheap to guard anyway. The
+  // uniqueness check runs on the HASH, which is what gets stored (audit M12:
+  // the code column never holds a redeemable plaintext value).
   let code = generatePairingCode()
+  let codeHash = await sha256Hex(code)
   for (let attempt = 0; attempt < 3; attempt++) {
     const existing = await c.env.DB.prepare(
       `SELECT code FROM extension_pairings WHERE code = ?`,
     )
-      .bind(code)
+      .bind(codeHash)
       .first()
     if (!existing) break
     code = generatePairingCode()
+    codeHash = await sha256Hex(code)
   }
 
   await c.env.DB.prepare(
     `INSERT INTO extension_pairings (code, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
   )
-    .bind(code, userId, now, expiresAt)
+    .bind(codeHash, userId, now, expiresAt)
     .run()
 
   return c.json({ code, expiresIn: PAIRING_CODE_TTL_SECONDS })
@@ -112,15 +120,35 @@ export async function redeemPairingCodeRoute(c: Context<AppEnv>) {
     typeof body?.code === "string" ? body.code.trim().toUpperCase() : ""
   if (!code) return c.json({ error: "code required" }, 400)
 
-  const row = await c.env.DB.prepare(
-    `SELECT user_id, expires_at, redeemed_at FROM extension_pairings WHERE code = ?`,
+  // Audit M12: rows now store sha256(code). Look up by hash, with a legacy
+  // plaintext fallback for codes minted before this change (they expire
+  // within 5 minutes of minting, so the fallback is a deploy-window grace
+  // path — drop it after one release).
+  const codeHash = await sha256Hex(code)
+  let row = await c.env.DB.prepare(
+    `SELECT code, user_id, expires_at, redeemed_at FROM extension_pairings WHERE code = ?`,
   )
-    .bind(code)
+    .bind(codeHash)
     .first<{
+      code: string
       user_id: string
       expires_at: number
       redeemed_at: number | null
     }>()
+  let rowKey: string = codeHash
+  if (!row) {
+    row = await c.env.DB.prepare(
+      `SELECT code, user_id, expires_at, redeemed_at FROM extension_pairings WHERE code = ?`,
+    )
+      .bind(code)
+      .first<{
+        code: string
+        user_id: string
+        expires_at: number
+        redeemed_at: number | null
+      }>()
+    rowKey = code
+  }
 
   if (!row) return c.json({ error: "Invalid or expired pairing code" }, 400)
   if (row.redeemed_at)
@@ -136,7 +164,7 @@ export async function redeemPairingCodeRoute(c: Context<AppEnv>) {
   await c.env.DB.prepare(
     `UPDATE extension_pairings SET redeemed_at = ? WHERE code = ?`,
   )
-    .bind(now, code)
+    .bind(now, rowKey)
     .run()
 
   const refreshToken = generateRefreshToken()

@@ -20,6 +20,7 @@ const {
   redeemPairingCodeRoute,
   refreshAccessTokenRoute,
   revokeAllRefreshTokensRoute,
+  sha256Hex,
 } = await import("../auth/extension-pairing")
 
 const USER_ID = "user_abc123"
@@ -192,8 +193,10 @@ describe("extension pairing — happy path", () => {
   it("rejects an expired pairing code", async () => {
     const pairRes = await createPairingCodeRoute(fakeContext(env, USER_ID))
     const { code } = pairRes.body as { code: string }
-    // Force expiry by rewriting the stored row directly.
-    const row = (env as any)._pairings.get(code)
+    // Force expiry by rewriting the stored row directly. Rows are keyed by
+    // sha256(code) — audit M12: the code is never stored in plaintext.
+    const codeHash = await sha256Hex(code)
+    const row = (env as any)._pairings.get(codeHash)
     row.expires_at = Date.now() - 1000
 
     const res = await redeemPairingCodeRoute(
@@ -201,6 +204,14 @@ describe("extension pairing — happy path", () => {
     )
     expect(res.status).toBe(400)
     expect((res.body as any).error).toMatch(/expired/i)
+  })
+
+  it("stores pairing codes HASHED, never in plaintext (audit M12)", async () => {
+    const pairRes = await createPairingCodeRoute(fakeContext(env, USER_ID))
+    const { code } = pairRes.body as { code: string }
+    // The raw code must NOT be a key in the mock store; its hash must be.
+    expect((env as any)._pairings.has(code)).toBe(false)
+    expect((env as any)._pairings.has(await sha256Hex(code))).toBe(true)
   })
 
   it("rejects an unknown code", async () => {
