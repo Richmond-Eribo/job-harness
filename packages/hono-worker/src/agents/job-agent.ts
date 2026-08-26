@@ -239,14 +239,45 @@ async function fetchAndParse(url: string, origin: string): Promise<ParsedPage> {
   const LINK_CAP = 100
 
   try {
-    const res = await fetch(url, {
+    // Audit L2 fix: follow redirects MANUALLY and re-check the origin on
+    // every hop. The pre-fetch guard only validated the INITIAL url — with
+    // redirect:"follow", an open redirect on an allowed job source let the
+    // fetch land anywhere (content leak, not credentials, but off-policy).
+    // Every hop must stay on the initial URL's origin; anything else aborts.
+    const allowedOrigin = new URL(url).origin
+    const MAX_REDIRECT_HOPS = 5
+    let currentUrl = url
+    let res = await fetch(currentUrl, {
       headers: {
         Accept: "text/html,application/xhtml+xml",
         // A honest UA — some sites 403 the default Workers fetcher UA.
         "User-Agent": "Mozilla/5.0 (compatible; job-agent/1.0)",
       },
-      redirect: "follow",
+      redirect: "manual",
     })
+    for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
+      if (res.status < 300 || res.status >= 400) break
+      const location = res.headers.get("location")
+      if (!location) break
+      let next: URL
+      try {
+        next = new URL(location, currentUrl)
+      } catch {
+        break
+      }
+      if (next.origin !== allowedOrigin) {
+        out.title = `(blocked: redirect to off-site origin ${next.origin})`
+        return out
+      }
+      currentUrl = next.toString()
+      res = await fetch(currentUrl, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "User-Agent": "Mozilla/5.0 (compatible; job-agent/1.0)",
+        },
+        redirect: "manual",
+      })
+    }
     if (!res.ok || !res.body) {
       out.title = `(fetch failed: HTTP ${res.status})`
       return out
