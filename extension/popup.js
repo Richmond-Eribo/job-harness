@@ -17,6 +17,7 @@
 // =============================================================================
 
 import { redeemPairingCode, forgetPairing } from "./bridge.js"
+import { isAllowedWorkerOrigin } from "./allowed-origins.js"
 
 const $unpairedView = document.getElementById("unpaired-view")
 const $pairedView = document.getElementById("paired-view")
@@ -135,6 +136,16 @@ $pair.addEventListener("click", async () => {
   if (!url) return
   if (!/^https?:\/\//i.test(url)) {
     showStatus("URL must start with http:// or https://", "err")
+    return
+  }
+  // Audit (frontend M2): only the allowlisted worker origins may receive the
+  // pairing code — anything else is a phishing URL trying to harvest the
+  // code + hand back an attacker-controlled refresh token.
+  if (!isAllowedWorkerOrigin(url)) {
+    showStatus(
+      "This worker URL is not allowed. Use the exact URL shown in the dashboard's Connect-browser step.",
+      "err",
+    )
     return
   }
   $pair.disabled = true

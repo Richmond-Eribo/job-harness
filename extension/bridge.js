@@ -29,6 +29,8 @@
 //     not looping forever if the refresh token itself is invalid/revoked.
 // =============================================================================
 
+import { isAllowedWorkerOrigin } from "./allowed-origins.js"
+
 let ws = null
 // Bumped every time a NEW WebSocket is assigned. In-flight CDP commands
 // capture the generation before awaiting chrome.debugger.sendCommand and
@@ -90,6 +92,10 @@ function publishState(reason) {
 // new access token on success, or null on failure (invalid/revoked refresh
 // token, network error) — callers fall back to their normal error handling.
 async function refreshAccessToken(workerUrl, refreshToken) {
+  // Audit (frontend M2): the refresh token is the long-lived credential —
+  // never send it to an origin off the allowlist, even if storage somehow
+  // holds one (e.g. a leftover from a pre-allowlist pairing).
+  if (!isAllowedWorkerOrigin(workerUrl)) return null
   try {
     const res = await fetch(
       workerUrl.replace(/\/+$/, "") + "/api/browser/refresh",
@@ -118,6 +124,12 @@ async function refreshAccessToken(workerUrl, refreshToken) {
  * itself, but stores its result in the same shape connectRelay() expects.
  */
 export async function redeemPairingCode(workerUrl, code) {
+  // Audit (frontend M2): the pairing code redeems into a refresh token —
+  // enforce the origin allowlist here too, not just in the popup, so a
+  // compromised storage/popup path still can't exfiltrate the code.
+  if (!isAllowedWorkerOrigin(workerUrl)) {
+    throw new Error("Worker URL not allowed — use the dashboard's Connect-browser URL")
+  }
   const base = workerUrl.replace(/\/+$/, "")
   const res = await fetch(base + "/api/browser/pair/redeem", {
     method: "POST",
@@ -179,6 +191,13 @@ export async function ensureConnectedFromStorage() {
 // ── Connect: refresh the access token if needed, then open the WS. ────────
 export async function connectRelay(workerUrl) {
   if (!workerUrl) return
+  // Audit (frontend M2): refuse to open the relay WebSocket (and its token
+  // subprotocol) to any origin off the allowlist. This is the enforcement
+  // background.js inherits — it always calls through here.
+  if (!isAllowedWorkerOrigin(workerUrl)) {
+    publishState("worker URL not allowed — re-pair from the dashboard")
+    return
+  }
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
